@@ -42,6 +42,36 @@
                                                 scale:(CGFloat)scale;
 @end
 
+static BOOL FLMPointInsideCornerTrigger(CGPoint point,
+                                        CGRect bounds,
+                                        BOOL *fromRight) {
+    const CGFloat horizontalRadius = 110.0;
+    const CGFloat verticalRadius = 120.0;
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    CGFloat bottomDistance = height - point.y;
+    if (point.x < 0.0 || point.x > width ||
+        bottomDistance < 0.0 || bottomDistance > verticalRadius) {
+        return NO;
+    }
+
+    CGFloat verticalComponent = bottomDistance / verticalRadius;
+    CGFloat leftComponent = point.x / horizontalRadius;
+    CGFloat rightComponent = (width - point.x) / horizontalRadius;
+    BOOL insideLeft =
+        leftComponent * leftComponent +
+            verticalComponent * verticalComponent <=
+        1.0;
+    BOOL insideRight =
+        rightComponent * rightComponent +
+            verticalComponent * verticalComponent <=
+        1.0;
+    if (fromRight) {
+        *fromRight = insideRight && !insideLeft;
+    }
+    return insideLeft || insideRight;
+}
+
 @interface FLMOverlayViewController : UIViewController
 @end
 
@@ -86,14 +116,7 @@
     if (!self.hotspotsEnabled) {
         return nil;
     }
-    CGFloat width = CGRectGetWidth(self.bounds);
-    CGFloat height = CGRectGetHeight(self.bounds);
-    CGFloat triggerWidth = MIN(220.0, MAX(170.0, width * 0.32));
-    CGFloat triggerHeight = MIN(280.0, MAX(220.0, height * 0.42));
-    BOOL insideBottom = point.y >= height - triggerHeight;
-    BOOL insideLeft = point.x <= triggerWidth;
-    BOOL insideRight = point.x >= width - triggerWidth;
-    if (!insideBottom || (!insideLeft && !insideRight)) {
+    if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
         return nil;
     }
     return [super hitTest:point withEvent:event];
@@ -114,6 +137,18 @@
 - (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
     (void)preventedGestureRecognizer;
     return YES;
+}
+
+- (BOOL)shouldBeRequiredToFailByGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return YES;
+}
+
+- (BOOL)shouldRequireFailureOfGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return NO;
 }
 
 @end
@@ -421,13 +456,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    (void)gestureRecognizer;
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
     CGRect bounds = [UIScreen mainScreen].bounds;
-    CGPoint point = [gestureRecognizer locationInView:nil];
-    self.presentingFromRight = point.x >= CGRectGetMidX(bounds);
-    return YES;
+    BOOL fromRight = NO;
+    BOOL insideTrigger =
+        FLMPointInsideCornerTrigger(self.cornerGestureStartPoint,
+                                    bounds,
+                                    &fromRight);
+    self.presentingFromRight = fromRight;
+    return insideTrigger;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -438,17 +478,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     CGRect bounds = [UIScreen mainScreen].bounds;
     CGPoint point = [touch locationInView:nil];
-    CGFloat width = CGRectGetWidth(bounds);
-    CGFloat height = CGRectGetHeight(bounds);
-    CGFloat triggerWidth = MIN(220.0, MAX(170.0, width * 0.32));
-    CGFloat triggerHeight = MIN(280.0, MAX(220.0, height * 0.42));
-    BOOL insideBottom = point.y >= height - triggerHeight;
-    BOOL insideLeft = point.x <= triggerWidth;
-    BOOL insideRight = point.x >= width - triggerWidth;
-    self.presentingFromRight = insideRight && !insideLeft;
+    BOOL fromRight = NO;
+    if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
+        return NO;
+    }
+    self.presentingFromRight = fromRight;
     self.cornerGestureStartPoint = point;
     self.wheelGestureActive = NO;
-    return insideBottom && (insideLeft || insideRight);
+    return YES;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -456,7 +493,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (UIGestureRecognizer *)otherGestureRecognizer {
     (void)gestureRecognizer;
     (void)otherGestureRecognizer;
-    return YES;
+    return NO;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldBeRequiredToFailByGestureRecognizer:
+        (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return gestureRecognizer == self.cornerGesture;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldRequireFailureOfGestureRecognizer:
+        (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)gestureRecognizer;
+    (void)otherGestureRecognizer;
+    return NO;
 }
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
