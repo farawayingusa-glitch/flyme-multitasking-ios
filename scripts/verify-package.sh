@@ -41,7 +41,8 @@ test -d "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs
 test -d "$workspace/root/var/jb/Library/PreferenceLoader/Preferences"
 
 runtime="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.dylib"
-preferences="$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/FlymeMultitaskingPrefs"
+preferences_bundle="$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle"
+preferences="$preferences_bundle/FlymeMultitaskingPrefs"
 filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.plist"
 loader="$workspace/root/var/jb/Library/PreferenceLoader/Preferences/com.codex.flymemultitasking.plist"
 
@@ -56,7 +57,7 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 [[ "$preferences_arches" == *"arm64"* && "$preferences_arches" == *"arm64e"* ]]
 
 codesign --verify --verbose=4 "$runtime"
-codesign --verify --verbose=4 "$preferences"
+codesign --verify --verbose=4 "$preferences_bundle"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
 grep -qx "Version: 0.1.1" "$workspace/control/control"
