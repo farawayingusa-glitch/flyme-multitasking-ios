@@ -305,7 +305,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                      action:@selector(handleCornerGesture:)];
     self.cornerGesture.delegate = self;
     self.cornerGesture.cancelsTouchesInView = YES;
-    self.cornerGesture.maximumNumberOfTouches = 1;
+    self.cornerGesture.numberOfTouchesRequired = 1;
     self.cornerGesture.minimumPressDuration = 0.0;
     self.cornerGesture.allowableMovement = CGFLOAT_MAX;
     [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
