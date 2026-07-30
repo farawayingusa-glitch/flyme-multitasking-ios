@@ -15,8 +15,18 @@
 + (id)sharedInstance;
 - (BOOL)openApplicationWithBundleID:(NSString *)bundleIdentifier;
 - (void)lockUIFromSource:(NSInteger)source withOptions:(id)options;
-- (id)displayConfiguration;
+@end
+
+@interface FLMDisplayConfiguration : NSObject
 - (id)identity;
+@end
+
+@interface UIScreen (FLMRuntimePrivate)
+- (FLMDisplayConfiguration *)displayConfiguration;
+@end
+
+@interface FLMSystemGestureManager : NSObject
++ (instancetype)sharedInstance;
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        toDisplayWithIdentity:(id)displayIdentity;
 @end
@@ -354,8 +364,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (BOOL)registerGlobalCornerGesture {
     Class managerClass = NSClassFromString(@"_UISystemGestureManager");
-    id manager = [managerClass sharedInstance];
-    id displayConfiguration = [[UIScreen mainScreen] displayConfiguration];
+    FLMSystemGestureManager *manager =
+        (FLMSystemGestureManager *)[managerClass sharedInstance];
+    FLMDisplayConfiguration *displayConfiguration =
+        [[UIScreen mainScreen] displayConfiguration];
     id identity = [displayConfiguration identity];
     SEL registrationSelector =
         @selector(addGestureRecognizer:toDisplayWithIdentity:);
