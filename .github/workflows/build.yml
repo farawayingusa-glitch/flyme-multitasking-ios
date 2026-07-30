@@ -24,6 +24,7 @@ jobs:
 
       - name: Install Theos
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           THEOS: ${{ github.workspace }}/theos
         run: |
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
