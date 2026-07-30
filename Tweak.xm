@@ -70,8 +70,6 @@
 - (void)activate;
 - (void)deactivate;
 - (void)invalidate;
-- (void)setHosting:(BOOL)hosting;
-- (void)setVisibilityPropagationEnabled:(BOOL)enabled;
 - (void)setForeground:(BOOL)foreground;
 - (void)setBackgrounded:(BOOL)backgrounded;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
@@ -1334,13 +1332,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         presenter =
             [manager createPresenterWithIdentifier:
                          @"com.codex.flymemultitasking.centered"];
-        if ([presenter respondsToSelector:
-                           @selector(setVisibilityPropagationEnabled:)]) {
-            [presenter setVisibilityPropagationEnabled:YES];
-        }
-        if ([presenter respondsToSelector:@selector(setHosting:)]) {
-            [presenter setHosting:YES];
-        }
         if ([presenter respondsToSelector:@selector(activate)]) {
             [presenter activate];
         }
