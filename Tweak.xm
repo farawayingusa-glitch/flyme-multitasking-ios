@@ -388,11 +388,6 @@ static UIWindow *FLMCurrentKeyWindow(void) {
             }
         }
     }
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        if (window.isKeyWindow) {
-            return window;
-        }
-    }
     return nil;
 }
 
