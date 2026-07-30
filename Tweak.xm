@@ -188,6 +188,8 @@
 @property(nonatomic, assign) BOOL presentingFromRight;
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL wheelPinned;
+@property(nonatomic, assign) BOOL wheelGestureActive;
+@property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 + (instancetype)sharedController;
 - (void)start;
 - (void)reloadPreferences;
@@ -196,6 +198,7 @@
 - (void)updateWindowFrames;
 - (void)orientationDidChange:(NSNotification *)notification;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
+- (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
@@ -338,6 +341,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelTapGesture =
         [[UITapGestureRecognizer alloc] initWithTarget:self
                                                action:@selector(handleWheelTap:)];
+    self.wheelTapGesture.cancelsTouchesInView = YES;
+    self.wheelTapGesture.delaysTouchesEnded = NO;
     [self.overlayWindow.rootViewController.view addGestureRecognizer:self.wheelTapGesture];
 
     self.hotspotWindow = FLMCreateHotspotWindow(bounds);
@@ -353,7 +358,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGesture.delegate = self;
     self.cornerGesture.cancelsTouchesInView = YES;
     self.cornerGesture.numberOfTouchesRequired = 1;
-    self.cornerGesture.minimumPressDuration = 0.0;
+    self.cornerGesture.minimumPressDuration = 0.12;
     self.cornerGesture.allowableMovement = CGFLOAT_MAX;
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
@@ -416,7 +421,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
-    if (!self.enabled || self.itemIdentifiers.count == 0) {
+    if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
     CGRect bounds = [UIScreen mainScreen].bounds;
@@ -428,7 +433,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
     (void)gestureRecognizer;
-    if (!self.enabled || self.itemIdentifiers.count == 0) {
+    if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
     CGRect bounds = [UIScreen mainScreen].bounds;
@@ -441,6 +446,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL insideLeft = point.x <= triggerWidth;
     BOOL insideRight = point.x >= width - triggerWidth;
     self.presentingFromRight = insideRight && !insideLeft;
+    self.cornerGestureStartPoint = point;
+    self.wheelGestureActive = NO;
     return insideBottom && (insideLeft || insideRight);
 }
 
@@ -457,24 +464,47 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
-            [self presentWheelFromRight:self.presentingFromRight];
-            [self updateHighlightForPoint:point];
-            break;
         case UIGestureRecognizerStateChanged:
-            [self updateHighlightForPoint:point];
+            if (!self.wheelGestureActive && [self shouldActivateWheelAtPoint:point]) {
+                self.wheelGestureActive = YES;
+                [self presentWheelFromRight:self.presentingFromRight];
+            }
+            if (self.wheelGestureActive) {
+                [self updateHighlightForPoint:point];
+            }
             break;
         case UIGestureRecognizerStateEnded:
-            [self pinWheel];
+            if (self.wheelGestureActive) {
+                [self pinWheel];
+            }
+            self.wheelGestureActive = NO;
             break;
         case UIGestureRecognizerStateCancelled:
-            [self pinWheel];
+            if (self.wheelGestureActive) {
+                [self pinWheel];
+            }
+            self.wheelGestureActive = NO;
             break;
         case UIGestureRecognizerStateFailed:
-            [self dismissWheelLaunchingItem:nil];
+            if (self.wheelGestureActive) {
+                [self dismissWheelLaunchingItem:nil];
+            }
+            self.wheelGestureActive = NO;
             break;
         default:
             break;
     }
+}
+
+- (BOOL)shouldActivateWheelAtPoint:(CGPoint)point {
+    CGFloat horizontalMovement = point.x - self.cornerGestureStartPoint.x;
+    CGFloat verticalMovement = point.y - self.cornerGestureStartPoint.y;
+    CGFloat totalMovement = hypot(horizontalMovement, verticalMovement);
+    CGFloat inwardMovement =
+        self.presentingFromRight ? -horizontalMovement : horizontalMovement;
+    CGFloat upwardMovement = -verticalMovement;
+    return totalMovement >= 14.0 &&
+           (inwardMovement >= 4.0 || upwardMovement >= 4.0);
 }
 
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count {
@@ -502,9 +532,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSArray<NSNumber *> *ringCounts =
         [self itemCountsByRingForCount:self.itemIdentifiers.count];
     CGFloat fullStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullEndAngle = -25.0 * (CGFloat)M_PI / 180.0;
+    CGFloat fullEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
     CGFloat fullAngleSpan = fullEndAngle - fullStartAngle;
-    CGFloat angleMidpoint = (fullStartAngle + fullEndAngle) * 0.5;
     CGFloat safeCenterMargin = 38.0;
     CGFloat maximumRadiusByWidth =
         (width - 4.0 - safeCenterMargin) / cos(fullEndAngle);
@@ -516,25 +545,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat ringSpacing = 0.0;
     if (ringCounts.count > 1) {
         CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
-        firstRadius = MIN(190.0, MAX(150.0, maximumRadius - 74.0 * ringIntervals));
-        firstRadius = MIN(firstRadius, maximumRadius);
-        ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
+        CGFloat desiredSpacing = 76.0;
+        CGFloat desiredOuterRadius = firstRadius + desiredSpacing * ringIntervals;
+        if (desiredOuterRadius <= maximumRadius) {
+            ringSpacing = desiredSpacing;
+        } else {
+            firstRadius =
+                MIN(firstRadius, MAX(132.0, maximumRadius - 62.0 * ringIntervals));
+            ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
+        }
     }
 
     NSUInteger itemIndex = 0;
     for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
         NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
         CGFloat radius = firstRadius + (CGFloat)ring * ringSpacing;
-        CGFloat occupiedAngleSpan =
-            ringCount > 1
-                ? MIN(fullAngleSpan, ((CGFloat)(ringCount - 1) * 68.0) / radius)
-                : 0.0;
-        CGFloat occupiedStartAngle = angleMidpoint - occupiedAngleSpan * 0.5;
         for (NSUInteger position = 0; position < ringCount; position++) {
             CGFloat fraction = ringCount == 1
                                    ? 0.5
                                    : (CGFloat)position / (CGFloat)(ringCount - 1);
-            CGFloat angle = occupiedStartAngle + fraction * occupiedAngleSpan;
+            CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
             CGFloat leftX = 4.0 + radius * cos(angle);
             CGFloat centerX = fromRight ? width - leftX : leftX;
             CGFloat centerY = anchor.y + radius * sin(angle);
