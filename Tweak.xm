@@ -1,7 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <math.h>
 #import <notify.h>
-#import <objc/runtime.h>
 #import <stdint.h>
 #import <unistd.h>
 
@@ -53,30 +52,11 @@
 @end
 
 @interface FLMApplicationSceneHandle : NSObject
-- (id)scene;
-- (id)sceneIfExists;
-@end
-
-@interface FLMSceneSettings : NSObject <NSCopying, NSMutableCopying>
-- (void)setForeground:(BOOL)foreground;
-- (void)setBackgrounded:(BOOL)backgrounded;
-@end
-
-@interface FLMApplicationScene : NSObject
-- (id)settings;
-- (NSString *)identifier;
-- (void)_setContentState:(NSInteger)contentState;
-- (void)updateSettings:(id)settings withTransitionContext:(id)transitionContext;
-@end
-
-@interface FLMSceneLayerHostContainerView : UIView
-- (instancetype)initWithScene:(id)scene;
-- (instancetype)initWithScene:(id)scene debugDescription:(NSString *)description;
-- (void)_setPresentationContext:(id)presentationContext;
-@end
-
-@interface FLMScenePresentationContext : NSObject
-- (instancetype)_initWithDefaultValues;
+- (NSInteger)currentInterfaceOrientation;
+- (UIView *)newSceneViewWithReferenceSize:(CGSize)referenceSize
+                       contentOrientation:(NSInteger)contentOrientation
+                     containerOrientation:(NSInteger)containerOrientation
+                            hostRequester:(id)hostRequester;
 @end
 
 static BOOL FLMDeviceIsLocked(void) {
@@ -103,7 +83,7 @@ static BOOL FLMDeviceIsLocked(void) {
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
-    const CGFloat horizontalRadius = 96.0;
+    const CGFloat horizontalRadius = 82.0;
     const CGFloat verticalRadius = 104.0;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
@@ -290,10 +270,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL wheelPinned;
 @property(nonatomic, assign) BOOL wheelGestureActive;
-@property(nonatomic, assign) BOOL wheelSelectionCommitted;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
-@property(nonatomic, strong) FLMApplicationScene *floatingScene;
+@property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
 @property(nonatomic, assign) NSUInteger floatingLaunchGeneration;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
 + (instancetype)sharedController;
@@ -317,11 +296,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)attachFloatingIdentifier:(NSString *)identifier
                       generation:(NSUInteger)generation
                          attempt:(NSUInteger)attempt;
-- (FLMApplicationScene *)sceneForIdentifier:(NSString *)identifier;
-- (UIView *)hostViewForScene:(FLMApplicationScene *)scene;
-- (void)setScene:(FLMApplicationScene *)scene
-      foreground:(BOOL)foreground
-    backgrounded:(BOOL)backgrounded;
+- (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
+- (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
@@ -663,7 +639,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.presentingFromRight = fromRight;
     self.cornerGestureStartPoint = point;
     self.wheelGestureActive = NO;
-    self.wheelSelectionCommitted = NO;
     return YES;
 }
 
@@ -695,7 +670,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             break;
         case UIGestureRecognizerStateEnded: {
             FLMWheelItemView *item =
-                [self itemNearPoint:point maximumDistance:38.0];
+                [self itemNearPoint:point maximumDistance:30.0];
             [self dismissWheelLaunchingItem:item];
             break;
         }
@@ -723,9 +698,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged:
-            if (self.wheelSelectionCommitted) {
-                break;
-            }
             if (!self.wheelGestureActive && [self shouldActivateWheelAtPoint:point]) {
                 self.wheelGestureActive = YES;
                 [self presentWheelFromRight:self.presentingFromRight];
@@ -736,24 +708,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             break;
         case UIGestureRecognizerStateEnded:
             if (self.wheelGestureActive) {
-                [self pinWheel];
+                FLMWheelItemView *selectedItem = self.highlightedItem;
+                if (selectedItem) {
+                    [self dismissWheelLaunchingItem:selectedItem];
+                } else {
+                    [self pinWheel];
+                }
             }
             self.wheelGestureActive = NO;
-            self.wheelSelectionCommitted = NO;
             break;
         case UIGestureRecognizerStateCancelled:
             if (self.wheelGestureActive) {
                 [self pinWheel];
             }
             self.wheelGestureActive = NO;
-            self.wheelSelectionCommitted = NO;
             break;
         case UIGestureRecognizerStateFailed:
             if (self.wheelGestureActive) {
                 [self dismissWheelLaunchingItem:nil];
             }
             self.wheelGestureActive = NO;
-            self.wheelSelectionCommitted = NO;
             break;
         default:
             break;
@@ -865,7 +839,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateHighlightForPoint:(CGPoint)point {
-    FLMWheelItemView *nearest = [self itemNearPoint:point maximumDistance:72.0];
+    FLMWheelItemView *nearest = [self itemNearPoint:point maximumDistance:30.0];
     if (nearest == self.highlightedItem) {
         return;
     }
@@ -878,11 +852,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [[UISelectionFeedbackGenerator alloc] init];
             [feedback selectionChanged];
         }
-    }
-    if (nearest && self.wheelGestureActive && !self.wheelSelectionCommitted) {
-        self.wheelSelectionCommitted = YES;
-        self.wheelGestureActive = NO;
-        [self dismissWheelLaunchingItem:nearest];
     }
 }
 
@@ -934,7 +903,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGPoint point = [gesture locationInView:self.wheelContainer];
-    FLMWheelItemView *item = [self itemNearPoint:point maximumDistance:38.0];
+    FLMWheelItemView *item = [self itemNearPoint:point maximumDistance:30.0];
     [self dismissWheelLaunchingItem:item];
 }
 
@@ -1021,83 +990,54 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                    5.0);
 }
 
-- (FLMApplicationScene *)sceneForIdentifier:(NSString *)identifier {
+- (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
     Class controllerClass = NSClassFromString(@"SBApplicationController");
     FLMSBApplicationController *controller =
         (FLMSBApplicationController *)[controllerClass sharedInstance];
     FLMSBApplication *application =
         (FLMSBApplication *)[controller applicationWithBundleIdentifier:identifier];
     id candidate = [application mainScene];
-    if ([candidate respondsToSelector:
-                       @selector(updateSettings:withTransitionContext:)]) {
-        return (FLMApplicationScene *)candidate;
-    }
-    if ([candidate respondsToSelector:@selector(sceneIfExists)]) {
-        id scene = [(FLMApplicationSceneHandle *)candidate sceneIfExists];
-        if ([scene respondsToSelector:
-                       @selector(updateSettings:withTransitionContext:)]) {
-            return (FLMApplicationScene *)scene;
-        }
-    }
-    if ([candidate respondsToSelector:@selector(scene)]) {
-        id scene = [(FLMApplicationSceneHandle *)candidate scene];
-        if ([scene respondsToSelector:
-                       @selector(updateSettings:withTransitionContext:)]) {
-            return (FLMApplicationScene *)scene;
-        }
-    }
-    return nil;
-}
-
-- (void)setScene:(FLMApplicationScene *)scene
-      foreground:(BOOL)foreground
-    backgrounded:(BOOL)backgrounded {
-    if (!scene) {
-        return;
-    }
-    id immutableSettings = [scene settings];
-    FLMSceneSettings *settings =
-        [immutableSettings respondsToSelector:@selector(mutableCopy)]
-            ? [immutableSettings mutableCopy]
-            : nil;
-    if ([settings respondsToSelector:@selector(setForeground:)]) {
-        [settings setForeground:foreground];
-    }
-    if ([settings respondsToSelector:@selector(setBackgrounded:)]) {
-        [settings setBackgrounded:backgrounded];
-    }
-    if ([scene respondsToSelector:@selector(_setContentState:)]) {
-        [scene _setContentState:foreground ? 2 : 0];
-    }
-    if (settings &&
-        [scene respondsToSelector:
-                   @selector(updateSettings:withTransitionContext:)]) {
-        [scene updateSettings:settings withTransitionContext:nil];
-    }
-}
-
-- (UIView *)hostViewForScene:(FLMApplicationScene *)scene {
-    Class hostClass = NSClassFromString(@"_UISceneLayerHostContainerView");
-    if (!hostClass || !scene) {
+    if (![candidate respondsToSelector:
+                        @selector(newSceneViewWithReferenceSize:
+                                      contentOrientation:
+                                    containerOrientation:
+                                           hostRequester:)]) {
         return nil;
     }
-    FLMSceneLayerHostContainerView *host =
-        (FLMSceneLayerHostContainerView *)[hostClass alloc];
-    if ([host respondsToSelector:@selector(initWithScene:debugDescription:)]) {
-        host = [host initWithScene:scene
-                 debugDescription:@"Flyme Multitasking centered window"];
-    } else if ([host respondsToSelector:@selector(initWithScene:)]) {
-        host = [host initWithScene:scene];
-    } else {
+    return (FLMApplicationSceneHandle *)candidate;
+}
+
+- (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle {
+    if (!sceneHandle) {
         return nil;
     }
-    Class contextClass = NSClassFromString(@"UIScenePresentationContext");
-    FLMScenePresentationContext *context =
-        [(FLMScenePresentationContext *)[contextClass alloc]
-            _initWithDefaultValues];
-    if (context &&
-        [host respondsToSelector:@selector(_setPresentationContext:)]) {
-        [host _setPresentationContext:context];
+    UIWindowScene *windowScene = self.floatingWindow.windowScene;
+    UIInterfaceOrientation containerOrientation =
+        windowScene ? windowScene.interfaceOrientation
+                    : UIInterfaceOrientationPortrait;
+    if (containerOrientation == UIInterfaceOrientationUnknown) {
+        containerOrientation = UIInterfaceOrientationPortrait;
+    }
+    NSInteger contentOrientation = containerOrientation;
+    if ([sceneHandle respondsToSelector:@selector(currentInterfaceOrientation)]) {
+        NSInteger reportedOrientation =
+            [sceneHandle currentInterfaceOrientation];
+        if (reportedOrientation != UIInterfaceOrientationUnknown) {
+            contentOrientation = reportedOrientation;
+        }
+    }
+    UIView *host = nil;
+    @try {
+        host =
+            [sceneHandle newSceneViewWithReferenceSize:[UIScreen mainScreen].bounds.size
+                                   contentOrientation:contentOrientation
+                                 containerOrientation:containerOrientation
+                                        hostRequester:self.floatingWindow.rootViewController];
+    } @catch (__unused NSException *exception) {
+        host = nil;
+    }
+    if (![host isKindOfClass:[UIView class]]) {
+        return nil;
     }
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
@@ -1111,12 +1051,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
-    if (self.floatingScene) {
-        [self setScene:self.floatingScene foreground:NO backgrounded:YES];
-    }
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
-    self.floatingScene = nil;
+    self.floatingSceneHandle = nil;
     self.floatingIdentifier = identifier;
     self.floatingStatusLabel.hidden = NO;
     self.floatingStatusLabel.text = @"正在打开…";
@@ -1160,8 +1097,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
-    FLMApplicationScene *scene = [self sceneForIdentifier:identifier];
-    if (!scene) {
+    FLMApplicationSceneHandle *sceneHandle =
+        [self sceneHandleForIdentifier:identifier];
+    if (!sceneHandle) {
         if (attempt < 20) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -1177,14 +1115,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    [self setScene:scene foreground:YES backgrounded:NO];
-    UIView *host = [self hostViewForScene:scene];
+    UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         [self closeFloatingWindowKeepingApplication:YES];
         [self activateIdentifierFullscreen:identifier];
         return;
     }
-    self.floatingScene = scene;
+    self.floatingSceneHandle = sceneHandle;
     self.floatingHostView = host;
     host.frame = self.floatingContainer.bounds;
     host.autoresizingMask =
@@ -1197,12 +1134,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     (void)keepApplication;
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
-    FLMApplicationScene *scene = self.floatingScene;
-    self.floatingScene = nil;
+    self.floatingSceneHandle = nil;
     self.floatingIdentifier = nil;
-    if (scene) {
-        [self setScene:scene foreground:NO backgrounded:YES];
-    }
     if (self.floatingWindow.hidden) {
         [self.floatingHostView removeFromSuperview];
         self.floatingHostView = nil;
