@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>此版本只验证独立运行层是否成功载入，不会修改 TrollOpen，也不会启用轮盘或小窗。</string>
+            <key>label</key>
+            <string>连接验证</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSTitleValueCell</string>
+            <key>get</key>
+            <string>runtimeStatus:</string>
+            <key>id</key>
+            <string>runtime-status</string>
+            <key>label</key>
+            <string>运行状态</string>
+        </dict>
+    </array>
+    <key>title</key>
+    <string>Flyme 多任务</string>
+</dict>
+</plist>

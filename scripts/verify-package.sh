@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: verify-package.sh PACKAGE.deb" >&2
+    exit 2
+fi
+
+package="$1"
+workspace="$(mktemp -d)"
+trap 'rm -rf "$workspace"' EXIT
+
+dpkg-deb --info "$package"
+dpkg-deb --contents "$package"
+dpkg-deb --extract "$package" "$workspace/root"
+dpkg-deb --control "$package" "$workspace/control"
+
+archive_listing="$(dpkg-deb --contents "$package")"
+for directory in \
+    "./var/" \
+    "./var/jb/" \
+    "./var/jb/Library/" \
+    "./var/jb/Library/MobileSubstrate/" \
+    "./var/jb/Library/MobileSubstrate/DynamicLibraries/" \
+    "./var/jb/Library/PreferenceBundles/" \
+    "./var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/" \
+    "./var/jb/Library/PreferenceLoader/" \
+    "./var/jb/Library/PreferenceLoader/Preferences/"; do
+    if ! grep -Fq "$directory" <<<"$archive_listing"; then
+        echo "package archive is missing directory entry: $directory" >&2
+        exit 1
+    fi
+done
+
+test -d "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries"
+test -d "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle"
+test -d "$workspace/root/var/jb/Library/PreferenceLoader/Preferences"
+
+runtime="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.dylib"
+preferences="$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/FlymeMultitaskingPrefs"
+filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.plist"
+loader="$workspace/root/var/jb/Library/PreferenceLoader/Preferences/com.codex.flymemultitasking.plist"
+
+test -f "$runtime"
+test -f "$preferences"
+test -f "$filter"
+test -f "$loader"
+
+runtime_arches="$(xcrun lipo -archs "$runtime")"
+preferences_arches="$(xcrun lipo -archs "$preferences")"
+[[ "$runtime_arches" == *"arm64"* && "$runtime_arches" == *"arm64e"* ]]
+[[ "$preferences_arches" == *"arm64"* && "$preferences_arches" == *"arm64e"* ]]
+
+codesign --verify --verbose=4 "$runtime"
+codesign --verify --verbose=4 "$preferences"
+
+grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
+grep -qx "Version: 0.1.1" "$workspace/control/control"
+grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
+
+if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then
+    echo "package unexpectedly contains TrollOpen files" >&2
+    exit 1
+fi
+
+if grep -Riq "dpkg-divert" "$workspace/control"; then
+    echo "package unexpectedly contains dpkg-divert maintainer logic" >&2
+    exit 1
+fi
+
+echo "package verification passed"
