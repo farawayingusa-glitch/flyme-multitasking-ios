@@ -22,6 +22,11 @@ jobs:
           command -v dpkg-deb >/dev/null || brew install dpkg
           command -v dpkg-deb
 
+      - name: Verify frozen gesture foundation
+        run: |
+          chmod +x scripts/verify-frozen-foundation.sh
+          scripts/verify-frozen-foundation.sh Tweak.xm
+
       - name: Install Theos
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -42,11 +47,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/Flyme-Multitasking_0.3.4_iphoneos-arm64.deb
+          cp "$package" artifacts/Flyme-Multitasking_0.4.0_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Flyme-Multitasking-0.3.4
-          path: artifacts/Flyme-Multitasking_0.3.4_iphoneos-arm64.deb
+          name: Flyme-Multitasking-0.4.0
+          path: artifacts/Flyme-Multitasking_0.4.0_iphoneos-arm64.deb
           if-no-files-found: error

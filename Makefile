@@ -8,7 +8,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FlymeMultitasking
 
-FlymeMultitasking_FILES = Tweak.xm
+FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
 FlymeMultitasking_FRAMEWORKS = UIKit
 

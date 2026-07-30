@@ -1,8 +1,11 @@
 #import <UIKit/UIKit.h>
 #import <math.h>
 #import <notify.h>
+#import <objc/message.h>
 #import <stdint.h>
 #import <unistd.h>
+
+#import "FLMSceneLifecycle.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -53,10 +56,27 @@
 
 @interface FLMApplicationSceneHandle : NSObject
 - (NSInteger)currentInterfaceOrientation;
-- (UIView *)newSceneViewWithReferenceSize:(CGSize)referenceSize
-                       contentOrientation:(NSInteger)contentOrientation
-                     containerOrientation:(NSInteger)containerOrientation
-                            hostRequester:(id)hostRequester;
+- (id)sceneIfExists;
+- (id)scene;
+@end
+
+@interface NSObject (FLMSceneHostingPrivate)
+- (id)settings;
+- (id)mutableSettings;
+- (id)uiPresentationManager;
+- (id)presentationManager;
+- (id)createPresenterWithIdentifier:(NSString *)identifier;
+- (UIView *)presentationView;
+- (void)activate;
+- (void)deactivate;
+- (void)invalidate;
+- (void)setHosting:(BOOL)hosting;
+- (void)setVisibilityPropagationEnabled:(BOOL)enabled;
+- (void)setForeground:(BOOL)foreground;
+- (void)setBackgrounded:(BOOL)backgrounded;
+- (void)setDeactivationReasons:(unsigned long long)reasons;
+- (void)updateSettings:(id)settings withTransitionContext:(id)context;
+- (void)_setContentState:(NSInteger)state;
 @end
 
 static BOOL FLMDeviceIsLocked(void) {
@@ -137,6 +157,17 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 - (BOOL)canBecomeKeyWindow {
     return NO;
+}
+
+@end
+
+@interface FLMFloatingWindow : FLMOverlayWindow
+@end
+
+@implementation FLMFloatingWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return YES;
 }
 
 @end
@@ -255,9 +286,13 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) UIView *floatingDimView;
 @property(nonatomic, strong) UIView *floatingContainer;
 @property(nonatomic, strong) UIView *floatingHandle;
+@property(nonatomic, strong) UIView *floatingHandleBar;
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
 @property(nonatomic, strong) UITapGestureRecognizer *floatingBackdropTap;
+@property(nonatomic, strong) UIPanGestureRecognizer *floatingHandlePan;
+@property(nonatomic, strong) FLMCornerGestureRecognizer *floatingExclusiveGesture;
+@property(nonatomic, weak) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGuardGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *modalGesture;
@@ -275,6 +310,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
+@property(nonatomic, strong) id floatingScene;
+@property(nonatomic, strong) id floatingPresentationManager;
+@property(nonatomic, strong) id floatingPresenter;
 @property(nonatomic, assign) NSUInteger floatingLaunchGeneration;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
 + (instancetype)sharedController;
@@ -295,11 +333,18 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)pinWheel;
 - (void)handleWheelTap:(UITapGestureRecognizer *)gesture;
 - (void)handleFloatingBackdropTap:(UITapGestureRecognizer *)gesture;
+- (void)handleFloatingHandlePan:(UIPanGestureRecognizer *)gesture;
+- (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture;
+- (void)protectedSceneDidDisappear:(NSNotification *)notification;
 - (void)openFloatingIdentifier:(NSString *)identifier;
 - (void)attachFloatingIdentifier:(NSString *)identifier
                       generation:(NSUInteger)generation
                          attempt:(NSUInteger)attempt;
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
+- (id)sceneForHandle:(FLMApplicationSceneHandle *)sceneHandle;
+- (BOOL)prepareFloatingScene:(id)scene
+                      handle:(FLMApplicationSceneHandle *)sceneHandle;
+- (void)backgroundFloatingScene:(id)scene;
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
@@ -334,6 +379,23 @@ static UIWindowScene *FLMForegroundWindowScene(void) {
     return nil;
 }
 
+static UIWindow *FLMCurrentKeyWindow(void) {
+    UIWindowScene *scene = FLMForegroundWindowScene();
+    if (@available(iOS 13.0, *)) {
+        for (UIWindow *window in scene.windows) {
+            if (window.isKeyWindow) {
+                return window;
+            }
+        }
+    }
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            return window;
+        }
+    }
+    return nil;
+}
+
 static UIWindow *FLMCreateWindow(CGRect frame) {
     UIWindowScene *scene = FLMForegroundWindowScene();
     if (@available(iOS 13.0, *)) {
@@ -344,6 +406,19 @@ static UIWindow *FLMCreateWindow(CGRect frame) {
         }
     }
     return [[FLMOverlayWindow alloc] initWithFrame:frame];
+}
+
+static FLMFloatingWindow *FLMCreateFloatingWindow(CGRect frame) {
+    UIWindowScene *scene = FLMForegroundWindowScene();
+    if (@available(iOS 13.0, *)) {
+        if (scene) {
+            FLMFloatingWindow *window =
+                [[FLMFloatingWindow alloc] initWithWindowScene:scene];
+            window.frame = frame;
+            return window;
+        }
+    }
+    return [[FLMFloatingWindow alloc] initWithFrame:frame];
 }
 
 static FLMHotspotWindow *FLMCreateHotspotWindow(CGRect frame) {
@@ -422,6 +497,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                selector:@selector(orientationDidChange:)
                    name:UIDeviceOrientationDidChangeNotification
                  object:nil];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(protectedSceneDidDisappear:)
+                   name:FLMProtectedSceneDidDisappearNotification
+                 object:nil];
         [self createWindows];
         [self reloadPreferences];
     });
@@ -488,6 +568,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.modalGesture.allowableMovement = CGFLOAT_MAX;
     self.modalGesture.enabled = NO;
 
+    self.floatingExclusiveGesture =
+        [[FLMCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleFloatingExclusiveGesture:)];
+    self.floatingExclusiveGesture.delegate = self;
+    self.floatingExclusiveGesture.cancelsTouchesInView = YES;
+    self.floatingExclusiveGesture.delaysTouchesBegan = NO;
+    self.floatingExclusiveGesture.delaysTouchesEnded = NO;
+    self.floatingExclusiveGesture.numberOfTouchesRequired = 1;
+    self.floatingExclusiveGesture.minimumPressDuration = 0.0;
+    self.floatingExclusiveGesture.allowableMovement = CGFLOAT_MAX;
+    self.floatingExclusiveGesture.enabled = NO;
+
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
         [self.hotspotWindow.rootViewController.view
@@ -499,7 +592,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)createFloatingWindow {
     CGRect bounds = [UIScreen mainScreen].bounds;
-    self.floatingWindow = (FLMOverlayWindow *)FLMCreateWindow(bounds);
+    self.floatingWindow = FLMCreateFloatingWindow(bounds);
     self.floatingWindow.windowLevel = UIWindowLevelAlert + 92.0;
     self.floatingWindow.backgroundColor = [UIColor clearColor];
     self.floatingWindow.rootViewController = [[FLMOverlayViewController alloc] init];
@@ -526,9 +619,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingContainer addSubview:self.floatingStatusLabel];
 
     self.floatingHandle = [[UIView alloc] initWithFrame:CGRectZero];
-    self.floatingHandle.backgroundColor =
+    self.floatingHandle.backgroundColor = [UIColor clearColor];
+    self.floatingHandleBar = [[UIView alloc] initWithFrame:CGRectZero];
+    self.floatingHandleBar.backgroundColor =
         [UIColor colorWithWhite:1.0 alpha:0.72];
-    self.floatingHandle.layer.cornerRadius = 2.5;
+    self.floatingHandleBar.layer.cornerRadius = 2.5;
+    self.floatingHandleBar.userInteractionEnabled = NO;
+    [self.floatingHandle addSubview:self.floatingHandleBar];
     [self.floatingWindow.rootViewController.view addSubview:self.floatingHandle];
 
     self.floatingBackdropTap =
@@ -540,6 +637,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingBackdropTap.delaysTouchesEnded = NO;
     [self.floatingWindow.rootViewController.view
         addGestureRecognizer:self.floatingBackdropTap];
+
+    self.floatingHandlePan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleFloatingHandlePan:)];
+    self.floatingHandlePan.cancelsTouchesInView = YES;
+    [self.floatingHandle addGestureRecognizer:self.floatingHandlePan];
+    self.floatingHandle.userInteractionEnabled = YES;
     [self layoutFloatingWindow];
 }
 
@@ -560,6 +664,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.modalGesture toDisplayWithIdentity:identity];
+    [manager addGestureRecognizer:self.floatingExclusiveGesture
+            toDisplayWithIdentity:identity];
     self.systemGestureManager = manager;
     self.displayIdentity = identity;
     return YES;
@@ -612,6 +718,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.floatingBackdropTap) {
         return !self.floatingWindow.hidden;
     }
+    if (gestureRecognizer == self.floatingExclusiveGesture) {
+        return !self.floatingWindow.hidden && !FLMDeviceIsLocked();
+    }
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
@@ -643,7 +752,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return !self.floatingWindow.hidden &&
                !CGRectContainsPoint(self.floatingContainer.frame, point) &&
                !CGRectContainsPoint(CGRectInset(self.floatingHandle.frame, -18.0, -18.0),
-                                    point);
+                                     point);
+    }
+    if (gestureRecognizer == self.floatingExclusiveGesture) {
+        if (self.floatingWindow.hidden || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        CGPoint point =
+            [touch locationInView:self.floatingWindow.rootViewController.view];
+        CGRect handleHitFrame = CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
+        return !CGRectContainsPoint(self.floatingContainer.frame, point) &&
+               !CGRectContainsPoint(handleHitFrame, point);
     }
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
@@ -999,6 +1118,55 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self closeFloatingWindowKeepingApplication:YES];
 }
 
+- (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
+    if (self.floatingWindow.hidden) {
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateEnded) {
+        [self closeFloatingWindowKeepingApplication:YES];
+    }
+}
+
+- (void)handleFloatingHandlePan:(UIPanGestureRecognizer *)gesture {
+    if (self.floatingWindow.hidden) {
+        return;
+    }
+    CGPoint translation =
+        [gesture translationInView:self.floatingWindow.rootViewController.view];
+    CGFloat visualOffset = MAX(-8.0, MIN(14.0, translation.y * 0.18));
+    if (gesture.state == UIGestureRecognizerStateBegan ||
+        gesture.state == UIGestureRecognizerStateChanged) {
+        self.floatingHandleBar.transform =
+            CGAffineTransformMakeTranslation(0.0, visualOffset);
+        return;
+    }
+    [UIView animateWithDuration:0.30
+                          delay:0.0
+         usingSpringWithDamping:0.72
+          initialSpringVelocity:0.35
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+                         self.floatingHandleBar.transform =
+                             CGAffineTransformIdentity;
+                     }
+                     completion:nil];
+    if (gesture.state == UIGestureRecognizerStateEnded &&
+        translation.y >= 46.0 &&
+        fabs(translation.y) > fabs(translation.x) * 1.15) {
+        NSString *identifier = [self.floatingIdentifier copy];
+        [self closeFloatingWindowKeepingApplication:YES];
+        [self activateIdentifierFullscreen:identifier];
+    }
+}
+
+- (void)protectedSceneDidDisappear:(NSNotification *)notification {
+    (void)notification;
+    if (!self.floatingWindow.hidden) {
+        [self closeFloatingWindowKeepingApplication:YES];
+    }
+}
+
 - (void)layoutFloatingWindow {
     if (!self.floatingWindow) {
         return;
@@ -1031,9 +1199,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingHandle.frame =
         CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
                          handleWidth * 0.5),
-                   CGRectGetMaxY(self.floatingContainer.frame) + 12.0,
+                   CGRectGetMaxY(self.floatingContainer.frame) + 2.0,
                    handleWidth,
-                   5.0);
+                   44.0);
+    self.floatingHandleBar.frame =
+        CGRectMake(0.0, floor((44.0 - 5.0) * 0.5), handleWidth, 5.0);
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
@@ -1043,50 +1213,167 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMSBApplication *application =
         (FLMSBApplication *)[controller applicationWithBundleIdentifier:identifier];
     id candidate = [application mainScene];
-    if (![candidate respondsToSelector:
-                        @selector(newSceneViewWithReferenceSize:
-                                      contentOrientation:
-                                    containerOrientation:
-                                           hostRequester:)]) {
+    if (![candidate respondsToSelector:@selector(sceneIfExists)] &&
+        ![candidate respondsToSelector:@selector(scene)]) {
         return nil;
     }
     return (FLMApplicationSceneHandle *)candidate;
+}
+
+- (id)sceneForHandle:(FLMApplicationSceneHandle *)sceneHandle {
+    if (!sceneHandle) {
+        return nil;
+    }
+    id scene = nil;
+    @try {
+        if ([sceneHandle respondsToSelector:@selector(sceneIfExists)]) {
+            scene = [sceneHandle sceneIfExists];
+        }
+        if (!scene && [sceneHandle respondsToSelector:@selector(scene)]) {
+            scene = [sceneHandle scene];
+        }
+    } @catch (__unused NSException *exception) {
+        scene = nil;
+    }
+    return scene;
+}
+
+- (BOOL)prepareFloatingScene:(id)scene
+                      handle:(FLMApplicationSceneHandle *)sceneHandle {
+    if (!scene) {
+        return NO;
+    }
+    FLMProtectScene(scene, sceneHandle);
+    @try {
+        if ([scene respondsToSelector:@selector(_setContentState:)]) {
+            [scene _setContentState:2];
+        }
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings &&
+            [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if (!mutableSettings) {
+            FLMClearProtectedScene(scene);
+            return NO;
+        }
+        if ([mutableSettings respondsToSelector:@selector(setDeactivationReasons:)]) {
+            [mutableSettings setDeactivationReasons:0];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
+            [mutableSettings setForeground:YES];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
+            [mutableSettings setBackgrounded:NO];
+        }
+        if (![scene respondsToSelector:
+                       @selector(updateSettings:withTransitionContext:)]) {
+            FLMClearProtectedScene(scene);
+            return NO;
+        }
+        [scene updateSettings:mutableSettings withTransitionContext:nil];
+        return YES;
+    } @catch (__unused NSException *exception) {
+        FLMClearProtectedScene(scene);
+        return NO;
+    }
+}
+
+- (void)backgroundFloatingScene:(id)scene {
+    if (!scene) {
+        FLMClearProtectedScene(nil);
+        return;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings &&
+            [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
+            [mutableSettings setForeground:NO];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
+            [mutableSettings setBackgrounded:YES];
+        }
+        if (mutableSettings &&
+            [scene respondsToSelector:
+                       @selector(updateSettings:withTransitionContext:)]) {
+            [scene updateSettings:mutableSettings withTransitionContext:nil];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    FLMClearProtectedScene(scene);
 }
 
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle {
     if (!sceneHandle) {
         return nil;
     }
-    UIWindowScene *windowScene = self.floatingWindow.windowScene;
-    UIInterfaceOrientation containerOrientation =
-        windowScene ? windowScene.interfaceOrientation
-                    : UIInterfaceOrientationPortrait;
-    if (containerOrientation == UIInterfaceOrientationUnknown) {
-        containerOrientation = UIInterfaceOrientationPortrait;
+    id scene = [self sceneForHandle:sceneHandle];
+    if (![self prepareFloatingScene:scene handle:sceneHandle]) {
+        return nil;
     }
-    NSInteger contentOrientation = containerOrientation;
-    if ([sceneHandle respondsToSelector:@selector(currentInterfaceOrientation)]) {
-        NSInteger reportedOrientation =
-            [sceneHandle currentInterfaceOrientation];
-        if (reportedOrientation != UIInterfaceOrientationUnknown) {
-            contentOrientation = reportedOrientation;
-        }
-    }
+    id manager = nil;
+    id presenter = nil;
     UIView *host = nil;
     @try {
-        host =
-            [sceneHandle newSceneViewWithReferenceSize:[UIScreen mainScreen].bounds.size
-                                   contentOrientation:contentOrientation
-                                 containerOrientation:containerOrientation
-                                        hostRequester:self.floatingWindow.rootViewController];
+        if ([scene respondsToSelector:@selector(uiPresentationManager)]) {
+            manager = [scene uiPresentationManager];
+        }
+        if (!manager &&
+            [scene respondsToSelector:@selector(presentationManager)]) {
+            manager = [scene presentationManager];
+        }
+        if (![manager respondsToSelector:
+                         @selector(createPresenterWithIdentifier:)]) {
+            [self backgroundFloatingScene:scene];
+            return nil;
+        }
+        presenter =
+            [manager createPresenterWithIdentifier:
+                         @"com.codex.flymemultitasking.centered"];
+        if ([presenter respondsToSelector:
+                           @selector(setVisibilityPropagationEnabled:)]) {
+            [presenter setVisibilityPropagationEnabled:YES];
+        }
+        if ([presenter respondsToSelector:@selector(setHosting:)]) {
+            [presenter setHosting:YES];
+        }
+        if ([presenter respondsToSelector:@selector(activate)]) {
+            [presenter activate];
+        }
+        if ([presenter respondsToSelector:@selector(presentationView)]) {
+            host = [presenter presentationView];
+        }
     } @catch (__unused NSException *exception) {
         host = nil;
     }
     if (![host isKindOfClass:[UIView class]]) {
+        @try {
+            if ([presenter respondsToSelector:@selector(deactivate)]) {
+                [presenter deactivate];
+            }
+            if ([presenter respondsToSelector:@selector(invalidate)]) {
+                [presenter invalidate];
+            }
+        } @catch (__unused NSException *exception) {
+        }
+        [self backgroundFloatingScene:scene];
         return nil;
     }
+    self.floatingScene = scene;
+    self.floatingPresentationManager = manager;
+    self.floatingPresenter = presenter;
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
+    host.clipsToBounds = YES;
     return host;
 }
 
@@ -1100,6 +1387,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
     self.floatingSceneHandle = nil;
+    self.floatingScene = nil;
+    self.floatingPresentationManager = nil;
+    self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
     self.floatingStatusLabel.hidden = NO;
     self.floatingStatusLabel.text = @"正在打开…";
@@ -1109,7 +1399,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingContainer.alpha = 0.0;
     self.floatingContainer.transform = CGAffineTransformMakeScale(0.90, 0.90);
     self.floatingHandle.alpha = 0.0;
-    self.floatingWindow.hidden = NO;
+    self.previousKeyWindow = FLMCurrentKeyWindow();
+    self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
+    self.cornerGuardGesture.enabled = NO;
+    self.cornerGesture.enabled = NO;
+    [self.floatingWindow makeKeyAndVisible];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self layoutFloatingWindow];
+    });
     [UIView animateWithDuration:0.46
                           delay:0.0
          usingSpringWithDamping:0.78
@@ -1177,14 +1474,40 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
-    (void)keepApplication;
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
+    id scene = self.floatingScene;
+    id presenter = self.floatingPresenter;
+    UIWindow *previousKeyWindow = self.previousKeyWindow;
     self.floatingSceneHandle = nil;
+    self.floatingScene = nil;
+    self.floatingPresentationManager = nil;
+    self.floatingPresenter = nil;
     self.floatingIdentifier = nil;
+    self.floatingExclusiveGesture.enabled = NO;
+    self.cornerGuardGesture.enabled = self.enabled;
+    self.cornerGesture.enabled = self.enabled;
+    self.previousKeyWindow = nil;
+    if (previousKeyWindow && previousKeyWindow != self.floatingWindow) {
+        [previousKeyWindow makeKeyWindow];
+    }
     if (self.floatingWindow.hidden) {
         [self.floatingHostView removeFromSuperview];
         self.floatingHostView = nil;
+        @try {
+            if ([presenter respondsToSelector:@selector(deactivate)]) {
+                [presenter deactivate];
+            }
+            if ([presenter respondsToSelector:@selector(invalidate)]) {
+                [presenter invalidate];
+            }
+        } @catch (__unused NSException *exception) {
+        }
+        if (keepApplication) {
+            [self backgroundFloatingScene:scene];
+        } else {
+            FLMClearProtectedScene(scene);
+        }
         [self stopLockMonitoringIfIdle];
         return;
     }
@@ -1205,9 +1528,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          if (generation != self.floatingLaunchGeneration) {
                              return;
                          }
-                         [self.floatingHostView removeFromSuperview];
-                         self.floatingHostView = nil;
-                         self.floatingWindow.hidden = YES;
+                          [self.floatingHostView removeFromSuperview];
+                          self.floatingHostView = nil;
+                          @try {
+                              if ([presenter respondsToSelector:@selector(deactivate)]) {
+                                  [presenter deactivate];
+                              }
+                              if ([presenter respondsToSelector:@selector(invalidate)]) {
+                                  [presenter invalidate];
+                              }
+                          } @catch (__unused NSException *exception) {
+                          }
+                          if (keepApplication) {
+                              [self backgroundFloatingScene:scene];
+                          } else {
+                              FLMClearProtectedScene(scene);
+                          }
+                          self.floatingWindow.hidden = YES;
                          self.floatingDimView.alpha = 1.0;
                          self.floatingContainer.alpha = 1.0;
                          self.floatingContainer.transform =
@@ -1290,10 +1627,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         return;
     }
-    // Interactive scene hosting requires a complete SpringBoard lifecycle
-    // transaction. Keep the wheel stable and use the system launch path until
-    // that transaction layer is installed; partial hosting can crash SpringBoard.
-    [self activateIdentifierFullscreen:identifier];
+    [self openFloatingIdentifier:identifier];
 }
 
 @end
