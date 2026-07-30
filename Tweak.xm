@@ -51,7 +51,7 @@
 @end
 
 @interface FLMSBApplication : NSObject
-- (id)mainScene;
+- (id)applicationSceneHandle;
 @end
 
 @interface FLMApplicationSceneHandle : NSObject
@@ -1200,17 +1200,36 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
-    Class controllerClass = NSClassFromString(@"SBApplicationController");
-    FLMSBApplicationController *controller =
-        (FLMSBApplicationController *)[controllerClass sharedInstance];
-    FLMSBApplication *application =
-        (FLMSBApplication *)[controller applicationWithBundleIdentifier:identifier];
-    id candidate = [application mainScene];
-    if (![candidate respondsToSelector:@selector(sceneIfExists)] &&
-        ![candidate respondsToSelector:@selector(scene)]) {
+    if (identifier.length == 0) {
         return nil;
     }
-    return (FLMApplicationSceneHandle *)candidate;
+    @try {
+        Class controllerClass = NSClassFromString(@"SBApplicationController");
+        if (![controllerClass respondsToSelector:@selector(sharedInstance)]) {
+            return nil;
+        }
+        FLMSBApplicationController *controller =
+            (FLMSBApplicationController *)[controllerClass sharedInstance];
+        if (![controller respondsToSelector:
+                            @selector(applicationWithBundleIdentifier:)]) {
+            return nil;
+        }
+        FLMSBApplication *application =
+            (FLMSBApplication *)[controller
+                applicationWithBundleIdentifier:identifier];
+        if (![application respondsToSelector:
+                             @selector(applicationSceneHandle)]) {
+            return nil;
+        }
+        id candidate = [application applicationSceneHandle];
+        if (![candidate respondsToSelector:@selector(sceneIfExists)] &&
+            ![candidate respondsToSelector:@selector(scene)]) {
+            return nil;
+        }
+        return (FLMApplicationSceneHandle *)candidate;
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
 }
 
 - (id)sceneForHandle:(FLMApplicationSceneHandle *)sceneHandle {
