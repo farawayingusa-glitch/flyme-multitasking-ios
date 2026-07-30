@@ -83,8 +83,8 @@ static BOOL FLMDeviceIsLocked(void) {
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
-    const CGFloat horizontalRadius = 82.0;
-    const CGFloat verticalRadius = 104.0;
+    const CGFloat horizontalRadius = 58.0;
+    const CGFloat verticalRadius = 65.0;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     CGFloat bottomDistance = height - point.y;
@@ -1233,7 +1233,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         return;
     }
-    [self openFloatingIdentifier:identifier];
+    // Interactive scene hosting requires a complete SpringBoard lifecycle
+    // transaction. Keep the wheel stable and use the system launch path until
+    // that transaction layer is installed; partial hosting can crash SpringBoard.
+    [self activateIdentifierFullscreen:identifier];
 }
 
 @end
