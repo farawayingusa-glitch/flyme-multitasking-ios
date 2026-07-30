@@ -15,18 +15,22 @@ dpkg-deb --contents "$package"
 dpkg-deb --extract "$package" "$workspace/root"
 dpkg-deb --control "$package" "$workspace/control"
 
-archive_listing="$(dpkg-deb --contents "$package")"
+archive_directories="$(
+    dpkg-deb --contents "$package" |
+        awk '$1 ~ /^d/ { print $NF }' |
+        sed -e 's#^\./##' -e 's#/$##'
+)"
 for directory in \
-    "./var/" \
-    "./var/jb/" \
-    "./var/jb/Library/" \
-    "./var/jb/Library/MobileSubstrate/" \
-    "./var/jb/Library/MobileSubstrate/DynamicLibraries/" \
-    "./var/jb/Library/PreferenceBundles/" \
-    "./var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/" \
-    "./var/jb/Library/PreferenceLoader/" \
-    "./var/jb/Library/PreferenceLoader/Preferences/"; do
-    if ! grep -Fq "$directory" <<<"$archive_listing"; then
+    "var" \
+    "var/jb" \
+    "var/jb/Library" \
+    "var/jb/Library/MobileSubstrate" \
+    "var/jb/Library/MobileSubstrate/DynamicLibraries" \
+    "var/jb/Library/PreferenceBundles" \
+    "var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle" \
+    "var/jb/Library/PreferenceLoader" \
+    "var/jb/Library/PreferenceLoader/Preferences"; do
+    if ! grep -Fxq "$directory" <<<"$archive_directories"; then
         echo "package archive is missing directory entry: $directory" >&2
         exit 1
     fi
