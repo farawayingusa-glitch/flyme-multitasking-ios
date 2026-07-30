@@ -258,6 +258,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
 @property(nonatomic, strong) UITapGestureRecognizer *floatingBackdropTap;
+@property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGuardGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *modalGesture;
 @property(nonatomic, strong) UITapGestureRecognizer *wheelTapGesture;
@@ -284,6 +285,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (BOOL)registerGlobalCornerGesture;
 - (void)updateWindowFrames;
 - (void)orientationDidChange:(NSNotification *)notification;
+- (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
@@ -464,6 +466,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGesture.minimumPressDuration = 0.12;
     self.cornerGesture.allowableMovement = CGFLOAT_MAX;
 
+    self.cornerGuardGesture =
+        [[FLMCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleCornerGuardGesture:)];
+    self.cornerGuardGesture.delegate = self;
+    self.cornerGuardGesture.cancelsTouchesInView = YES;
+    self.cornerGuardGesture.delaysTouchesBegan = NO;
+    self.cornerGuardGesture.delaysTouchesEnded = NO;
+    self.cornerGuardGesture.numberOfTouchesRequired = 1;
+    self.cornerGuardGesture.minimumPressDuration = 0.0;
+    self.cornerGuardGesture.allowableMovement = CGFLOAT_MAX;
+
     self.modalGesture =
         [[FLMCornerGestureRecognizer alloc] initWithTarget:self
                                                     action:@selector(handleModalGesture:)];
@@ -476,6 +490,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
+        [self.hotspotWindow.rootViewController.view
+            addGestureRecognizer:self.cornerGuardGesture];
         [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
     }
     [self updateWindowFrames];
@@ -540,6 +556,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
 
+    [manager addGestureRecognizer:self.cornerGuardGesture
+            toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.modalGesture toDisplayWithIdentity:identity];
     self.systemGestureManager = manager;
@@ -556,6 +574,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.enabled = [enabledValue isKindOfClass:[NSNumber class]] && [enabledValue boolValue];
     self.itemIdentifiers =
         [itemsValue isKindOfClass:[NSArray class]] ? [itemsValue copy] : @[];
+    self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     if (!self.enabled) {
         self.modalGesture.enabled = NO;
@@ -596,6 +615,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
+    if (gestureRecognizer == self.cornerGuardGesture) {
+        return self.enabled && !self.wheelPinned &&
+               self.itemIdentifiers.count > 0 && !FLMDeviceIsLocked();
+    }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
@@ -625,6 +648,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
+    if (gestureRecognizer == self.cornerGuardGesture) {
+        if (!self.enabled || self.wheelPinned ||
+            self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        CGPoint point = [touch locationInView:nil];
+        return FLMPointInsideCornerTrigger(point,
+                                           [UIScreen mainScreen].bounds,
+                                           NULL);
+    }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
@@ -646,8 +679,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
     shouldRecognizeSimultaneouslyWithGestureRecognizer:
         (UIGestureRecognizer *)otherGestureRecognizer {
-    (void)gestureRecognizer;
-    (void)otherGestureRecognizer;
+    BOOL guardAndWheel =
+        (gestureRecognizer == self.cornerGuardGesture &&
+         otherGestureRecognizer == self.cornerGesture) ||
+        (gestureRecognizer == self.cornerGesture &&
+         otherGestureRecognizer == self.cornerGuardGesture);
+    if (guardAndWheel) {
+        return YES;
+    }
     return NO;
 }
 
@@ -683,6 +722,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         default:
             break;
     }
+}
+
+- (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture {
+    // Intentionally empty. Recognizing immediately reserves the user-locked
+    // corner zone so home/back gestures cannot consume the same touch stream.
+    (void)gesture;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer

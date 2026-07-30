@@ -65,7 +65,7 @@ codesign --verify --verbose=4 --all-architectures --strict "$runtime"
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.3.3" "$workspace/control/control"
+grep -qx "Version: 0.3.4" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then
