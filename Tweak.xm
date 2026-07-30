@@ -83,6 +83,7 @@ static BOOL FLMDeviceIsLocked(void) {
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
+    // User-locked trigger geometry. Do not tune these values in later versions.
     const CGFloat horizontalRadius = 58.0;
     const CGFloat verticalRadius = 65.0;
     CGFloat width = CGRectGetWidth(bounds);
@@ -180,7 +181,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (BOOL)shouldBeRequiredToFailByGestureRecognizer:
     (UIGestureRecognizer *)otherGestureRecognizer {
     (void)otherGestureRecognizer;
-    return YES;
+    return NO;
 }
 
 - (BOOL)shouldRequireFailureOfGestureRecognizer:
@@ -653,9 +654,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
     shouldBeRequiredToFailByGestureRecognizer:
         (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)gestureRecognizer;
     (void)otherGestureRecognizer;
-    return gestureRecognizer == self.cornerGesture ||
-           gestureRecognizer == self.modalGesture;
+    return NO;
 }
 
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture {
@@ -1208,16 +1209,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)activateIdentifierFullscreen:(NSString *)identifier {
-    id workspace = [NSClassFromString(@"LSApplicationWorkspace") defaultWorkspace];
-    if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)] &&
-        [workspace openApplicationWithBundleID:identifier]) {
+    if (identifier.length == 0) {
         return;
     }
-    UIApplication *application = [UIApplication sharedApplication];
-    if ([application respondsToSelector:
-                         @selector(launchApplicationWithIdentifier:suspended:)]) {
-        [application launchApplicationWithIdentifier:identifier suspended:NO];
-    }
+    NSString *bundleIdentifier = [identifier copy];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            UIApplication *application = [UIApplication sharedApplication];
+            if ([application respondsToSelector:
+                             @selector(launchApplicationWithIdentifier:suspended:)] &&
+                [application launchApplicationWithIdentifier:bundleIdentifier
+                                                   suspended:NO]) {
+                return;
+            }
+            id workspace =
+                [NSClassFromString(@"LSApplicationWorkspace") defaultWorkspace];
+            if ([workspace respondsToSelector:
+                              @selector(openApplicationWithBundleID:)]) {
+                [workspace openApplicationWithBundleID:bundleIdentifier];
+            }
+        });
 }
 
 - (void)activateIdentifier:(NSString *)identifier {
