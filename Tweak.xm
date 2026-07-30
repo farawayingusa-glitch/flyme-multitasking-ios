@@ -74,9 +74,9 @@
     }
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
-    BOOL insideBottom = point.y >= height - 104.0;
-    BOOL insideLeft = point.x <= 82.0;
-    BOOL insideRight = point.x >= width - 82.0;
+    BOOL insideBottom = point.y >= height - 180.0;
+    BOOL insideLeft = point.x <= 138.0;
+    BOOL insideRight = point.x >= width - 138.0;
     if (!insideBottom || (!insideLeft && !insideRight)) {
         return nil;
     }
@@ -94,23 +94,26 @@
 @implementation FLMWheelItemView
 
 - (instancetype)initWithIdentifier:(NSString *)identifier image:(UIImage *)image {
-    self = [super initWithFrame:CGRectMake(0.0, 0.0, 52.0, 52.0)];
+    self = [super initWithFrame:CGRectMake(0.0, 0.0, 56.0, 56.0)];
     if (self) {
         _identifier = [identifier copy];
-        self.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.96];
-        self.layer.cornerRadius = 14.0;
+        BOOL isLockItem = [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM];
+        self.backgroundColor = isLockItem ? [UIColor systemBlueColor] : [UIColor clearColor];
+        self.layer.cornerRadius = 28.0;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
-        self.layer.shadowOpacity = 0.18;
-        self.layer.shadowRadius = 7.0;
+        self.layer.shadowOpacity = 0.22;
+        self.layer.shadowRadius = 8.0;
         self.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+        self.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:self.bounds].CGPath;
 
         _iconView = [[UIImageView alloc] initWithImage:image];
-        _iconView.frame = CGRectInset(self.bounds, 4.0, 4.0);
+        _iconView.frame = isLockItem ? CGRectInset(self.bounds, 15.0, 15.0) : self.bounds;
         _iconView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        _iconView.contentMode = UIViewContentModeScaleAspectFill;
+        _iconView.contentMode =
+            isLockItem ? UIViewContentModeScaleAspectFit : UIViewContentModeScaleAspectFill;
         _iconView.clipsToBounds = YES;
-        _iconView.layer.cornerRadius = 11.0;
+        _iconView.layer.cornerRadius = isLockItem ? 0.0 : 28.0;
         [self addSubview:_iconView];
     }
     return self;
@@ -140,9 +143,8 @@
 @interface FLMWheelController : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, strong) FLMOverlayWindow *overlayWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
-@property(nonatomic, strong) CAShapeLayer *wheelBackground;
 @property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
-@property(nonatomic, strong) UIPanGestureRecognizer *cornerGesture;
+@property(nonatomic, strong) UILongPressGestureRecognizer *cornerGesture;
 @property(nonatomic, strong) NSArray<FLMWheelItemView *> *itemViews;
 @property(nonatomic, copy) NSArray<NSString *> *itemIdentifiers;
 @property(nonatomic, weak) FLMWheelItemView *highlightedItem;
@@ -154,7 +156,7 @@
 - (void)createWindows;
 - (void)updateWindowFrames;
 - (void)orientationDidChange:(NSNotification *)notification;
-- (void)handlePan:(UIPanGestureRecognizer *)gesture;
+- (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
@@ -284,21 +286,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.overlayWindow.backgroundColor = [UIColor clearColor];
     self.overlayWindow.userInteractionEnabled = NO;
     self.overlayWindow.rootViewController = [[FLMOverlayViewController alloc] init];
-    self.overlayWindow.rootViewController.view.backgroundColor =
-        [UIColor colorWithWhite:0.0 alpha:0.085];
+    self.overlayWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
     self.overlayWindow.hidden = YES;
 
     self.wheelContainer = [[UIView alloc] initWithFrame:bounds];
     self.wheelContainer.userInteractionEnabled = NO;
     [self.overlayWindow.rootViewController.view addSubview:self.wheelContainer];
-
-    self.wheelBackground = [CAShapeLayer layer];
-    self.wheelBackground.fillColor = [UIColor colorWithWhite:0.97 alpha:0.91].CGColor;
-    self.wheelBackground.shadowColor = [UIColor blackColor].CGColor;
-    self.wheelBackground.shadowOpacity = 0.16;
-    self.wheelBackground.shadowRadius = 18.0;
-    self.wheelBackground.shadowOffset = CGSizeMake(0.0, -2.0);
-    [self.wheelContainer.layer addSublayer:self.wheelBackground];
 
     self.hotspotWindow = FLMCreateHotspotWindow(bounds);
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 90.0;
@@ -307,11 +300,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     hotspotController.view.backgroundColor = [UIColor clearColor];
     self.hotspotWindow.rootViewController = hotspotController;
 
-    self.cornerGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                 action:@selector(handlePan:)];
+    self.cornerGesture =
+        [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                     action:@selector(handleCornerGesture:)];
     self.cornerGesture.delegate = self;
     self.cornerGesture.cancelsTouchesInView = YES;
     self.cornerGesture.maximumNumberOfTouches = 1;
+    self.cornerGesture.minimumPressDuration = 0.0;
+    self.cornerGesture.allowableMovement = CGFLOAT_MAX;
     [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
     [self updateWindowFrames];
 }
@@ -353,17 +349,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.enabled || self.itemIdentifiers.count == 0) {
         return NO;
     }
-    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
-    CGPoint point = [pan locationInView:pan.view];
-    CGPoint velocity = [pan velocityInView:pan.view];
-    self.presentingFromRight = point.x >= CGRectGetMidX(pan.view.bounds);
-    if (!self.presentingFromRight) {
-        return velocity.x > -40.0 || velocity.y < -40.0;
-    }
-    return velocity.x < 40.0 || velocity.y < -40.0;
+    CGPoint point = [gestureRecognizer locationInView:gestureRecognizer.view];
+    self.presentingFromRight =
+        point.x >= CGRectGetMidX(gestureRecognizer.view.bounds);
+    return YES;
 }
 
-- (void)handlePan:(UIPanGestureRecognizer *)gesture {
+- (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
     CGPoint point = [gesture locationInView:gesture.view];
 
     switch (gesture.state) {
@@ -412,16 +404,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self itemCountsByRingForCount:self.itemIdentifiers.count];
 
     NSUInteger itemIndex = 0;
-    CGFloat outerRadius = 0.0;
     for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
         NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
-        CGFloat radius = 96.0 + (CGFloat)ring * 61.0;
-        outerRadius = radius;
+        CGFloat radius = 142.0 + (CGFloat)ring * 68.0;
         for (NSUInteger position = 0; position < ringCount; position++) {
             CGFloat fraction = ringCount == 1
                                    ? 0.5
                                    : (CGFloat)position / (CGFloat)(ringCount - 1);
-            CGFloat angle = (-80.0 + fraction * 70.0) * (CGFloat)M_PI / 180.0;
+            CGFloat angle = (-82.0 + fraction * 72.0) * (CGFloat)M_PI / 180.0;
             CGFloat leftX = 4.0 + radius * cos(angle);
             CGFloat centerX = fromRight ? width - leftX : leftX;
             CGFloat centerY = anchor.y + radius * sin(angle);
@@ -437,26 +427,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
     }
     self.itemViews = views;
-
-    UIBezierPath *backgroundPath = [UIBezierPath bezierPath];
-    [backgroundPath moveToPoint:anchor];
-    CGFloat backgroundRadius = outerRadius + 40.0;
-    if (fromRight) {
-        [backgroundPath addArcWithCenter:anchor
-                                  radius:backgroundRadius
-                              startAngle:(CGFloat)-M_PI
-                                endAngle:(CGFloat)-M_PI_2
-                               clockwise:YES];
-    } else {
-        [backgroundPath addArcWithCenter:anchor
-                                  radius:backgroundRadius
-                              startAngle:(CGFloat)-M_PI_2
-                                endAngle:0.0
-                               clockwise:YES];
-    }
-    [backgroundPath closePath];
-    self.wheelBackground.path = backgroundPath.CGPath;
-    self.wheelBackground.frame = bounds;
 
     self.overlayWindow.hidden = NO;
     self.wheelContainer.alpha = 1.0;
@@ -487,7 +457,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             nearest = item;
         }
     }
-    if (nearestDistance > 52.0) {
+    if (nearestDistance > 72.0) {
         nearest = nil;
     }
     if (nearest == self.highlightedItem) {

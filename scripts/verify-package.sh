@@ -50,6 +50,8 @@ test -f "$preferences"
 test -f "$filter"
 test -f "$loader"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon.png"
+test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@2x.png"
+test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@3x.png"
 
 runtime_arches="$(xcrun lipo -archs "$runtime")"
 preferences_arches="$(xcrun lipo -archs "$preferences")"
@@ -63,7 +65,7 @@ codesign --verify --verbose=4 --all-architectures --strict "$runtime"
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.2.1" "$workspace/control/control"
+grep -qx "Version: 0.2.2" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then

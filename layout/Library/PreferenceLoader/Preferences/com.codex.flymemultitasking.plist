@@ -13,7 +13,7 @@
         <key>isController</key>
         <true/>
         <key>icon</key>
-        <string>/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon.png</string>
+        <string>icon.png</string>
         <key>label</key>
         <string>Flyme 多任务</string>
     </dict>
