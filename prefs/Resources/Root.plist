@@ -8,9 +8,37 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>此版本只验证独立运行层是否成功载入，不会修改 TrollOpen，也不会启用轮盘或小窗。</string>
+            <string>开启后可从屏幕左下角或右下角滑动呼出应用轮盘。</string>
             <key>label</key>
-            <string>连接验证</string>
+            <string>Flyme 模式</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>get</key>
+            <string>flymeEnabled:</string>
+            <key>label</key>
+            <string>Flyme 模式</string>
+            <key>set</key>
+            <string>setFlymeEnabled:specifier:</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSLinkCell</string>
+            <key>detail</key>
+            <string>FLMAppListController</string>
+            <key>isController</key>
+            <true/>
+            <key>label</key>
+            <string>应用管理</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>“已连接”表示 SpringBoard 运行层工作正常。</string>
+            <key>label</key>
+            <string>运行信息</string>
         </dict>
         <dict>
             <key>cell</key>

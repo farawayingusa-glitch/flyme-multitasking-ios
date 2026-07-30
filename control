@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
 Name: Flyme 多任务
-Description: Flyme 多任务独立版运行层验证包，适配 iOS 16 与 NathanLR 无根环境。
+Description: Flyme 多任务独立版，提供双侧应用轮盘与后续小窗能力，适配 iOS 16 与 NathanLR 无根环境。
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.1.1
+Version: 0.2.0

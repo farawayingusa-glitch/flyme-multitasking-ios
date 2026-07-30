@@ -1,12 +1,57 @@
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
+#import <UIKit/UIKit.h>
 #import <errno.h>
 #import <notify.h>
 #import <signal.h>
 #import <stdint.h>
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
+#define FLYME_PREFERENCES_NOTIFICATION "com.codex.flymemultitasking.preferences-changed"
+#define FLYME_PREFERENCES_DOMAIN CFSTR("com.codex.flymemultitasking")
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
+#define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
+
+@interface NSObject (FLMPreferencesPrivate)
++ (id)defaultWorkspace;
+- (NSArray *)allInstalledApplications;
+- (NSString *)applicationIdentifier;
+- (NSString *)applicationType;
+- (NSString *)localizedName;
+- (BOOL)isLaunchProhibited;
+- (BOOL)isPlaceholder;
+@end
+
+@interface UIImage (FLMPreferencesPrivate)
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bundleIdentifier
+                                               format:(NSInteger)format
+                                                scale:(CGFloat)scale;
+@end
+
+static id FLMCopyPreference(NSString *key) {
+    CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
+                                                      FLYME_PREFERENCES_DOMAIN,
+                                                      kCFPreferencesCurrentUser,
+                                                      kCFPreferencesAnyHost);
+    return CFBridgingRelease(value);
+}
+
+static void FLMSetPreference(NSString *key, id value) {
+    CFPreferencesSetValue((__bridge CFStringRef)key,
+                          (__bridge CFPropertyListRef)value,
+                          FLYME_PREFERENCES_DOMAIN,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(FLYME_PREFERENCES_DOMAIN,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesAnyHost);
+    notify_post(FLYME_PREFERENCES_NOTIFICATION);
+}
+
+static NSArray<NSString *> *FLMWheelItems(void) {
+    id value = FLMCopyPreference(@"wheelItems");
+    return [value isKindOfClass:[NSArray class]] ? value : @[];
+}
 
 static BOOL FlymeRuntimeIsConnected(void) {
     int token = -1;
@@ -31,7 +76,77 @@ static BOOL FlymeRuntimeIsConnected(void) {
     return errno == EPERM;
 }
 
+static NSArray<NSDictionary<NSString *, id> *> *FLMInstalledApplications(void) {
+    id workspace = [NSClassFromString(@"LSApplicationWorkspace") defaultWorkspace];
+    NSArray *proxies = [workspace allInstalledApplications];
+    NSMutableArray<NSDictionary<NSString *, id> *> *applications = [NSMutableArray array];
+    for (id proxy in proxies) {
+        NSString *identifier = [proxy applicationIdentifier];
+        NSString *name = [proxy localizedName];
+        NSString *type = [proxy applicationType];
+        if (identifier.length == 0 || name.length == 0) {
+            continue;
+        }
+        if ([proxy respondsToSelector:@selector(isPlaceholder)] && [proxy isPlaceholder]) {
+            continue;
+        }
+        if ([proxy respondsToSelector:@selector(isLaunchProhibited)] &&
+            [proxy isLaunchProhibited]) {
+            continue;
+        }
+        if (type.length > 0 && ![type isEqualToString:@"User"] &&
+            ![type isEqualToString:@"System"]) {
+            continue;
+        }
+        [applications addObject:@{
+            @"identifier" : identifier,
+            @"name" : name,
+        }];
+    }
+    [applications sortUsingComparator:^NSComparisonResult(NSDictionary *left,
+                                                           NSDictionary *right) {
+        return [left[@"name"] localizedStandardCompare:right[@"name"]];
+    }];
+    return applications;
+}
+
+static UIImage *FLMIconForIdentifier(NSString *identifier) {
+    if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+        return [UIImage systemImageNamed:@"lock.fill"];
+    }
+    if ([UIImage respondsToSelector:
+                     @selector(_applicationIconImageForBundleIdentifier:format:scale:)]) {
+        return [UIImage _applicationIconImageForBundleIdentifier:identifier
+                                                          format:1
+                                                           scale:[UIScreen mainScreen].scale];
+    }
+    return nil;
+}
+
+static NSString *FLMNameForIdentifier(
+    NSString *identifier,
+    NSArray<NSDictionary<NSString *, id> *> *applications) {
+    if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+        return @"锁屏";
+    }
+    for (NSDictionary *application in applications) {
+        if ([application[@"identifier"] isEqualToString:identifier]) {
+            return application[@"name"];
+        }
+    }
+    return identifier;
+}
+
 @interface FLMRootListController : PSListController
+@end
+
+@interface FLMAppListController : PSListController
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
+@end
+
+@interface FLMAppOrderController : UITableViewController
+@property(nonatomic, strong) NSMutableArray<NSString *> *items;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
 @end
 
 @implementation FLMRootListController
@@ -43,9 +158,222 @@ static BOOL FlymeRuntimeIsConnected(void) {
     return _specifiers;
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadSpecifierID:@"runtime-status" animated:NO];
+}
+
+- (NSNumber *)flymeEnabled:(PSSpecifier *)specifier {
+    (void)specifier;
+    id value = FLMCopyPreference(@"enabled");
+    return @([value isKindOfClass:[NSNumber class]] && [value boolValue]);
+}
+
+- (void)setFlymeEnabled:(NSNumber *)value specifier:(PSSpecifier *)specifier {
+    (void)specifier;
+    FLMSetPreference(@"enabled", @([value boolValue]));
+}
+
 - (NSString *)runtimeStatus:(PSSpecifier *)specifier {
     (void)specifier;
     return FlymeRuntimeIsConnected() ? @"已连接" : @"未连接";
+}
+
+@end
+
+@implementation FLMAppListController
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        self.title = @"应用管理";
+    }
+    return self;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.applications = FLMInstalledApplications();
+    [self reloadSpecifiers];
+}
+
+- (NSArray *)specifiers {
+    if (_specifiers) {
+        return _specifiers;
+    }
+
+    self.applications = FLMInstalledApplications();
+    NSMutableArray<PSSpecifier *> *specifiers = [NSMutableArray array];
+
+    PSSpecifier *sortGroup = [PSSpecifier groupSpecifierWithName:nil];
+    [sortGroup setProperty:@"拖动已加入的项目，调整它们在轮盘中的位置。"
+                    forKey:@"footerText"];
+    [specifiers addObject:sortGroup];
+
+    PSSpecifier *sortSpecifier =
+        [PSSpecifier preferenceSpecifierNamed:@"应用排序"
+                                       target:self
+                                          set:NULL
+                                          get:NULL
+                                       detail:[FLMAppOrderController class]
+                                         cell:PSLinkCell
+                                         edit:nil];
+    [sortSpecifier setProperty:[UIImage systemImageNamed:@"line.3.horizontal"]
+                        forKey:@"iconImage"];
+    [specifiers addObject:sortSpecifier];
+
+    PSSpecifier *wheelGroup = [PSSpecifier groupSpecifierWithName:@"轮盘项目"];
+    [wheelGroup setProperty:@"打开开关即可加入轮盘；关闭后会从轮盘和排序列表中移除。"
+                     forKey:@"footerText"];
+    [specifiers addObject:wheelGroup];
+
+    [specifiers addObject:[self itemSpecifierWithName:@"锁屏"
+                                           identifier:FLYME_LOCK_SCREEN_ITEM
+                                                image:FLMIconForIdentifier(
+                                                          FLYME_LOCK_SCREEN_ITEM)]];
+
+    [specifiers addObject:[PSSpecifier groupSpecifierWithName:@"应用"]];
+    for (NSDictionary *application in self.applications) {
+        NSString *identifier = application[@"identifier"];
+        [specifiers addObject:[self itemSpecifierWithName:application[@"name"]
+                                               identifier:identifier
+                                                    image:FLMIconForIdentifier(identifier)]];
+    }
+
+    _specifiers = [specifiers copy];
+    return _specifiers;
+}
+
+- (PSSpecifier *)itemSpecifierWithName:(NSString *)name
+                            identifier:(NSString *)identifier
+                                 image:(UIImage *)image {
+    PSSpecifier *specifier =
+        [PSSpecifier preferenceSpecifierNamed:name
+                                       target:self
+                                          set:@selector(setItemEnabled:specifier:)
+                                          get:@selector(itemEnabled:)
+                                       detail:nil
+                                         cell:PSSwitchCell
+                                         edit:nil];
+    [specifier setProperty:identifier forKey:@"itemIdentifier"];
+    if (image) {
+        [specifier setProperty:image forKey:@"iconImage"];
+    }
+    return specifier;
+}
+
+- (NSNumber *)itemEnabled:(PSSpecifier *)specifier {
+    NSString *identifier = [specifier propertyForKey:@"itemIdentifier"];
+    return @([FLMWheelItems() containsObject:identifier]);
+}
+
+- (void)setItemEnabled:(NSNumber *)value specifier:(PSSpecifier *)specifier {
+    NSString *identifier = [specifier propertyForKey:@"itemIdentifier"];
+    NSMutableArray<NSString *> *items = [FLMWheelItems() mutableCopy];
+    if ([value boolValue]) {
+        if (![items containsObject:identifier]) {
+            [items addObject:identifier];
+        }
+    } else {
+        [items removeObject:identifier];
+    }
+    FLMSetPreference(@"wheelItems", items);
+}
+
+@end
+
+@implementation FLMAppOrderController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        self.title = @"应用排序";
+        self.items = [FLMWheelItems() mutableCopy];
+        self.applications = FLMInstalledApplications();
+    }
+    return self;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.items = [FLMWheelItems() mutableCopy];
+    self.applications = FLMInstalledApplications();
+    self.editing = YES;
+    [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    (void)tableView;
+    return 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView
+ numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    (void)section;
+    return (NSInteger)self.items.count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView
+    titleForFooterInSection:(NSInteger)section {
+    (void)tableView;
+    (void)section;
+    return self.items.count == 0 ? @"请先在应用管理中加入项目。"
+                                 : @"按住右侧拖动图标即可调整轮盘顺序。";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *reuseIdentifier = @"FLMOrderCell";
+    UITableViewCell *cell =
+        [tableView dequeueReusableCellWithIdentifier:reuseIdentifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:reuseIdentifier];
+    }
+    NSString *identifier = self.items[(NSUInteger)indexPath.row];
+    cell.textLabel.text = FLMNameForIdentifier(identifier, self.applications);
+    cell.imageView.image = FLMIconForIdentifier(identifier);
+    cell.showsReorderControl = YES;
+    return cell;
+}
+
+- (BOOL)tableView:(UITableView *)tableView
+    canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
+    return YES;
+}
+
+- (void)tableView:(UITableView *)tableView
+    moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath
+           toIndexPath:(NSIndexPath *)destinationIndexPath {
+    (void)tableView;
+    NSString *identifier = self.items[(NSUInteger)sourceIndexPath.row];
+    [self.items removeObjectAtIndex:(NSUInteger)sourceIndexPath.row];
+    [self.items insertObject:identifier atIndex:(NSUInteger)destinationIndexPath.row];
+    FLMSetPreference(@"wheelItems", self.items);
+}
+
+- (BOOL)tableView:(UITableView *)tableView
+    canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
+    return YES;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView
+           editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView
+    shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
+    return NO;
 }
 
 @end

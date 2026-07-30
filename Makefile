@@ -10,6 +10,7 @@ TWEAK_NAME = FlymeMultitasking
 
 FlymeMultitasking_FILES = Tweak.xm
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeMultitasking_FRAMEWORKS = UIKit
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
