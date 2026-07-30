@@ -1,5 +1,6 @@
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
+#import <Preferences/PSViewController.h>
 #import <UIKit/UIKit.h>
 #import <errno.h>
 #import <notify.h>
@@ -144,9 +145,11 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
 @end
 
-@interface FLMAppOrderController : UITableViewController
+@interface FLMAppOrderController
+    : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *items;
 @property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
+@property(nonatomic, strong) UITableView *tableView;
 @end
 
 @implementation FLMRootListController
@@ -285,7 +288,7 @@ static NSString *FLMNameForIdentifier(
 @implementation FLMAppOrderController
 
 - (instancetype)init {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    self = [super init];
     if (self) {
         self.title = @"应用排序";
         self.items = [FLMWheelItems() mutableCopy];
@@ -294,11 +297,22 @@ static NSString *FLMNameForIdentifier(
     return self;
 }
 
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds
+                                                  style:UITableViewStyleInsetGrouped];
+    self.tableView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    [self.view addSubview:self.tableView];
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.items = [FLMWheelItems() mutableCopy];
     self.applications = FLMInstalledApplications();
-    self.editing = YES;
+    [self.tableView setEditing:YES animated:NO];
     [self.tableView reloadData];
 }
 

@@ -58,6 +58,33 @@
 
 @end
 
+@interface FLMHotspotWindow : UIWindow
+@property(nonatomic, assign) BOOL hotspotsEnabled;
+@end
+
+@implementation FLMHotspotWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return NO;
+}
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!self.hotspotsEnabled) {
+        return nil;
+    }
+    CGFloat width = CGRectGetWidth(self.bounds);
+    CGFloat height = CGRectGetHeight(self.bounds);
+    BOOL insideBottom = point.y >= height - 104.0;
+    BOOL insideLeft = point.x <= 82.0;
+    BOOL insideRight = point.x >= width - 82.0;
+    if (!insideBottom || (!insideLeft && !insideRight)) {
+        return nil;
+    }
+    return [super hitTest:point withEvent:event];
+}
+
+@end
+
 @interface FLMWheelItemView : UIView
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, strong) UIImageView *iconView;
@@ -114,14 +141,13 @@
 @property(nonatomic, strong) FLMOverlayWindow *overlayWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
 @property(nonatomic, strong) CAShapeLayer *wheelBackground;
-@property(nonatomic, strong) UIWindow *leftHotspotWindow;
-@property(nonatomic, strong) UIWindow *rightHotspotWindow;
-@property(nonatomic, strong) UIPanGestureRecognizer *leftGesture;
-@property(nonatomic, strong) UIPanGestureRecognizer *rightGesture;
+@property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
+@property(nonatomic, strong) UIPanGestureRecognizer *cornerGesture;
 @property(nonatomic, strong) NSArray<FLMWheelItemView *> *itemViews;
 @property(nonatomic, copy) NSArray<NSString *> *itemIdentifiers;
 @property(nonatomic, weak) FLMWheelItemView *highlightedItem;
 @property(nonatomic, assign) BOOL enabled;
+@property(nonatomic, assign) BOOL presentingFromRight;
 + (instancetype)sharedController;
 - (void)start;
 - (void)reloadPreferences;
@@ -168,6 +194,19 @@ static UIWindow *FLMCreateWindow(CGRect frame) {
         }
     }
     return [[FLMOverlayWindow alloc] initWithFrame:frame];
+}
+
+static FLMHotspotWindow *FLMCreateHotspotWindow(CGRect frame) {
+    UIWindowScene *scene = FLMForegroundWindowScene();
+    if (@available(iOS 13.0, *)) {
+        if (scene) {
+            FLMHotspotWindow *window =
+                [[FLMHotspotWindow alloc] initWithWindowScene:scene];
+            window.frame = frame;
+            return window;
+        }
+    }
+    return [[FLMHotspotWindow alloc] initWithFrame:frame];
 }
 
 static UIImage *FLMLockImage(void) {
@@ -261,27 +300,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelBackground.shadowOffset = CGSizeMake(0.0, -2.0);
     [self.wheelContainer.layer addSublayer:self.wheelBackground];
 
-    self.leftHotspotWindow = FLMCreateWindow(CGRectZero);
-    self.rightHotspotWindow = FLMCreateWindow(CGRectZero);
-    for (UIWindow *window in @[ self.leftHotspotWindow, self.rightHotspotWindow ]) {
-        window.windowLevel = UIWindowLevelAlert + 90.0;
-        window.backgroundColor = [UIColor clearColor];
-        UIViewController *controller = [[UIViewController alloc] init];
-        controller.view.backgroundColor = [UIColor clearColor];
-        window.rootViewController = controller;
-    }
+    self.hotspotWindow = FLMCreateHotspotWindow(bounds);
+    self.hotspotWindow.windowLevel = UIWindowLevelAlert + 90.0;
+    self.hotspotWindow.backgroundColor = [UIColor clearColor];
+    UIViewController *hotspotController = [[UIViewController alloc] init];
+    hotspotController.view.backgroundColor = [UIColor clearColor];
+    self.hotspotWindow.rootViewController = hotspotController;
 
-    self.leftGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                               action:@selector(handlePan:)];
-    self.rightGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                action:@selector(handlePan:)];
-    for (UIPanGestureRecognizer *gesture in @[ self.leftGesture, self.rightGesture ]) {
-        gesture.delegate = self;
-        gesture.cancelsTouchesInView = YES;
-        gesture.maximumNumberOfTouches = 1;
-    }
-    [self.leftHotspotWindow.rootViewController.view addGestureRecognizer:self.leftGesture];
-    [self.rightHotspotWindow.rootViewController.view addGestureRecognizer:self.rightGesture];
+    self.cornerGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                 action:@selector(handlePan:)];
+    self.cornerGesture.delegate = self;
+    self.cornerGesture.cancelsTouchesInView = YES;
+    self.cornerGesture.maximumNumberOfTouches = 1;
+    [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
     [self updateWindowFrames];
 }
 
@@ -294,8 +325,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.enabled = [enabledValue isKindOfClass:[NSNumber class]] && [enabledValue boolValue];
     self.itemIdentifiers =
         [itemsValue isKindOfClass:[NSArray class]] ? [itemsValue copy] : @[];
-    self.leftHotspotWindow.hidden = !self.enabled;
-    self.rightHotspotWindow.hidden = !self.enabled;
+    self.hotspotWindow.hotspotsEnabled = self.enabled;
+    self.hotspotWindow.hidden = !self.enabled;
     if (!self.enabled) {
         [self dismissWheelLaunchingItem:nil];
     }
@@ -311,18 +342,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)updateWindowFrames {
     CGRect bounds = [UIScreen mainScreen].bounds;
-    CGFloat hotspotWidth = 72.0;
-    CGFloat hotspotHeight = 92.0;
     self.overlayWindow.frame = bounds;
     self.overlayWindow.rootViewController.view.frame = bounds;
     self.wheelContainer.frame = bounds;
-    self.leftHotspotWindow.frame =
-        CGRectMake(0.0, CGRectGetHeight(bounds) - hotspotHeight, hotspotWidth, hotspotHeight);
-    self.rightHotspotWindow.frame =
-        CGRectMake(CGRectGetWidth(bounds) - hotspotWidth,
-                   CGRectGetHeight(bounds) - hotspotHeight,
-                   hotspotWidth,
-                   hotspotHeight);
+    self.hotspotWindow.frame = bounds;
+    self.hotspotWindow.rootViewController.view.frame = bounds;
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
@@ -330,8 +354,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
     UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
+    CGPoint point = [pan locationInView:pan.view];
     CGPoint velocity = [pan velocityInView:pan.view];
-    if (gestureRecognizer == self.leftGesture) {
+    self.presentingFromRight = point.x >= CGRectGetMidX(pan.view.bounds);
+    if (!self.presentingFromRight) {
         return velocity.x > -40.0 || velocity.y < -40.0;
     }
     return velocity.x < 40.0 || velocity.y < -40.0;
@@ -339,12 +365,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)handlePan:(UIPanGestureRecognizer *)gesture {
     CGPoint point = [gesture locationInView:gesture.view];
-    point.x += CGRectGetMinX(gesture.view.window.frame);
-    point.y += CGRectGetMinY(gesture.view.window.frame);
 
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
-            [self presentWheelFromRight:gesture == self.rightGesture];
+            [self presentWheelFromRight:self.presentingFromRight];
             [self updateHighlightForPoint:point];
             break;
         case UIGestureRecognizerStateChanged:
