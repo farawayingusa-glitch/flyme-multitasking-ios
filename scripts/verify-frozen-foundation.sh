@@ -25,6 +25,8 @@ required_lines=(
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "updateFloatingFullscreenSnapshotForProgress"
     "wrapper.frame = frame;"
+    "MIN(0.93, MAX(0.0, primaryMovement / available))"
+    "background.alpha = heightStage > 0.0001 ? 1.0 : 0.0;"
     "displayCommitted = targetIsFrontmost && attempt >= 1"
     "CGAffineTransformMakeScale(scale, scale)"
     "setFloatingApplicationInputBlocked:YES"
@@ -70,6 +72,9 @@ for keyboard_line in \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
+    'FLYME_FLOATING_GEOMETRY_NOTIFICATION' \
+    '%hook _UIRemoteKeyboards' \
+    'presentationScale' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
@@ -81,6 +86,9 @@ done
 for overlay_line in \
     '@interface FLMKeyboardOverlayWindow' \
     'keyboardLayerHostView:' \
+    'floatingKeyboardCandidateHostView' \
+    '%hook _UIKeyboardLayerHostView' \
+    '- (void)didMoveToWindow' \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
     'const CGFloat widthStageEnd = 0.72;'; do
@@ -92,6 +100,12 @@ done
 
 if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
+    exit 1
+fi
+
+if grep -Fq 'const CGFloat settleProgress = 0.985;' "$source_file" ||
+   grep -Fq '0.985 + 0.00042' "$source_file"; then
+    echo "multi-stage fullscreen geometry handoff was reintroduced" >&2
     exit 1
 fi
 
