@@ -6,11 +6,15 @@ TARGET_CODESIGN_FLAGS = --force --sign - --timestamp=none
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = FlymeMultitasking
+TWEAK_NAME = FlymeMultitasking FlymeKeyboard
 
 FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
 FlymeMultitasking_FRAMEWORKS = UIKit
+
+FlymeKeyboard_FILES = Keyboard.xm
+FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeKeyboard_FRAMEWORKS = UIKit
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

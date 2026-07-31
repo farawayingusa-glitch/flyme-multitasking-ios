@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
+keyboard_source="${2:-Keyboard.xm}"
 
 required_lines=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -23,13 +24,10 @@ required_lines=(
     "floor((height - containerHeight) * 0.5 - 44.0);"
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "CGRectGetHeight(bounds) - CGRectGetMaxY(start)"
-    "location.y <= CGRectGetMidY(bounds);"
-    "finishSystemHomeGesture:self"
     "self.floatingDockWidth = FLMMinimumDockWidth;"
-    "adjustedKeyboardFrameForWindow"
-    "showSystemHomeGestureSuccessFeedback"
-    "self.floatingDocked = systemHomeHandoff;"
     "updateFloatingDockAccessoryPositions"
+    "keyboardPassThroughFrame"
+    "FLMPublishKeyboardState(identifier);"
 )
 
 for required_line in "${required_lines[@]}"; do
@@ -49,19 +47,31 @@ if grep -Fq 'CFPreferencesSetValue(CFSTR("DockWidth")' "$source_file"; then
     exit 1
 fi
 
-if grep -Fq '_simulateHomeButtonPress' "$source_file"; then
-    echo "system home gesture was force-completed instead of truthfully confirmed" >&2
-    exit 1
-fi
-
-if grep -Fq 'FLMSwitcherIsVisible' "$source_file"; then
-    echo "system bottom handoff still depends on switcher-card visibility" >&2
+if grep -Eq 'systemHome|SystemHome|SBHomeGesture' "$source_file"; then
+    echo "removed system-bottom handoff code was reintroduced" >&2
     exit 1
 fi
 
 if grep -Fq '%hook UIRemoteKeyboardWindow' "$source_file" ||
    grep -Fq '%hook UIKeyboardWindow' "$source_file"; then
     echo "SpringBoard runtime directly hooks keyboard windows" >&2
+    exit 1
+fi
+
+for keyboard_line in \
+    '%hook UITextEffectsWindow' \
+    'keyboardScreenReferenceSize' \
+    '%hook UIWindowScene' \
+    'FLYME_KEYBOARD_ROUTE_PATH'; do
+    if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
+        echo "safe keyboard bridge changed: $keyboard_line" >&2
+        exit 1
+    fi
+done
+
+if grep -Fq '%hook _UIRemoteKeyboards' "$keyboard_source" ||
+   grep -Fq '%hook UIWindow' "$keyboard_source"; then
+    echo "keyboard bridge grew beyond the verified minimal hook surface" >&2
     exit 1
 fi
 
