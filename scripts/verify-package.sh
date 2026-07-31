@@ -41,31 +41,39 @@ test -d "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs
 test -d "$workspace/root/var/jb/Library/PreferenceLoader/Preferences"
 
 runtime="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.dylib"
+keyboard_runtime="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboard.dylib"
 preferences="$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/FlymeMultitaskingPrefs"
 filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.plist"
+keyboard_filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboard.plist"
 loader="$workspace/root/var/jb/Library/PreferenceLoader/Preferences/com.codex.flymemultitasking.plist"
 
 test -f "$runtime"
+test -f "$keyboard_runtime"
 test -f "$preferences"
 test -f "$filter"
+test -f "$keyboard_filter"
 test -f "$loader"
+grep -Fq "com.apple.UIKit" "$keyboard_filter"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon.png"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@2x.png"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@3x.png"
 
 runtime_arches="$(xcrun lipo -archs "$runtime")"
+keyboard_runtime_arches="$(xcrun lipo -archs "$keyboard_runtime")"
 preferences_arches="$(xcrun lipo -archs "$preferences")"
 [[ "$runtime_arches" == *"arm64"* && "$runtime_arches" == *"arm64e"* ]]
+[[ "$keyboard_runtime_arches" == *"arm64"* && "$keyboard_runtime_arches" == *"arm64e"* ]]
 [[ "$preferences_arches" == *"arm64"* && "$preferences_arches" == *"arm64e"* ]]
 
 codesign --verify --verbose=4 --all-architectures --strict "$runtime"
+codesign --verify --verbose=4 --all-architectures --strict "$keyboard_runtime"
 # PreferenceLoader loads this Mach-O from a jailbreak resource directory, not
 # from an Apple app bundle. Verify every code page and architecture while
 # deliberately excluding the app-only resource envelope.
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.7.3" "$workspace/control/control"
+grep -qx "Version: 0.7.4" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then

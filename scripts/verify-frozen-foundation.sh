@@ -23,9 +23,11 @@ required_lines=(
     "floor((height - containerHeight) * 0.5 - 44.0);"
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "CGRectGetHeight(bounds) - CGRectGetMaxY(start)"
-    "CGFloat armY = MAX(0.0, height - 110.0);"
+    "location.y <= CGRectGetMidY(bounds);"
     "finishSystemHomeGesture:self"
     "self.floatingDockWidth = FLMMinimumDockWidth;"
+    "adjustedKeyboardFrameForWindow"
+    "showSystemHomeGestureSuccessFeedback"
 )
 
 for required_line in "${required_lines[@]}"; do
@@ -42,6 +44,11 @@ fi
 
 if grep -Fq 'CFPreferencesSetValue(CFSTR("DockWidth")' "$source_file"; then
     echo "docked card size persistence was reintroduced" >&2
+    exit 1
+fi
+
+if grep -Fq '_simulateHomeButtonPress' "$source_file"; then
+    echo "system home gesture was force-completed instead of truthfully confirmed" >&2
     exit 1
 fi
 
