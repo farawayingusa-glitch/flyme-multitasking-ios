@@ -57,10 +57,6 @@
 - (NSInteger)currentInterfaceOrientation;
 - (id)sceneIfExists;
 - (id)scene;
-- (UIView *)newSceneViewWithReferenceSize:(CGSize)referenceSize
-                       contentOrientation:(NSInteger)contentOrientation
-                     containerOrientation:(NSInteger)containerOrientation
-                             hostRequester:(id)hostRequester;
 @end
 
 @interface FLMDeviceApplicationSceneEntity : NSObject
@@ -82,6 +78,8 @@
 - (void)setForeground:(BOOL)foreground;
 - (void)setBackgrounded:(BOOL)backgrounded;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
+- (void)setFrame:(CGRect)frame;
+- (void)setInterfaceOrientation:(NSInteger)orientation;
 - (void)updateSettings:(id)settings withTransitionContext:(id)context;
 - (void)_setContentState:(NSInteger)state;
 @end
@@ -1432,6 +1430,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
             [mutableSettings setBackgrounded:NO];
         }
+        CGSize referenceSize = [self floatingSceneReferenceSize];
+        if (referenceSize.width > 0.0 && referenceSize.height > 0.0 &&
+            [mutableSettings respondsToSelector:@selector(setFrame:)]) {
+            [mutableSettings
+                setFrame:CGRectMake(0.0,
+                                    0.0,
+                                    referenceSize.width,
+                                    referenceSize.height)];
+        }
+        NSInteger orientation = 1;
+        if ([sceneHandle respondsToSelector:
+                             @selector(currentInterfaceOrientation)]) {
+            orientation = [sceneHandle currentInterfaceOrientation];
+        }
+        if (orientation < 1 || orientation > 4) {
+            orientation = 1;
+        }
+        if ([mutableSettings respondsToSelector:
+                             @selector(setInterfaceOrientation:)]) {
+            [mutableSettings setInterfaceOrientation:orientation];
+        }
         if (![scene respondsToSelector:
                        @selector(updateSettings:withTransitionContext:)]) {
             FLMClearProtectedScene(scene);
@@ -1484,38 +1503,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return nil;
     }
     self.floatingScene = scene;
-    SEL sceneViewSelector =
-        @selector(newSceneViewWithReferenceSize:
-                      contentOrientation:
-                    containerOrientation:
-                            hostRequester:);
-    if ([sceneHandle respondsToSelector:sceneViewSelector]) {
-        @try {
-            CGSize referenceSize = [self floatingSceneReferenceSize];
-            NSInteger orientation = 1;
-            if ([sceneHandle respondsToSelector:
-                                 @selector(currentInterfaceOrientation)]) {
-                orientation = [sceneHandle currentInterfaceOrientation];
-            }
-            if (orientation < 1 || orientation > 4) {
-                orientation = 1;
-            }
-            UIView *sceneView =
-                [sceneHandle
-                    newSceneViewWithReferenceSize:referenceSize
-                              contentOrientation:orientation
-                            containerOrientation:orientation
-                                    hostRequester:nil];
-            if ([sceneView isKindOfClass:[UIView class]]) {
-                self.floatingHostReferenceSize = referenceSize;
-                sceneView.backgroundColor = [UIColor blackColor];
-                sceneView.userInteractionEnabled = YES;
-                sceneView.clipsToBounds = YES;
-                return sceneView;
-            }
-        } @catch (__unused NSException *exception) {
-        }
-    }
+    self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
 
     id manager = self.floatingPresentationManager;
     id presenter = self.floatingPresenter;

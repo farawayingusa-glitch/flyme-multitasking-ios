@@ -12,6 +12,9 @@ required_lines=(
     "(inwardMovement >= 4.0 || upwardMovement >= 4.0);"
     "CGFloat firstRadius = MIN(202.0, maximumRadius);"
     "[self itemNearPoint:point maximumDistance:30.0]"
+    "CGFloat containerWidth = width * 0.77;"
+    "CGFloat containerHeight = 520.0;"
+    "floor((height - containerHeight) * 0.5 - 44.0);"
 )
 
 for required_line in "${required_lines[@]}"; do
