@@ -6,16 +6,12 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
-#define FLYME_FLOATING_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.floating-geometry-changed"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardFrameToken = -1;
-static int FLMFloatingGeometryToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
-static CGRect FLMFloatingCardFrame = CGRectNull;
-static CGRect FLMPhysicalKeyboardFrame = CGRectNull;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 static BOOL FLMKeyboardPreparePosted = NO;
@@ -43,44 +39,6 @@ static CGSize FLMFullPhysicalScreenSize(void) {
         height = MAX(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
     }
     return CGSizeMake(width, height);
-}
-
-static UIWindow *FLMContentWindowForScene(UIWindowScene *scene) {
-    if (![scene isKindOfClass:[UIWindowScene class]]) {
-        return nil;
-    }
-    UIWindow *bestWindow = nil;
-    CGFloat bestArea = 0.0;
-    for (UIWindow *window in scene.windows) {
-        if (window.hidden || window.alpha <= 0.01 ||
-            window.windowLevel > UIWindowLevelNormal + 1.0) {
-            continue;
-        }
-        CGFloat area = CGRectGetWidth(window.bounds) *
-                       CGRectGetHeight(window.bounds);
-        if (area > bestArea) {
-            bestArea = area;
-            bestWindow = window;
-        }
-    }
-    return bestWindow;
-}
-
-static void FLMReloadFloatingGeometry(void) {
-    uint64_t state = 0;
-    if (FLMFloatingGeometryToken < 0 ||
-        notify_get_state(FLMFloatingGeometryToken, &state) != NOTIFY_STATUS_OK ||
-        state == 0) {
-        FLMFloatingCardFrame = CGRectNull;
-        return;
-    }
-    CGFloat x = (CGFloat)(state & 0xFFFFULL) / 10.0;
-    CGFloat y = (CGFloat)((state >> 16) & 0xFFFFULL) / 10.0;
-    CGFloat width = (CGFloat)((state >> 32) & 0xFFFFULL) / 10.0;
-    CGFloat height = (CGFloat)((state >> 48) & 0xFFFFULL) / 10.0;
-    FLMFloatingCardFrame = width > 1.0 && height > 1.0
-                               ? CGRectMake(x, y, width, height)
-                               : CGRectNull;
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -239,74 +197,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 %end
 
-%hook _UIRemoteKeyboards
-
-- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
-                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
-                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
-    CGFloat originalHeight = %orig(windowScene,
-                                   isLocalMinimumHeightOut,
-                                   ignoreHorizontalOffset);
-    if (!FLMSceneMatchesKeyboardRoute(windowScene) ||
-        CGRectIsNull(FLMFloatingCardFrame)) {
-        return originalHeight;
-    }
-
-    CGRect physicalKeyboardFrame = FLMPhysicalKeyboardFrame;
-    if (CGRectIsNull(physicalKeyboardFrame) && originalHeight > 1.0) {
-        // The intersection query can precede the public frame notification on
-        // the first presentation. The keyboard is bottom anchored, so its
-        // original height is enough to construct the same physical frame and
-        // prevents a one-layout-cycle unadjusted input bar.
-        CGRect physicalBounds = FLMPhysicalReferenceBoundsForScene(windowScene);
-        CGFloat height = MIN(CGRectGetHeight(physicalBounds), originalHeight);
-        physicalKeyboardFrame =
-            CGRectMake(CGRectGetMinX(physicalBounds),
-                       CGRectGetMaxY(physicalBounds) - height,
-                       CGRectGetWidth(physicalBounds),
-                       height);
-    }
-    if (CGRectIsNull(physicalKeyboardFrame)) {
-        return originalHeight;
-    }
-
-    CGRect overlap = CGRectIntersection(FLMFloatingCardFrame,
-                                        physicalKeyboardFrame);
-    if (CGRectIsNull(overlap) || CGRectIsEmpty(overlap)) {
-        return originalHeight;
-    }
-    UIWindow *contentWindow = FLMContentWindowForScene(windowScene);
-    CGFloat logicalWidth = CGRectGetWidth(contentWindow.bounds);
-    CGFloat logicalHeight = CGRectGetHeight(contentWindow.bounds);
-    CGFloat physicalCardWidth = CGRectGetWidth(FLMFloatingCardFrame);
-    CGFloat physicalCardHeight = CGRectGetHeight(FLMFloatingCardFrame);
-    CGFloat widthScale = logicalWidth > 1.0
-                             ? physicalCardWidth / logicalWidth
-                             : 0.0;
-    CGFloat heightScale = logicalHeight > 1.0
-                              ? physicalCardHeight / logicalHeight
-                              : 0.0;
-    // This mirrors SpringBoard's centered-card layout, which aspect-fits the
-    // application's logical Scene into the physical container.
-    CGFloat presentationScale = MIN(widthScale, heightScale);
-    if (presentationScale <= 0.01) {
-        return originalHeight;
-    }
-
-    // UIKit asks for an inset in the application's unscaled coordinate space.
-    // Convert only the keyboard/card overlap, not the entire missing portion of
-    // the physical display. This is the container-relative equivalent of the
-    // original implementation's keyboardFrameInContainer behavior.
-    CGFloat logicalOverlap = CGRectGetHeight(overlap) / presentationScale;
-    CGFloat maximumHeight = CGRectGetHeight(contentWindow.bounds);
-    if (maximumHeight > 1.0) {
-        logicalOverlap = MIN(maximumHeight, logicalOverlap);
-    }
-    return MAX(originalHeight, logicalOverlap);
-}
-
-%end
-
 %ctor {
     @autoreleasepool {
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
@@ -321,14 +211,7 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                                  ^(__unused int token) {
             FLMReloadKeyboardRoute();
         });
-        notify_register_dispatch(FLYME_FLOATING_GEOMETRY_NOTIFICATION,
-                                 &FLMFloatingGeometryToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadFloatingGeometry();
-        });
         FLMReloadKeyboardRoute();
-        FLMReloadFloatingGeometry();
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         FLMKeyboardFrameObserver =
             [center addObserverForName:UIKeyboardWillChangeFrameNotification
@@ -347,7 +230,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
             BOOL visible = CGRectGetHeight(frame) > 0.0 &&
                            CGRectGetMinY(frame) < screenSize.height;
             if (visible) {
-                FLMPhysicalKeyboardFrame = frame;
                 FLMPrepareFullscreenKeyboardHost();
             }
             if (visible) {
@@ -360,7 +242,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(__unused NSNotification *notification) {
             FLMKeyboardPreparePosted = NO;
-            FLMPhysicalKeyboardFrame = CGRectNull;
             FLMPublishKeyboardFrame(CGRectZero, NO);
         }];
     }

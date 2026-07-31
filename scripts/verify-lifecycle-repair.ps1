@@ -39,16 +39,11 @@ Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
 Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
-Require-Text $KeyboardSource 'FLYME_FLOATING_GEOMETRY_NOTIFICATION'
-Require-Text $KeyboardSource '%hook _UIRemoteKeyboards'
-Require-Text $KeyboardSource 'presentationScale'
 Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
 Require-Text $Source '@interface FLMKeyboardOverlayWindow'
 Require-Text $Source 'keyboardLayerHostView:'
-Require-Text $Source 'floatingKeyboardCandidateHostView'
 Require-Text $Source '%hook _UIKeyboardLayerHostView'
-Require-Text $Source '- (void)didMoveToWindow'
 Require-Text $Source 'valueForKey:@"_owningScene"'
 Require-Text $Source 'valueForKey:@"_keyboardScene"'
 Require-Text $Source 'floatingKeyboardOriginalSuperview'
@@ -78,5 +73,23 @@ if ((Select-String -LiteralPath $Source -SimpleMatch 'const CGFloat settleProgre
     (Select-String -LiteralPath $Source -SimpleMatch '0.985 + 0.00042' -Quiet)) {
     throw 'Multi-stage fullscreen geometry handoff was reintroduced.'
 }
+
+foreach ($unsafeKeyboardLine in @(
+    '%hook _UIRemoteKeyboards',
+    'FLYME_FLOATING_GEOMETRY_NOTIFICATION',
+    'floatingKeyboardCandidateHostView',
+    '- (void)didMoveToWindow'
+)) {
+    if ((Select-String -LiteralPath $Source -SimpleMatch $unsafeKeyboardLine -Quiet) -or
+        (Select-String -LiteralPath $KeyboardSource -SimpleMatch $unsafeKeyboardLine -Quiet)) {
+        throw "0.8.7 unsafe keyboard path was reintroduced: $unsafeKeyboardLine"
+    }
+}
+
+Require-Text $Source 'floatingLaunchCoverView'
+Require-Text $Source 'configureFloatingLaunchCoverForIdentifier'
+Require-Text $Source 'revealFloatingContentForGeneration'
+Require-Text $Source 'initialAttachDelay = alreadyPrewarmed ? 0.02 : 0.10'
+Require-Text $Source 'self.floatingStatusLabel.hidden = YES;'
 
 Write-Output 'lifecycle, launch, and keyboard repair markers verified'

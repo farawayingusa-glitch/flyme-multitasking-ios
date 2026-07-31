@@ -15,7 +15,6 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
-#define FLYME_FLOATING_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.floating-geometry-changed"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -656,6 +655,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) CAShapeLayer *floatingResizeShapeLayer;
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
+@property(nonatomic, strong) UIView *floatingLaunchCoverView;
+@property(nonatomic, strong) UIImageView *floatingLaunchIconView;
 @property(nonatomic, strong) FLMOutsideTapGestureRecognizer *floatingBackdropTap;
 @property(nonatomic, strong) UILongPressGestureRecognizer *floatingHandlePress;
 @property(nonatomic, strong) UITapGestureRecognizer *floatingHandleTap;
@@ -717,15 +718,12 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
 @property(nonatomic, strong) FLMKeyboardOverlayWindow *keyboardOverlayWindow;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
-@property(nonatomic, weak) UIView *floatingKeyboardCandidateHostView;
-@property(nonatomic, weak) id floatingKeyboardCandidateOwningScene;
 @property(nonatomic, weak) UIView *floatingKeyboardOriginalSuperview;
 @property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
 @property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
 @property(nonatomic, assign) CGAffineTransform floatingKeyboardOriginalTransform;
 @property(nonatomic, assign) UIViewAutoresizing floatingKeyboardOriginalAutoresizingMask;
 @property(nonatomic, assign) BOOL floatingKeyboardOriginalTranslatesAutoresizingMask;
-@property(nonatomic, assign) BOOL floatingKeyboardHostMutationInProgress;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -773,8 +771,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
 - (void)prepareFloatingKeyboardHostIfNeeded;
 - (void)keyboardLayerHostView:(UIView *)hostView didUpdateForScene:(id)scene;
-- (BOOL)keyboardOwningSceneMatchesFloatingScene:(id)scene;
-- (void)attachFloatingKeyboardCandidateIfPossible;
 - (void)detachFloatingKeyboardLayerHost;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
@@ -819,6 +815,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)backgroundFloatingScene:(id)scene;
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
+- (void)configureFloatingLaunchCoverForIdentifier:(NSString *)identifier;
+- (void)revealFloatingContentForGeneration:(NSUInteger)generation
+                                    attempt:(NSUInteger)attempt;
 - (void)layoutFloatingHostView;
 - (CGSize)floatingSceneReferenceSize;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
@@ -834,7 +833,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 static int FlymeRuntimeToken = -1;
 static int FlymeKeyboardRouteToken = -1;
 static int FlymeKeyboardSceneToken = -1;
-static int FlymeFloatingGeometryToken = -1;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -913,29 +911,6 @@ static void FLMPublishKeyboardState(NSString *identifier, id scene) {
         notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
     }
     notify_post(FLYME_KEYBOARD_NOTIFICATION);
-}
-
-static void FLMPublishFloatingGeometry(CGRect frame, BOOL visible) {
-    if (FlymeFloatingGeometryToken < 0 &&
-        notify_register_check(FLYME_FLOATING_GEOMETRY_NOTIFICATION,
-                              &FlymeFloatingGeometryToken) != NOTIFY_STATUS_OK) {
-        return;
-    }
-    uint64_t state = 0;
-    if (visible && !CGRectIsNull(frame) && !CGRectIsEmpty(frame)) {
-        // Four unsigned 16-bit tenths-of-a-point fields preserve the complete
-        // on-screen card rectangle without a shared file or sandbox access.
-        uint64_t x = (uint64_t)llround(MAX(0.0, CGRectGetMinX(frame)) * 10.0);
-        uint64_t y = (uint64_t)llround(MAX(0.0, CGRectGetMinY(frame)) * 10.0);
-        uint64_t width = (uint64_t)llround(MAX(0.0, CGRectGetWidth(frame)) * 10.0);
-        uint64_t height = (uint64_t)llround(MAX(0.0, CGRectGetHeight(frame)) * 10.0);
-        state = MIN(x, 0xFFFFULL) |
-                (MIN(y, 0xFFFFULL) << 16) |
-                (MIN(width, 0xFFFFULL) << 32) |
-                (MIN(height, 0xFFFFULL) << 48);
-    }
-    notify_set_state(FlymeFloatingGeometryToken, state);
-    notify_post(FLYME_FLOATING_GEOMETRY_NOTIFICATION);
 }
 
 static UIWindowScene *FLMForegroundWindowScene(void) {
@@ -1134,7 +1109,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // Clear a stale per-app keyboard route left by a prior SpringBoard
         // process before any new centered card is opened.
         FLMPublishKeyboardState(nil, nil);
-        FLMPublishFloatingGeometry(CGRectNull, NO);
         [self createWindows];
         [self reloadPreferences];
     });
@@ -1281,7 +1255,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingStatusLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
                                                      weight:UIFontWeightMedium];
+    self.floatingStatusLabel.hidden = YES;
     [self.floatingContainer addSubview:self.floatingStatusLabel];
+
+    self.floatingLaunchCoverView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.floatingLaunchCoverView.backgroundColor =
+        [UIColor colorWithRed:0.075 green:0.082 blue:0.098 alpha:1.0];
+    self.floatingLaunchCoverView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.floatingLaunchCoverView.hidden = YES;
+    self.floatingLaunchCoverView.userInteractionEnabled = YES;
+    [self.floatingContainer addSubview:self.floatingLaunchCoverView];
+
+    self.floatingLaunchIconView = [[UIImageView alloc] initWithFrame:CGRectZero];
+    self.floatingLaunchIconView.contentMode = UIViewContentModeScaleAspectFit;
+    self.floatingLaunchIconView.layer.cornerRadius = 20.0;
+    self.floatingLaunchIconView.layer.masksToBounds = YES;
+    self.floatingLaunchIconView.userInteractionEnabled = NO;
+    [self.floatingLaunchCoverView addSubview:self.floatingLaunchIconView];
 
     self.floatingDockInteractionShield = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingDockInteractionShield.backgroundColor = [UIColor clearColor];
@@ -2804,7 +2795,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingHostView endEditing:YES];
     [self detachFloatingKeyboardLayerHost];
     FLMPublishKeyboardState(nil, nil);
-    FLMPublishFloatingGeometry(CGRectNull, NO);
     CGRect targetFrame = rootView.bounds;
     if (!self.floatingInteractiveScenePrepared) {
         self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
@@ -2967,7 +2957,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
     } @catch (__unused NSException *exception) {
     }
-    self.floatingStatusLabel.hidden = NO;
+    [self configureFloatingLaunchCoverForIdentifier:identifier];
+    self.floatingHandle.userInteractionEnabled = NO;
+    self.floatingExclusiveGesture.enabled = NO;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
@@ -3292,7 +3284,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self setFloatingApplicationInputBlocked:YES];
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardState(nil, nil);
-    FLMPublishFloatingGeometry(CGRectNull, NO);
     [self applyKeyboardFrame:CGRectNull visible:NO];
     self.floatingDockTransitionActive = YES;
     self.floatingDockedOnRight = YES;
@@ -3423,7 +3414,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      completion:^(BOOL finished) {
                          (void)finished;
                           [self configureFloatingInteractionForDockedState];
-                          FLMPublishFloatingGeometry(target, YES);
                       }];
 }
 
@@ -3467,6 +3457,56 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockWidth = width;
 }
 
+- (void)configureFloatingLaunchCoverForIdentifier:(NSString *)identifier {
+    self.floatingLaunchIconView.image = FLMApplicationIcon(identifier);
+    self.floatingLaunchCoverView.alpha = 1.0;
+    self.floatingLaunchCoverView.hidden = NO;
+    self.floatingLaunchCoverView.userInteractionEnabled = YES;
+    self.floatingStatusLabel.hidden = YES;
+    [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
+    if (!self.floatingDockInteractionShield.hidden) {
+        [self.floatingContainer
+            bringSubviewToFront:self.floatingDockInteractionShield];
+    }
+}
+
+- (void)revealFloatingContentForGeneration:(NSUInteger)generation
+                                    attempt:(NSUInteger)attempt {
+    NSTimeInterval delay = attempt <= 3 ? 0.08 : 0.16;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingLaunchGeneration ||
+            self.floatingWindow.hidden || !self.floatingHostView ||
+            self.floatingLaunchState != FLMFloatingLaunchStateAttached) {
+            return;
+        }
+        [self.floatingHostView setNeedsLayout];
+        [self.floatingHostView layoutIfNeeded];
+        [UIView animateWithDuration:0.18
+                              delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionCurveEaseOut |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+                             self.floatingLaunchCoverView.alpha = 0.0;
+                         }
+                         completion:^(BOOL finished) {
+            (void)finished;
+            if (generation != self.floatingLaunchGeneration ||
+                self.floatingWindow.hidden) {
+                return;
+            }
+            self.floatingLaunchCoverView.hidden = YES;
+            self.floatingLaunchCoverView.alpha = 1.0;
+            self.floatingLaunchCoverView.userInteractionEnabled = NO;
+            self.floatingHostView.userInteractionEnabled = YES;
+            self.floatingHandle.userInteractionEnabled = YES;
+            self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
+        }];
+    });
+}
+
 - (void)layoutFloatingWindow {
     if (!self.floatingWindow) {
         return;
@@ -3485,15 +3525,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             : [self centeredFloatingFrame];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
+    self.floatingLaunchCoverView.frame = self.floatingContainer.bounds;
+    CGFloat iconSide = MIN(92.0,
+                           MAX(68.0,
+                               CGRectGetWidth(self.floatingContainer.bounds) *
+                                   0.25));
+    self.floatingLaunchIconView.bounds =
+        CGRectMake(0.0, 0.0, iconSide, iconSide);
+    self.floatingLaunchIconView.center =
+        CGPointMake(CGRectGetMidX(self.floatingLaunchCoverView.bounds),
+                    CGRectGetMidY(self.floatingLaunchCoverView.bounds));
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     [self layoutFloatingHandleForCurrentContainer];
     [self layoutFloatingDockShadow];
     [self layoutFloatingResizeHandle];
-    BOOL publishesCenteredGeometry =
-        !self.floatingWindow.hidden && !self.floatingDocked &&
-        self.floatingIdentifier.length > 0;
-    FLMPublishFloatingGeometry(self.floatingContainer.frame,
-                               publishesCenteredGeometry);
 }
 
 - (void)layoutFloatingHandleForCurrentContainer {
@@ -3641,63 +3686,38 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         window.hidden = YES;
         self.keyboardOverlayWindow = window;
     }
-    [self attachFloatingKeyboardCandidateIfPossible];
-}
-
-- (BOOL)keyboardOwningSceneMatchesFloatingScene:(id)scene {
-    if (!scene || !self.floatingScene) {
-        return NO;
-    }
-    if (scene == self.floatingScene) {
-        return YES;
-    }
-    NSString *floatingSceneIdentifier = FLMSceneIdentifier(self.floatingScene);
-    NSString *candidateSceneIdentifier = FLMSceneIdentifier(scene);
-    return floatingSceneIdentifier.length > 0 &&
-           [floatingSceneIdentifier isEqualToString:candidateSceneIdentifier];
 }
 
 - (void)keyboardLayerHostView:(UIView *)hostView didUpdateForScene:(id)scene {
-    if (!hostView || self.floatingKeyboardHostMutationInProgress) {
-        return;
-    }
-    id owningScene = nil;
-    @try {
-        owningScene = [hostView valueForKey:@"_owningScene"];
-    } @catch (__unused NSException *exception) {
-    }
-    id matchedScene = [self keyboardOwningSceneMatchesFloatingScene:owningScene]
-                          ? owningScene
-                          : ([self keyboardOwningSceneMatchesFloatingScene:scene]
-                                 ? scene
-                                 : nil);
-    if (!matchedScene) {
+    if (!hostView || self.floatingWindow.hidden || self.floatingDocked ||
+        !self.floatingScene || self.floatingIdentifier.length == 0) {
         if (hostView == self.floatingKeyboardLayerHostView) {
             [self detachFloatingKeyboardLayerHost];
         }
         return;
     }
 
-    // Keep a weak candidate even after the keyboard hides. iOS commonly reuses
-    // this host without issuing another client-settings transaction, which was
-    // the source of the second-presentation regression in 0.8.6.
-    self.floatingKeyboardCandidateHostView = hostView;
-    self.floatingKeyboardCandidateOwningScene = matchedScene;
-    if (!self.floatingKeyboardInteractionSessionActive &&
-        !self.floatingKeyboardVisible) {
+    id owningScene = nil;
+    @try {
+        owningScene = [hostView valueForKey:@"_owningScene"];
+    } @catch (__unused NSException *exception) {
+    }
+    NSString *floatingSceneIdentifier = FLMSceneIdentifier(self.floatingScene);
+    NSString *owningSceneIdentifier = FLMSceneIdentifier(owningScene);
+    NSString *updatedSceneIdentifier = FLMSceneIdentifier(scene);
+    BOOL matches = owningScene == self.floatingScene || scene == self.floatingScene;
+    if (!matches && floatingSceneIdentifier.length > 0) {
+        matches = [floatingSceneIdentifier isEqualToString:owningSceneIdentifier] ||
+                  [floatingSceneIdentifier isEqualToString:updatedSceneIdentifier];
+    }
+    if (!matches) {
+        if (hostView == self.floatingKeyboardLayerHostView) {
+            [self detachFloatingKeyboardLayerHost];
+        }
         return;
     }
-    [self prepareFloatingKeyboardHostIfNeeded];
-}
 
-- (void)attachFloatingKeyboardCandidateIfPossible {
-    UIView *hostView = self.floatingKeyboardCandidateHostView;
-    id owningScene = self.floatingKeyboardCandidateOwningScene;
-    if (!hostView || self.floatingWindow.hidden || self.floatingDocked ||
-        self.floatingIdentifier.length == 0 ||
-        ![self keyboardOwningSceneMatchesFloatingScene:owningScene]) {
-        return;
-    }
+    [self prepareFloatingKeyboardHostIfNeeded];
     UIView *overlayRoot = self.keyboardOverlayWindow.rootViewController.view;
     if (!overlayRoot) {
         return;
@@ -3717,7 +3737,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardLayerHostView = hostView;
     }
 
-    self.floatingKeyboardHostMutationInProgress = YES;
     if (hostView.superview != overlayRoot) {
         [hostView removeFromSuperview];
         hostView.translatesAutoresizingMaskIntoConstraints = YES;
@@ -3730,7 +3749,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         hostView.transform = CGAffineTransformIdentity;
         hostView.frame = overlayRoot.bounds;
     }
-    self.floatingKeyboardHostMutationInProgress = NO;
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
     self.keyboardOverlayWindow.keyboardInteractionFrame =
@@ -3742,7 +3760,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     } @catch (__unused NSException *exception) {
     }
     NSLog(@"[FlymeKeyboardOverlay] paired owner=%@ keyboard=%@",
-          FLMSceneIdentifier(owningScene) ?: @"<unknown>",
+          owningSceneIdentifier ?: updatedSceneIdentifier ?: @"<unknown>",
           FLMSceneIdentifier(keyboardScene) ?: @"<unknown>");
 }
 
@@ -3753,7 +3771,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     UIView *originalSuperview = self.floatingKeyboardOriginalSuperview;
-    self.floatingKeyboardHostMutationInProgress = YES;
     [hostView removeFromSuperview];
     hostView.transform = self.floatingKeyboardOriginalTransform;
     hostView.frame = self.floatingKeyboardOriginalFrame;
@@ -3768,7 +3785,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [originalSuperview addSubview:hostView];
         }
     }
-    self.floatingKeyboardHostMutationInProgress = NO;
     self.floatingKeyboardLayerHostView = nil;
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
@@ -4248,16 +4264,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
     FLMPublishKeyboardState(identifier, nil);
-    self.floatingStatusLabel.hidden = NO;
-    self.floatingStatusLabel.text = @"正在打开…";
     [self layoutFloatingWindow];
+    [self configureFloatingLaunchCoverForIdentifier:identifier];
 
     self.floatingDimView.alpha = 0.0;
     self.floatingContainer.alpha = 0.0;
     self.floatingContainer.transform = CGAffineTransformMakeScale(0.90, 0.90);
     self.floatingHandle.alpha = 0.0;
+    self.floatingHandle.userInteractionEnabled = NO;
     self.previousKeyWindow = FLMCurrentKeyWindow();
-    self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
+    self.floatingExclusiveGesture.enabled = NO;
     self.cornerGuardGesture.enabled = NO;
     self.cornerGesture.enabled = NO;
     [self.floatingWindow makeKeyAndVisible];
@@ -4283,9 +4299,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [self beginLockMonitoring];
     // Let UIKit publish its normal primary scene before querying an entity.
-    // Creating both transactions in the same run-loop turn is racy on iOS 16.
+    // A wheel selection already gave the app a full dismissal-animation head
+    // start, so begin polling almost immediately in that case. Creating both
+    // transactions in the same run-loop turn remains racy on iOS 16.
+    NSTimeInterval initialAttachDelay = alreadyPrewarmed ? 0.02 : 0.10;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.12 * NSEC_PER_SEC)),
+                                 (int64_t)(initialAttachDelay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [self attachFloatingIdentifier:identifier
                             generation:generation
@@ -4313,7 +4332,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在准备应用…";
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -4330,7 +4348,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     if (![self sceneForHandle:sceneHandle]) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在启动应用…";
         if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
@@ -4358,7 +4375,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
-        self.floatingStatusLabel.text = @"正在连接画面…";
         if (attempt > 0 && attempt % 6 == 0) {
             id stalePresenter = self.floatingPresenter;
             @try {
@@ -4397,9 +4413,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHostReferenceSize = referenceSize;
     }
     host.autoresizingMask = UIViewAutoresizingNone;
+    host.userInteractionEnabled = NO;
     [self.floatingContainer insertSubview:host atIndex:0];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
+    [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
+    [self revealFloatingContentForGeneration:generation attempt:attempt];
 }
 
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
@@ -4418,7 +4437,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
     FLMPublishKeyboardState(nil, nil);
-    FLMPublishFloatingGeometry(CGRectNull, NO);
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
     self.floatingLaunchStartedAt = 0.0;
@@ -4497,6 +4515,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } @catch (__unused NSException *exception) {
         }
+        self.floatingLaunchCoverView.hidden = YES;
+        self.floatingLaunchCoverView.alpha = 1.0;
+        self.floatingLaunchCoverView.userInteractionEnabled = NO;
+        self.floatingLaunchIconView.image = nil;
+        self.floatingStatusLabel.hidden = YES;
         self.floatingLaunchState = FLMFloatingLaunchStateIdle;
         [self stopLockMonitoringIfIdle];
         return;
@@ -4535,6 +4558,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            } @catch (__unused NSException *exception) {
                            }
                            self.floatingWindow.hidden = YES;
+                         self.floatingLaunchCoverView.hidden = YES;
+                         self.floatingLaunchCoverView.alpha = 1.0;
+                         self.floatingLaunchCoverView.userInteractionEnabled = NO;
+                         self.floatingLaunchIconView.image = nil;
+                         self.floatingStatusLabel.hidden = YES;
                          self.floatingLaunchState = FLMFloatingLaunchStateIdle;
                          self.floatingDimView.alpha = 1.0;
                          self.floatingContainer.alpha = 1.0;
@@ -4654,15 +4682,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 @end
 
 %hook _UIKeyboardLayerHostView
-
-- (void)didMoveToWindow {
-    %orig;
-    FLMWheelController *controller = [FLMWheelController sharedController];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [controller keyboardLayerHostView:(UIView *)self
-                        didUpdateForScene:nil];
-    });
-}
 
 - (void)scene:(id)scene
     didUpdateClientSettingsWithDiff:(id)diff

@@ -72,9 +72,6 @@ for keyboard_line in \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
-    'FLYME_FLOATING_GEOMETRY_NOTIFICATION' \
-    '%hook _UIRemoteKeyboards' \
-    'presentationScale' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
@@ -86,9 +83,7 @@ done
 for overlay_line in \
     '@interface FLMKeyboardOverlayWindow' \
     'keyboardLayerHostView:' \
-    'floatingKeyboardCandidateHostView' \
     '%hook _UIKeyboardLayerHostView' \
-    '- (void)didMoveToWindow' \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
     'const CGFloat widthStageEnd = 0.72;'; do
@@ -108,6 +103,30 @@ if grep -Fq 'const CGFloat settleProgress = 0.985;' "$source_file" ||
     echo "multi-stage fullscreen geometry handoff was reintroduced" >&2
     exit 1
 fi
+
+for unsafe_keyboard_line in \
+    '%hook _UIRemoteKeyboards' \
+    'FLYME_FLOATING_GEOMETRY_NOTIFICATION' \
+    'floatingKeyboardCandidateHostView' \
+    '- (void)didMoveToWindow'; do
+    if grep -Fq -- "$unsafe_keyboard_line" "$source_file" ||
+       grep -Fq -- "$unsafe_keyboard_line" "$keyboard_source"; then
+        echo "0.8.7 unsafe keyboard path was reintroduced: $unsafe_keyboard_line" >&2
+        exit 1
+    fi
+done
+
+for launch_cover_line in \
+    'floatingLaunchCoverView' \
+    'configureFloatingLaunchCoverForIdentifier' \
+    'revealFloatingContentForGeneration' \
+    'initialAttachDelay = alreadyPrewarmed ? 0.02 : 0.10' \
+    'self.floatingStatusLabel.hidden = YES;'; do
+    if ! grep -Fq -- "$launch_cover_line" "$source_file"; then
+        echo "safe launch cover changed: $launch_cover_line" >&2
+        exit 1
+    fi
+done
 
 if grep -Fq '%hook UIWindowScene' "$keyboard_source"; then
     echo "application Scene reference bounds are being overridden again" >&2
