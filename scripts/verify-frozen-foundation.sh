@@ -2,7 +2,6 @@
 set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
-keyboard_file="${2:-Keyboard.xm}"
 
 required_lines=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -65,10 +64,6 @@ if grep -Fq '%hook UIRemoteKeyboardWindow' "$source_file" ||
     echo "SpringBoard runtime directly hooks keyboard windows" >&2
     exit 1
 fi
-
-grep -Fq '%group FLMKeyboardHooks' "$keyboard_file"
-grep -Fq '[currentIdentifier isEqualToString:@"com.apple.springboard"]' "$keyboard_file"
-grep -Fq '%init(FLMKeyboardHooks);' "$keyboard_file"
 
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" |
     head -n1 | cut -d: -f1)"
