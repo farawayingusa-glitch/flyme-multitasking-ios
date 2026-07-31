@@ -572,12 +572,13 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
 @property(nonatomic, strong) FLMOverlayWindow *floatingWindow;
 @property(nonatomic, strong) UIView *floatingDimView;
+@property(nonatomic, strong) UIView *floatingDockShadowView;
 @property(nonatomic, strong) UIView *floatingContainer;
+@property(nonatomic, strong) UIView *floatingDockInteractionShield;
 @property(nonatomic, strong) UIView *floatingHandle;
 @property(nonatomic, strong) UIView *floatingHandleBar;
 @property(nonatomic, strong) UIView *floatingResizeHandle;
-@property(nonatomic, strong) UIView *floatingResizeVerticalBar;
-@property(nonatomic, strong) UIView *floatingResizeHorizontalBar;
+@property(nonatomic, strong) CAShapeLayer *floatingResizeShapeLayer;
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
 @property(nonatomic, strong) FLMOutsideTapGestureRecognizer *floatingBackdropTap;
@@ -667,6 +668,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)layoutFloatingHandleForCurrentContainer;
 - (CGRect)centeredFloatingFrame;
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width;
+- (void)layoutFloatingDockShadow;
 - (void)layoutFloatingResizeHandle;
 - (void)configureFloatingInteractionForDockedState;
 - (void)transitionFloatingWindowToDocked;
@@ -969,6 +971,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [UIColor colorWithWhite:0.0 alpha:0.12];
     [self.floatingWindow.rootViewController.view addSubview:self.floatingDimView];
 
+    self.floatingDockShadowView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.floatingDockShadowView.backgroundColor =
+        [UIColor colorWithWhite:0.0 alpha:0.01];
+    self.floatingDockShadowView.userInteractionEnabled = NO;
+    self.floatingDockShadowView.hidden = YES;
+    self.floatingDockShadowView.alpha = 0.0;
+    self.floatingDockShadowView.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.floatingDockShadowView.layer.shadowOpacity = 0.18;
+    self.floatingDockShadowView.layer.shadowRadius = 14.0;
+    self.floatingDockShadowView.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+    [self.floatingWindow.rootViewController.view
+        addSubview:self.floatingDockShadowView];
+
     self.floatingContainer = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingContainer.backgroundColor = [UIColor blackColor];
     self.floatingContainer.layer.cornerRadius = 18.0;
@@ -982,6 +997,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
                                                      weight:UIFontWeightMedium];
     [self.floatingContainer addSubview:self.floatingStatusLabel];
+
+    self.floatingDockInteractionShield = [[UIView alloc] initWithFrame:CGRectZero];
+    self.floatingDockInteractionShield.backgroundColor = [UIColor clearColor];
+    self.floatingDockInteractionShield.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.floatingDockInteractionShield.hidden = YES;
+    self.floatingDockInteractionShield.userInteractionEnabled = NO;
+    [self.floatingContainer addSubview:self.floatingDockInteractionShield];
 
     self.floatingHandle = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingHandle.backgroundColor = [UIColor clearColor];
@@ -1026,18 +1049,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.backgroundColor = [UIColor clearColor];
     self.floatingResizeHandle.hidden = YES;
     self.floatingResizeHandle.alpha = 0.0;
-    self.floatingResizeVerticalBar = [[UIView alloc] initWithFrame:CGRectZero];
-    self.floatingResizeVerticalBar.backgroundColor =
-        [UIColor colorWithWhite:1.0 alpha:0.72];
-    self.floatingResizeVerticalBar.layer.cornerRadius = 1.75;
-    self.floatingResizeVerticalBar.userInteractionEnabled = NO;
-    [self.floatingResizeHandle addSubview:self.floatingResizeVerticalBar];
-    self.floatingResizeHorizontalBar = [[UIView alloc] initWithFrame:CGRectZero];
-    self.floatingResizeHorizontalBar.backgroundColor =
-        [UIColor colorWithWhite:1.0 alpha:0.72];
-    self.floatingResizeHorizontalBar.layer.cornerRadius = 1.75;
-    self.floatingResizeHorizontalBar.userInteractionEnabled = NO;
-    [self.floatingResizeHandle addSubview:self.floatingResizeHorizontalBar];
+    self.floatingResizeShapeLayer = [CAShapeLayer layer];
+    self.floatingResizeShapeLayer.fillColor = [UIColor clearColor].CGColor;
+    self.floatingResizeShapeLayer.strokeColor =
+        [UIColor colorWithWhite:1.0 alpha:1.0].CGColor;
+    self.floatingResizeShapeLayer.opacity = 0.72;
+    self.floatingResizeShapeLayer.lineWidth = 3.2;
+    self.floatingResizeShapeLayer.lineCap = kCALineCapRound;
+    self.floatingResizeShapeLayer.lineJoin = kCALineJoinRound;
+    [self.floatingResizeHandle.layer addSublayer:self.floatingResizeShapeLayer];
     [self.floatingWindow.rootViewController.view
         addSubview:self.floatingResizeHandle];
 
@@ -1049,7 +1069,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockDragPress.allowableMovement = CGFLOAT_MAX;
     self.floatingDockDragPress.cancelsTouchesInView = YES;
     self.floatingDockDragPress.enabled = NO;
-    [self.floatingContainer addGestureRecognizer:self.floatingDockDragPress];
+    [self.floatingDockInteractionShield
+        addGestureRecognizer:self.floatingDockDragPress];
 
     self.floatingDockTap =
         [[UITapGestureRecognizer alloc]
@@ -1059,7 +1080,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockTap.enabled = NO;
     [self.floatingDockTap
         requireGestureRecognizerToFail:self.floatingDockDragPress];
-    [self.floatingContainer addGestureRecognizer:self.floatingDockTap];
+    [self.floatingDockInteractionShield addGestureRecognizer:self.floatingDockTap];
 
     self.floatingResizePress =
         [[UILongPressGestureRecognizer alloc]
@@ -1669,6 +1690,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          animations:^{
                              self.floatingContainer.transform =
                                  CGAffineTransformMakeScale(1.025, 1.025);
+                             self.floatingDockShadowView.transform =
+                                 CGAffineTransformMakeScale(1.025, 1.025);
                              self.floatingContainer.layer.borderWidth = 1.0;
                              self.floatingResizeHandle.alpha = 0.45;
                          }
@@ -1693,6 +1716,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        MIN(CGRectGetHeight(bounds) - safeInsets.bottom - halfHeight,
                            center.y));
         self.floatingContainer.center = center;
+        [self layoutFloatingDockShadow];
         [self layoutFloatingResizeHandle];
         return;
     }
@@ -1723,8 +1747,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          animations:^{
                              self.floatingResizeHandle.transform =
                                  CGAffineTransformMakeScale(1.16, 1.16);
-                             self.floatingResizeVerticalBar.alpha = 1.0;
-                             self.floatingResizeHorizontalBar.alpha = 1.0;
+                             self.floatingResizeShapeLayer.opacity = 1.0;
                          }];
         return;
     }
@@ -1756,6 +1779,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        height);
         self.floatingDockWidth = width;
         [self layoutFloatingHostView];
+        self.floatingDockInteractionShield.frame =
+            self.floatingContainer.bounds;
+        [self layoutFloatingDockShadow];
         [self layoutFloatingResizeHandle];
         return;
     }
@@ -1773,8 +1799,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          animations:^{
                              self.floatingResizeHandle.transform =
                                  CGAffineTransformIdentity;
-                             self.floatingResizeVerticalBar.alpha = 0.72;
-                             self.floatingResizeHorizontalBar.alpha = 0.72;
+                             self.floatingResizeShapeLayer.opacity = 0.72;
                          }
                          completion:nil];
     }
@@ -1935,7 +1960,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGRect target =
                 [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
             CGFloat available =
-                MAX(1.0, CGRectGetMinY(start) - CGRectGetMinY(target));
+                MAX(150.0, CGRectGetHeight(start) * 0.30);
             CGFloat progress =
                 MIN(1.0, MAX(0.0, -primaryMovement / available));
             CGRect frame = CGRectMake(
@@ -1947,6 +1972,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingContainer.layer.cornerRadius =
                 18.0 + (16.0 - 18.0) * progress;
             self.floatingDimView.alpha = 1.0 - progress;
+            self.floatingDockShadowView.hidden = NO;
+            self.floatingDockShadowView.alpha = progress;
+            [self layoutFloatingDockShadow];
             self.floatingHandle.alpha =
                 1.0 - MAX(0.0, (progress - 0.88) / 0.12);
             [self layoutFloatingHostView];
@@ -2001,17 +2029,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
     [self restoreFloatingSceneAfterCancelledTransition];
-    self.floatingDockTransitionActive = NO;
     void (^changes)(void) = ^{
         self.floatingContainer.layer.cornerRadius = 18.0;
         self.floatingDimView.alpha = 1.0;
         self.floatingHandle.alpha = 1.0;
         self.floatingHandleBar.alpha = 1.0;
         self.floatingHandleBar.transform = CGAffineTransformIdentity;
+        self.floatingDockShadowView.alpha = 0.0;
         [self layoutFloatingWindow];
     };
     if (!animated) {
         changes();
+        self.floatingDockTransitionActive = NO;
+        if (!self.floatingDocked) {
+            self.floatingDockShadowView.hidden = YES;
+        }
         return;
     }
     [UIView animateWithDuration:0.34
@@ -2021,7 +2053,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         options:UIViewAnimationOptionBeginFromCurrentState |
                                 UIViewAnimationOptionAllowUserInteraction
                      animations:changes
-                     completion:nil];
+                     completion:^(BOOL finished) {
+                         (void)finished;
+                         self.floatingDockTransitionActive = NO;
+                         if (!self.floatingDocked) {
+                             self.floatingDockShadowView.hidden = YES;
+                         }
+                     }];
 }
 
 - (void)transitionFloatingWindowToFullscreen {
@@ -2227,6 +2265,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return CGRectMake(originX, top, clampedWidth, height);
 }
 
+- (void)layoutFloatingDockShadow {
+    if (!self.floatingDocked && !self.floatingDockTransitionActive) {
+        self.floatingDockShadowView.hidden = YES;
+        return;
+    }
+    self.floatingDockShadowView.hidden = NO;
+    self.floatingDockShadowView.bounds = self.floatingContainer.bounds;
+    self.floatingDockShadowView.center = self.floatingContainer.center;
+    self.floatingDockShadowView.transform = self.floatingContainer.transform;
+    self.floatingDockShadowView.layer.cornerRadius =
+        self.floatingContainer.layer.cornerRadius;
+    UIBezierPath *shadowPath =
+        [UIBezierPath
+            bezierPathWithRoundedRect:self.floatingDockShadowView.bounds
+                         cornerRadius:self.floatingDockShadowView.layer.cornerRadius];
+    self.floatingDockShadowView.layer.shadowPath = shadowPath.CGPath;
+    [self.floatingWindow.rootViewController.view
+        insertSubview:self.floatingDockShadowView
+         belowSubview:self.floatingContainer];
+}
+
 - (void)layoutFloatingResizeHandle {
     if (!self.floatingDocked) {
         self.floatingResizeHandle.hidden = YES;
@@ -2234,27 +2293,32 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     CGRect frame = self.floatingContainer.frame;
     const CGFloat hitSize = 46.0;
+    UIBezierPath *path = [UIBezierPath bezierPath];
     if (self.floatingDockedOnRight) {
         self.floatingResizeHandle.frame =
-            CGRectMake(CGRectGetMinX(frame) - 12.0,
-                       CGRectGetMaxY(frame) - 34.0,
+            CGRectMake(CGRectGetMinX(frame) - 32.0,
+                       CGRectGetMaxY(frame) - 14.0,
                        hitSize,
                        hitSize);
-        self.floatingResizeVerticalBar.frame =
-            CGRectMake(13.0, 9.0, 3.5, 23.0);
-        self.floatingResizeHorizontalBar.frame =
-            CGRectMake(13.0, 28.5, 23.0, 3.5);
+        [path moveToPoint:CGPointMake(24.0, 2.0)];
+        [path addLineToPoint:CGPointMake(24.0, 12.0)];
+        [path addQuadCurveToPoint:CGPointMake(34.0, 22.0)
+                    controlPoint:CGPointMake(24.0, 22.0)];
+        [path addLineToPoint:CGPointMake(44.0, 22.0)];
     } else {
         self.floatingResizeHandle.frame =
-            CGRectMake(CGRectGetMaxX(frame) - 34.0,
-                       CGRectGetMaxY(frame) - 34.0,
+            CGRectMake(CGRectGetMaxX(frame) - 14.0,
+                       CGRectGetMaxY(frame) - 14.0,
                        hitSize,
                        hitSize);
-        self.floatingResizeVerticalBar.frame =
-            CGRectMake(29.5, 9.0, 3.5, 23.0);
-        self.floatingResizeHorizontalBar.frame =
-            CGRectMake(10.0, 28.5, 23.0, 3.5);
+        [path moveToPoint:CGPointMake(22.0, 2.0)];
+        [path addLineToPoint:CGPointMake(22.0, 12.0)];
+        [path addQuadCurveToPoint:CGPointMake(12.0, 22.0)
+                    controlPoint:CGPointMake(22.0, 22.0)];
+        [path addLineToPoint:CGPointMake(2.0, 22.0)];
     }
+    self.floatingResizeShapeLayer.frame = self.floatingResizeHandle.bounds;
+    self.floatingResizeShapeLayer.path = path.CGPath;
     self.floatingResizeHandle.hidden = NO;
 }
 
@@ -2267,6 +2331,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockDragPress.enabled = self.floatingDocked;
     self.floatingResizePress.enabled = self.floatingDocked;
     self.floatingHostView.userInteractionEnabled = !self.floatingDocked;
+    self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
+    self.floatingDockInteractionShield.hidden = !self.floatingDocked;
+    self.floatingDockInteractionShield.userInteractionEnabled =
+        self.floatingDocked;
+    if (self.floatingDocked) {
+        [self.floatingContainer
+            bringSubviewToFront:self.floatingDockInteractionShield];
+    }
     self.floatingHandle.userInteractionEnabled = !self.floatingDocked;
     self.floatingHandle.hidden = self.floatingDocked;
     self.floatingResizeHandle.hidden = !self.floatingDocked;
@@ -2277,6 +2349,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDimView.alpha = 0.0;
         self.floatingHandle.alpha = 0.0;
         self.floatingResizeHandle.alpha = 1.0;
+        self.floatingDockShadowView.alpha = 1.0;
+        [self layoutFloatingDockShadow];
         if (self.previousKeyWindow &&
             self.previousKeyWindow != self.floatingWindow) {
             [self.previousKeyWindow makeKeyWindow];
@@ -2285,6 +2359,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     } else {
         self.floatingResizeHandle.alpha = 0.0;
         self.floatingHandle.alpha = 1.0;
+        self.floatingDockShadowView.alpha = 0.0;
+        self.floatingDockShadowView.hidden = YES;
         [self.floatingWindow makeKeyWindow];
     }
 }
@@ -2302,6 +2378,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockedOnRight = YES;
     CGRect target =
         [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
+    self.floatingDockShadowView.hidden = NO;
     [UIView animateWithDuration:0.40
                           delay:0.0
          usingSpringWithDamping:0.84
@@ -2313,6 +2390,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.frame = target;
                          self.floatingContainer.layer.cornerRadius = 16.0;
                          self.floatingDimView.alpha = 0.0;
+                         self.floatingDockShadowView.alpha = 1.0;
+                         self.floatingDockShadowView.frame = target;
+                         self.floatingDockShadowView.layer.cornerRadius = 16.0;
+                         [self layoutFloatingDockShadow];
                          self.floatingHandle.alpha = 0.0;
                          [self layoutFloatingHostView];
                          [self layoutFloatingHandleForCurrentContainer];
@@ -2341,6 +2422,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizePress.enabled = NO;
     self.floatingResizeHandle.alpha = 0.0;
     self.floatingResizeHandle.hidden = YES;
+    self.floatingDockShadowView.hidden = NO;
     self.floatingDocked = NO;
     [self.floatingWindow makeKeyWindow];
     CGRect target = [self centeredFloatingFrame];
@@ -2359,6 +2441,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.frame = target;
                          self.floatingContainer.layer.cornerRadius = 18.0;
                          self.floatingDimView.alpha = 1.0;
+                         self.floatingDockShadowView.alpha = 0.0;
+                         self.floatingDockShadowView.frame = target;
                          self.floatingHandle.alpha = 1.0;
                          [self layoutFloatingHostView];
                          [self layoutFloatingHandleForCurrentContainer];
@@ -2398,6 +2482,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                          CGRectGetMidY(target));
                          self.floatingResizeHandle.alpha = 1.0;
                          [self layoutFloatingHostView];
+                         [self layoutFloatingDockShadow];
                          [self layoutFloatingResizeHandle];
                      }
                      completion:nil];
@@ -2435,7 +2520,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             : [self centeredFloatingFrame];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
+    self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     [self layoutFloatingHandleForCurrentContainer];
+    [self layoutFloatingDockShadow];
     [self layoutFloatingResizeHandle];
 }
 
@@ -2456,15 +2543,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandleBar.frame =
             CGRectMake(0.0, 0.0, 5.0, handleHeight);
     } else {
-        CGFloat handleWidth = containerWidth * 0.30;
+        CGFloat visibleHandleWidth = containerWidth * 0.30;
+        CGFloat handleWidth = visibleHandleWidth + 16.0;
+        CGFloat handleHeight = 54.0;
         self.floatingHandle.frame =
             CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
                              handleWidth * 0.5),
-                       CGRectGetMaxY(self.floatingContainer.frame) + 2.0,
+                       CGRectGetMaxY(self.floatingContainer.frame) - 3.0,
                        handleWidth,
-                       44.0);
+                       handleHeight);
         self.floatingHandleBar.frame =
-            CGRectMake(0.0, floor((44.0 - 5.0) * 0.5), handleWidth, 5.0);
+            CGRectMake(8.0,
+                       floor((handleHeight - 5.0) * 0.5),
+                       visibleHandleWidth,
+                       5.0);
     }
 }
 
@@ -2904,6 +2996,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizePress.enabled = NO;
     self.floatingResizeHandle.hidden = YES;
     self.floatingResizeHandle.alpha = 0.0;
+    self.floatingDockShadowView.hidden = YES;
+    self.floatingDockShadowView.alpha = 0.0;
+    self.floatingDockShadowView.transform = CGAffineTransformIdentity;
+    self.floatingDockInteractionShield.hidden = YES;
+    self.floatingDockInteractionShield.userInteractionEnabled = NO;
     self.floatingHandle.hidden = NO;
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingInteractiveScenePrepared = NO;
@@ -3064,6 +3161,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizePress.enabled = NO;
     self.floatingResizeHandle.hidden = YES;
     self.floatingResizeHandle.alpha = 0.0;
+    self.floatingDockShadowView.hidden = YES;
+    self.floatingDockShadowView.alpha = 0.0;
+    self.floatingDockShadowView.transform = CGAffineTransformIdentity;
+    self.floatingDockInteractionShield.hidden = YES;
+    self.floatingDockInteractionShield.userInteractionEnabled = NO;
     self.floatingHandle.hidden = NO;
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
