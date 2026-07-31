@@ -92,7 +92,7 @@ for overlay_line in \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
     'const CGFloat widthStageEnd = 0.72;'; do
-    if ! grep -Fq "$overlay_line" "$source_file"; then
+    if ! grep -Fq -- "$overlay_line" "$source_file"; then
         echo "keyboard overlay or continuous fullscreen morph changed: $overlay_line" >&2
         exit 1
     fi
