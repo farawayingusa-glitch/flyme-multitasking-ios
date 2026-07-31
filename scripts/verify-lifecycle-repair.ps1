@@ -39,13 +39,21 @@ Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
 Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
+Require-Text $KeyboardSource 'UIKeyboardWillHideNotification'
+Require-Text $KeyboardSource 'FLMKeyboardPrepareDebounce = 0.15'
+Require-Text $KeyboardSource '- (BOOL)resignFirstResponder'
 Require-Text $Source '@interface FLMKeyboardOverlayWindow'
 Require-Text $Source 'keyboardLayerHostView:'
 Require-Text $Source 'valueForKey:@"_owningScene"'
 Require-Text $Source 'valueForKey:@"_keyboardScene"'
 Require-Text $Source 'floatingKeyboardOriginalSuperview'
 Require-Text $Source 'pairing timeout; promoting'
-Require-Text $Source 'const CGFloat widthStageEnd = 0.72;'
+Require-Text $Source 'requestFloatingKeyboardHostPreparation'
+Require-Text $Source 'floatingReusableKeyboardLayerHostView'
+Require-Text $Source 'const CGFloat widthCompletion = 0.82;'
+Require-Text $Source 'const CGFloat verticalRevealStart = 0.22;'
+Require-Text $Source 'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;'
+Require-Text $Source '[UIView performWithoutAnimation:^{'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 
 if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {
@@ -64,6 +72,17 @@ if (Select-String -LiteralPath $KeyboardSource -SimpleMatch '%hook UIWindowScene
 
 if (Select-String -LiteralPath $Source -SimpleMatch 'setFloatingSceneUsesFullscreenKeyboardHost' -Quiet) {
     throw 'Whole application Scene keyboard expansion was reintroduced.'
+}
+
+foreach ($unsafeKeyboardLine in @(
+    '%hook _UIRemoteKeyboards',
+    '- (void)didMoveToWindow',
+    'FLMKeyboardPreparePosted'
+)) {
+    if ((Select-String -LiteralPath $Source -SimpleMatch $unsafeKeyboardLine -Quiet) -or
+        (Select-String -LiteralPath $KeyboardSource -SimpleMatch $unsafeKeyboardLine -Quiet)) {
+        throw "Unsafe or one-shot keyboard path detected: $unsafeKeyboardLine"
+    }
 }
 
 Write-Output 'lifecycle, launch, and keyboard repair markers verified'

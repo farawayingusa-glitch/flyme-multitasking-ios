@@ -70,6 +70,9 @@ for keyboard_line in \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
+    'FLMKeyboardPrepareDebounce = 0.15' \
+    'UIKeyboardWillHideNotification' \
+    '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
@@ -83,7 +86,12 @@ for overlay_line in \
     'keyboardLayerHostView:' \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
-    'const CGFloat widthStageEnd = 0.72;'; do
+    'requestFloatingKeyboardHostPreparation' \
+    'floatingReusableKeyboardLayerHostView' \
+    'const CGFloat widthCompletion = 0.82;' \
+    'const CGFloat verticalRevealStart = 0.22;' \
+    'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;' \
+    '[UIView performWithoutAnimation:^{'; do
     if ! grep -Fq "$overlay_line" "$source_file"; then
         echo "keyboard overlay or continuous fullscreen morph changed: $overlay_line" >&2
         exit 1
@@ -94,6 +102,17 @@ if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
     exit 1
 fi
+
+for unsafe_keyboard_line in \
+    '%hook _UIRemoteKeyboards' \
+    '- (void)didMoveToWindow' \
+    'FLMKeyboardPreparePosted'; do
+    if grep -Fq -- "$unsafe_keyboard_line" "$source_file" ||
+       grep -Fq -- "$unsafe_keyboard_line" "$keyboard_source"; then
+        echo "unsafe or one-shot keyboard path detected: $unsafe_keyboard_line" >&2
+        exit 1
+    fi
+done
 
 if grep -Fq '%hook UIWindowScene' "$keyboard_source"; then
     echo "application Scene reference bounds are being overridden again" >&2

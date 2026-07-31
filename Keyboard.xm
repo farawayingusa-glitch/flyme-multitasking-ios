@@ -13,8 +13,10 @@ static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static id FLMKeyboardFrameObserver = nil;
+static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
-static BOOL FLMKeyboardPreparePosted = NO;
+static CFAbsoluteTime FLMKeyboardLastPrepareTime = 0.0;
+static const CFTimeInterval FLMKeyboardPrepareDebounce = 0.15;
 
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
@@ -117,9 +119,10 @@ static void FLMReloadKeyboardRoute(void) {
         notify_get_state(FLMKeyboardSceneToken,
                          &FLMKeyboardTargetSceneHash);
     }
-    if (!FLMKeyboardRouteActive) {
-        FLMKeyboardPreparePosted = NO;
-    }
+    // A route or Scene publication starts a fresh input session. UIKit can
+    // reuse its keyboard host without emitting a new Scene-settings callback,
+    // so never carry the previous session's preparation gate forward.
+    FLMKeyboardLastPrepareTime = 0.0;
     NSLog(@"[FlymeKeyboard] route=%@ bundle=%@ targetSceneHash=%llu",
           FLMKeyboardRouteActive ? @"active" : @"inactive",
           currentIdentifier ?: @"<unknown>",
@@ -127,12 +130,17 @@ static void FLMReloadKeyboardRoute(void) {
 }
 
 static void FLMPrepareFullscreenKeyboardHost(void) {
-    if (!FLMKeyboardRouteActive || FLMKeyboardPreparePosted) {
+    if (!FLMKeyboardRouteActive) {
         return;
     }
-    FLMKeyboardPreparePosted = YES;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (FLMKeyboardLastPrepareTime > 0.0 &&
+        now - FLMKeyboardLastPrepareTime < FLMKeyboardPrepareDebounce) {
+        return;
+    }
+    FLMKeyboardLastPrepareTime = now;
     notify_post(FLYME_KEYBOARD_PREPARE_NOTIFICATION);
-    NSLog(@"[FlymeKeyboard] requested physical-screen keyboard host");
+    NSLog(@"[FlymeKeyboard] requested fresh physical-screen keyboard session");
 }
 
 %hook UIResponder
@@ -148,6 +156,16 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
         FLMPrepareFullscreenKeyboardHost();
     }
     return %orig;
+}
+
+- (BOOL)resignFirstResponder {
+    BOOL routedTextInput =
+        FLMKeyboardRouteActive && [self conformsToProtocol:@protocol(UITextInput)];
+    BOOL result = %orig;
+    if (routedTextInput && result) {
+        FLMKeyboardLastPrepareTime = 0.0;
+    }
+    return result;
 }
 
 %end
@@ -236,12 +254,19 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                 FLMPublishKeyboardFrame(frame, YES);
             }
         }];
+        FLMKeyboardWillHideObserver =
+            [center addObserverForName:UIKeyboardWillHideNotification
+                                object:nil
+                                 queue:[NSOperationQueue mainQueue]
+                            usingBlock:^(__unused NSNotification *notification) {
+            FLMKeyboardLastPrepareTime = 0.0;
+        }];
         FLMKeyboardHideObserver =
             [center addObserverForName:UIKeyboardDidHideNotification
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(__unused NSNotification *notification) {
-            FLMKeyboardPreparePosted = NO;
+            FLMKeyboardLastPrepareTime = 0.0;
             FLMPublishKeyboardFrame(CGRectZero, NO);
         }];
     }
