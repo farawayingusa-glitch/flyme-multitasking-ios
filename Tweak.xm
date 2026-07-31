@@ -1345,7 +1345,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         if (![manager respondsToSelector:
                          @selector(createPresenterWithIdentifier:)]) {
-            [self backgroundFloatingScene:scene];
             return nil;
         }
         presenter =
@@ -1370,7 +1369,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } @catch (__unused NSException *exception) {
         }
-        [self backgroundFloatingScene:scene];
         return nil;
     }
     self.floatingScene = scene;
@@ -1448,7 +1446,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMApplicationSceneHandle *sceneHandle =
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
-        if (attempt < 20) {
+        self.floatingStatusLabel.text = @"正在准备应用…";
+        if (attempt < 30) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                    [self attachFloatingIdentifier:identifier
+                                        generation:generation
+                                           attempt:attempt + 1];
+                });
+            return;
+        }
+        [self closeFloatingWindowKeepingApplication:YES];
+        [self activateIdentifierFullscreen:identifier];
+        return;
+    }
+
+    if (![self sceneForHandle:sceneHandle]) {
+        self.floatingStatusLabel.text = @"正在启动应用…";
+        if (attempt < 30) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
@@ -1465,6 +1481,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
+        self.floatingStatusLabel.text = @"正在连接画面…";
+        if (attempt < 30) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                    [self attachFloatingIdentifier:identifier
+                                        generation:generation
+                                           attempt:attempt + 1];
+                });
+            return;
+        }
+        [self backgroundFloatingScene:[self sceneForHandle:sceneHandle]];
         [self closeFloatingWindowKeepingApplication:YES];
         [self activateIdentifierFullscreen:identifier];
         return;
