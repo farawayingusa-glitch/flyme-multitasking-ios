@@ -64,7 +64,8 @@ for keyboard_line in \
     '%hook UIWindowScene' \
     '%hook _UIRemoteKeyboards' \
     'intersectionHeightForWindowScene:' \
-    'FLYME_KEYBOARD_ROUTE_PATH'; do
+    'FLMIdentifierHash' \
+    'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
         echo "safe keyboard bridge changed: $keyboard_line" >&2
         exit 1

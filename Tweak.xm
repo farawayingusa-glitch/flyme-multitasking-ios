@@ -10,9 +10,8 @@
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
 #define FLYME_PREFERENCES_DOMAIN CFSTR("com.codex.flymemultitasking")
-#define FLYME_KEYBOARD_NOTIFICATION CFSTR("com.codex.flymemultitasking.keyboard-state-changed")
+#define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
-#define FLYME_KEYBOARD_ROUTE_PATH @"/var/mobile/FlymeMultitasking/keyboard_route.plist"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -650,7 +649,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL floatingResizeCenterReady;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
-@property(nonatomic, assign) CGSize floatingCenteredReferenceSize;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, assign) BOOL floatingReconnectSuppressed;
 @property(nonatomic, assign) BOOL floatingKeyboardVisible;
@@ -717,8 +715,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)saveFloatingDockWidth;
 - (void)prepareFloatingSceneForInteractiveFullscreen;
 - (void)restoreFloatingSceneAfterCancelledTransition;
-- (BOOL)updateFloatingSceneToReferenceSize:(CGSize)referenceSize
-                               orientation:(NSInteger)orientation;
 - (void)transitionFloatingWindowToFullscreen;
 - (void)finishFullscreenHandoffWithCover:(UIView *)cover
                               identifier:(NSString *)identifier
@@ -748,6 +744,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @end
 
 static int FlymeRuntimeToken = -1;
+static int FlymeKeyboardRouteToken = -1;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -757,23 +754,29 @@ static id FLMCopyPreference(NSString *key) {
     return CFBridgingRelease(value);
 }
 
+static uint64_t FLMIdentifierHash(NSString *identifier) {
+    const char *bytes = identifier.UTF8String;
+    if (!bytes || bytes[0] == '\0') {
+        return 0;
+    }
+    uint64_t value = 1469598103934665603ULL;
+    for (const unsigned char *cursor = (const unsigned char *)bytes;
+         *cursor;
+         cursor++) {
+        value ^= (uint64_t)*cursor;
+        value *= 1099511628211ULL;
+    }
+    return value ?: 1;
+}
+
 static void FLMPublishKeyboardState(NSString *identifier) {
-    NSString *directory = [FLYME_KEYBOARD_ROUTE_PATH stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:directory
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
-    NSDictionary *state = @{
-        @"active" : @(identifier.length > 0),
-        @"bundleIdentifier" : identifier ?: @""
-    };
-    [state writeToFile:FLYME_KEYBOARD_ROUTE_PATH atomically:YES];
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        FLYME_KEYBOARD_NOTIFICATION,
-        NULL,
-        NULL,
-        YES);
+    if (FlymeKeyboardRouteToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_NOTIFICATION,
+                              &FlymeKeyboardRouteToken) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    notify_set_state(FlymeKeyboardRouteToken, FLMIdentifierHash(identifier));
+    notify_post(FLYME_KEYBOARD_NOTIFICATION);
 }
 
 static UIWindowScene *FLMForegroundWindowScene(void) {
@@ -2184,53 +2187,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
-- (BOOL)updateFloatingSceneToReferenceSize:(CGSize)referenceSize
-                               orientation:(NSInteger)orientation {
-    id scene = self.floatingScene;
-    if (!scene || referenceSize.width < 1.0 || referenceSize.height < 1.0) {
-        return NO;
-    }
-    @try {
-        id settings = [scene respondsToSelector:@selector(settings)]
-                          ? [scene settings]
-                          : nil;
-        id mutableSettings = [settings mutableCopy];
-        if (!mutableSettings &&
-            [scene respondsToSelector:@selector(mutableSettings)]) {
-            mutableSettings = [scene mutableSettings];
-        }
-        if (!mutableSettings ||
-            ![scene respondsToSelector:
-                       @selector(updateSettings:withTransitionContext:)]) {
-            return NO;
-        }
-        if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
-            [mutableSettings setFrame:CGRectMake(0.0,
-                                                  0.0,
-                                                  referenceSize.width,
-                                                  referenceSize.height)];
-        }
-        if (orientation >= 1 && orientation <= 4 &&
-            [mutableSettings respondsToSelector:
-                                 @selector(setInterfaceOrientation:)]) {
-            [mutableSettings setInterfaceOrientation:orientation];
-        }
-        [scene updateSettings:mutableSettings withTransitionContext:nil];
-        self.floatingHostReferenceSize = referenceSize;
-        [self layoutFloatingHostView];
-        return YES;
-    } @catch (__unused NSException *exception) {
-        return NO;
-    }
-}
-
 - (void)prepareFloatingSceneForInteractiveFullscreen {
     if (self.floatingInteractiveScenePrepared) {
         return;
     }
     self.floatingInteractiveScenePrepared = YES;
     self.floatingInteractiveFullscreenTransition = YES;
-    self.floatingCenteredReferenceSize = self.floatingHostReferenceSize;
 
     UIView *snapshot =
         [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
@@ -2239,46 +2201,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.floatingContainer addSubview:snapshot];
     self.floatingInteractiveSnapshot = snapshot;
-
-    CGSize fullscreenSize =
-        self.floatingWindow.rootViewController.view.bounds.size;
-    NSInteger orientation = (NSInteger)FLMActiveInterfaceOrientation();
-    [self updateFloatingSceneToReferenceSize:fullscreenSize
-                                 orientation:orientation];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.06 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *currentSnapshot = self.floatingInteractiveSnapshot;
-        if (!currentSnapshot) {
-            return;
-        }
-        [UIView animateWithDuration:0.10
-                         animations:^{
-                             currentSnapshot.alpha = 0.0;
-                         }
-                         completion:^(BOOL finished) {
-                             (void)finished;
-                             [currentSnapshot removeFromSuperview];
-                             if (self.floatingInteractiveSnapshot == currentSnapshot) {
-                                 self.floatingInteractiveSnapshot = nil;
-                             }
-                         }];
-    });
 }
 
 - (void)restoreFloatingSceneAfterCancelledTransition {
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
-    BOOL wasPrepared = self.floatingInteractiveScenePrepared;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
-    if (wasPrepared &&
-        self.floatingCenteredReferenceSize.width > 0.0 &&
-        self.floatingCenteredReferenceSize.height > 0.0) {
-        [self updateFloatingSceneToReferenceSize:self.floatingCenteredReferenceSize
-                                     orientation:1];
-    }
-    self.floatingCenteredReferenceSize = CGSizeZero;
 }
 
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
@@ -2348,7 +2277,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 self.floatingDimView.alpha = 1.0 - progress;
                 self.floatingHandle.alpha =
                     1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-                [self layoutFloatingHostView];
                 [self layoutFloatingHandleForCurrentContainer];
             } else {
                 CGFloat resistance =
@@ -2360,9 +2288,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
 
         if (primaryMovement <= -3.0) {
-            if (self.floatingInteractiveScenePrepared) {
-                [self restoreFloatingSceneAfterCancelledTransition];
-            }
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = YES;
             CGRect start = self.floatingHandleInitialContainerFrame;
@@ -2430,13 +2355,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingDimView.alpha = 1.0 - progress;
             self.floatingHandle.alpha =
                 1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-            [self layoutFloatingHostView];
             [self layoutFloatingHandleForCurrentContainer];
         } else {
             [self setFloatingDockReady:NO animated:YES];
-            if (self.floatingInteractiveScenePrepared) {
-                [self restoreFloatingSceneAfterCancelledTransition];
-            }
             self.floatingDockTransitionActive = NO;
             self.floatingContainer.transform = CGAffineTransformIdentity;
             self.floatingContainer.frame =
@@ -2456,6 +2377,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingDockReady && primaryMovement < 0.0) {
         [self setFloatingDockReady:NO animated:YES];
+        [self restoreFloatingSceneAfterCancelledTransition];
         [self transitionFloatingWindowToDocked];
         return;
     }
@@ -2527,14 +2449,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.layer.cornerRadius = 0.0;
                          self.floatingDimView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
-                         [self layoutFloatingHostView];
                          [self layoutFloatingHandleForCurrentContainer];
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
                          NSString *identifier = [self.floatingIdentifier copy];
-                         [self.floatingInteractiveSnapshot removeFromSuperview];
-                         self.floatingInteractiveSnapshot = nil;
                          UIView *snapshot =
                              [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
                          if (!snapshot) {
@@ -2543,11 +2462,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          }
                          snapshot.frame = targetFrame;
                          [rootView addSubview:snapshot];
+                         [self.floatingInteractiveSnapshot removeFromSuperview];
+                         self.floatingInteractiveSnapshot = nil;
 
                          self.floatingReconnectSuppressed = YES;
                          self.floatingInteractiveScenePrepared = NO;
                          self.floatingInteractiveFullscreenTransition = NO;
-                         self.floatingCenteredReferenceSize = CGSizeZero;
                          self.floatingLaunchGeneration += 1;
                          id scene = self.floatingScene;
                          id presenter = self.floatingPresenter;
@@ -3580,7 +3500,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
-    self.floatingCenteredReferenceSize = CGSizeZero;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
     self.floatingKeyboardVisible = NO;
@@ -3750,7 +3669,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshot = nil;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
-    self.floatingCenteredReferenceSize = CGSizeZero;
     self.floatingDocked = NO;
     self.floatingDockTransitionActive = NO;
     self.floatingExternalActivationArmed = NO;

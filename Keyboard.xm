@@ -2,11 +2,11 @@
 #import <math.h>
 #import <notify.h>
 
-#define FLYME_KEYBOARD_NOTIFICATION CFSTR("com.codex.flymemultitasking.keyboard-state-changed")
+#define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
-#define FLYME_KEYBOARD_ROUTE_PATH @"/var/mobile/FlymeMultitasking/keyboard_route.plist"
 
 static BOOL FLMKeyboardRouteActive = NO;
+static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardHideObserver = nil;
@@ -48,17 +48,30 @@ static UIWindow *FLMKeyWindowForScene(UIWindowScene *scene) {
     return nil;
 }
 
+static uint64_t FLMIdentifierHash(NSString *identifier) {
+    const char *bytes = identifier.UTF8String;
+    if (!bytes || bytes[0] == '\0') {
+        return 0;
+    }
+    uint64_t value = 1469598103934665603ULL;
+    for (const unsigned char *cursor = (const unsigned char *)bytes;
+         *cursor;
+         cursor++) {
+        value ^= (uint64_t)*cursor;
+        value *= 1099511628211ULL;
+    }
+    return value ?: 1;
+}
+
 static void FLMReloadKeyboardRoute(void) {
-    NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:FLYME_KEYBOARD_ROUTE_PATH];
-    id activeValue = state[@"active"];
-    id identifierValue = state[@"bundleIdentifier"];
-    NSString *targetIdentifier =
-        [identifierValue isKindOfClass:[NSString class]] ? identifierValue : nil;
+    uint64_t targetHash = 0;
+    if (FLMKeyboardRouteToken >= 0) {
+        notify_get_state(FLMKeyboardRouteToken, &targetHash);
+    }
     NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    uint64_t currentHash = FLMIdentifierHash(currentIdentifier);
     FLMKeyboardRouteActive =
-        [activeValue isKindOfClass:[NSNumber class]] && [activeValue boolValue] &&
-        targetIdentifier.length > 0 && currentIdentifier.length > 0 &&
-        [targetIdentifier isEqualToString:currentIdentifier];
+        targetHash != 0 && currentHash != 0 && targetHash == currentHash;
 }
 
 static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
@@ -75,21 +88,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     uint64_t state = (visible ? (1ULL << 63) : 0) | encodedHeight;
     notify_set_state(FLMKeyboardFrameToken, state);
     notify_post(FLYME_KEYBOARD_FRAME_NOTIFICATION);
-}
-
-static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
-                                    void *observer,
-                                    CFStringRef name,
-                                    const void *object,
-                                    CFDictionaryRef userInfo) {
-    (void)center;
-    (void)observer;
-    (void)name;
-    (void)object;
-    (void)userInfo;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        FLMReloadKeyboardRoute();
-    });
 }
 
 %hook UITextEffectsWindow
@@ -149,14 +147,13 @@ static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
 
 %ctor {
     @autoreleasepool {
+        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
+                                 &FLMKeyboardRouteToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
         FLMReloadKeyboardRoute();
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            NULL,
-            FLMKeyboardRouteChanged,
-            FLYME_KEYBOARD_NOTIFICATION,
-            NULL,
-            CFNotificationSuspensionBehaviorDeliverImmediately);
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         FLMKeyboardFrameObserver =
             [center addObserverForName:UIKeyboardWillChangeFrameNotification
