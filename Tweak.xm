@@ -48,7 +48,6 @@ static const CGFloat FLMMaximumWheelIconSize = 68.0;
 @interface UIApplication (FLMRuntimePrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier suspended:(BOOL)suspended;
 - (void)_simulateLockButtonPress;
-- (UIInterfaceOrientation)statusBarOrientation;
 @end
 
 @interface UIImage (FLMRuntimePrivate)
@@ -138,9 +137,15 @@ static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
         }
     }
     UIApplication *application = [UIApplication sharedApplication];
-    if ([application respondsToSelector:@selector(statusBarOrientation)]) {
+    SEL statusBarSelector = NSSelectorFromString(@"statusBarOrientation");
+    if ([application respondsToSelector:statusBarSelector]) {
+        UIInterfaceOrientation (*orientationGetter)(id, SEL) =
+            (UIInterfaceOrientation (*)(id, SEL))
+                [application methodForSelector:statusBarSelector];
         UIInterfaceOrientation statusBarOrientation =
-            [application statusBarOrientation];
+            orientationGetter
+                ? orientationGetter(application, statusBarSelector)
+                : UIInterfaceOrientationUnknown;
         if (UIInterfaceOrientationIsLandscape(statusBarOrientation)) {
             return statusBarOrientation;
         }
