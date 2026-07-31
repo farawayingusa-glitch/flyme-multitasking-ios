@@ -48,6 +48,7 @@ static const CGFloat FLMMaximumWheelIconSize = 68.0;
 @interface UIApplication (FLMRuntimePrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier suspended:(BOOL)suspended;
 - (void)_simulateLockButtonPress;
+- (UIInterfaceOrientation)statusBarOrientation;
 @end
 
 @interface UIImage (FLMRuntimePrivate)
@@ -117,6 +118,7 @@ static BOOL FLMDeviceIsLocked(void) {
 }
 
 static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
+    UIInterfaceOrientation portraitCandidate = UIInterfaceOrientationUnknown;
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) {
@@ -126,10 +128,24 @@ static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
                 scene.activationState == UISceneActivationStateForegroundInactive) {
                 UIInterfaceOrientation orientation =
                     ((UIWindowScene *)scene).interfaceOrientation;
-                if (orientation != UIInterfaceOrientationUnknown) {
+                if (UIInterfaceOrientationIsLandscape(orientation)) {
                     return orientation;
                 }
+                if (orientation != UIInterfaceOrientationUnknown) {
+                    portraitCandidate = orientation;
+                }
             }
+        }
+    }
+    UIApplication *application = [UIApplication sharedApplication];
+    if ([application respondsToSelector:@selector(statusBarOrientation)]) {
+        UIInterfaceOrientation statusBarOrientation =
+            [application statusBarOrientation];
+        if (UIInterfaceOrientationIsLandscape(statusBarOrientation)) {
+            return statusBarOrientation;
+        }
+        if (statusBarOrientation != UIInterfaceOrientationUnknown) {
+            portraitCandidate = statusBarOrientation;
         }
     }
     UIDeviceOrientation deviceOrientation = [UIDevice currentDevice].orientation;
@@ -142,7 +158,9 @@ static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
     if (deviceOrientation == UIDeviceOrientationPortraitUpsideDown) {
         return UIInterfaceOrientationPortraitUpsideDown;
     }
-    return UIInterfaceOrientationPortrait;
+    return portraitCandidate != UIInterfaceOrientationUnknown
+               ? portraitCandidate
+               : UIInterfaceOrientationPortrait;
 }
 
 static CGRect FLMVisualScreenBounds(void) {
@@ -542,6 +560,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) CGPoint floatingHandleStartPoint;
 @property(nonatomic, assign) CGRect floatingHandleInitialContainerFrame;
 @property(nonatomic, assign) BOOL floatingHandleMoved;
+@property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
+@property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
+@property(nonatomic, assign) CGSize floatingCenteredReferenceSize;
+@property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, assign) BOOL floatingReconnectSuppressed;
 @property(nonatomic, assign) BOOL floatingKeyboardVisible;
 @property(nonatomic, assign) CGRect floatingKeyboardFrame;
@@ -584,7 +606,15 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)applyLandscapeKeyboardLayout;
 - (void)restoreKeyboardWindowFrames;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
+- (void)layoutFloatingHandleForCurrentContainer;
+- (void)prepareFloatingSceneForInteractiveFullscreen;
+- (void)restoreFloatingSceneAfterCancelledTransition;
+- (BOOL)updateFloatingSceneToReferenceSize:(CGSize)referenceSize
+                               orientation:(NSInteger)orientation;
 - (void)transitionFloatingWindowToFullscreen;
+- (void)finishFullscreenHandoffWithCover:(UIView *)cover
+                              identifier:(NSString *)identifier
+                                 attempt:(NSUInteger)attempt;
 - (void)protectedSceneDidDisappear:(NSNotification *)notification;
 - (void)openFloatingIdentifier:(NSString *)identifier;
 - (void)attachFloatingIdentifier:(NSString *)identifier
@@ -1442,11 +1472,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feedback =
+            [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [feedback impactOccurred];
+    }
     [UIView animateWithDuration:0.10
                      animations:^{
-                         self.floatingHandleBar.alpha = 0.42;
+                         self.floatingHandleBar.alpha = 1.0;
                          self.floatingHandleBar.transform =
-                             CGAffineTransformMakeScale(0.92, 0.92);
+                             CGAffineTransformMakeScale(1.10, 1.28);
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
@@ -1457,6 +1492,103 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                   CGAffineTransformIdentity;
                                           }];
                      }];
+}
+
+- (BOOL)updateFloatingSceneToReferenceSize:(CGSize)referenceSize
+                               orientation:(NSInteger)orientation {
+    id scene = self.floatingScene;
+    if (!scene || referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+        return NO;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings &&
+            [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if (!mutableSettings ||
+            ![scene respondsToSelector:
+                       @selector(updateSettings:withTransitionContext:)]) {
+            return NO;
+        }
+        if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
+            [mutableSettings setFrame:CGRectMake(0.0,
+                                                  0.0,
+                                                  referenceSize.width,
+                                                  referenceSize.height)];
+        }
+        if (orientation >= 1 && orientation <= 4 &&
+            [mutableSettings respondsToSelector:
+                                 @selector(setInterfaceOrientation:)]) {
+            [mutableSettings setInterfaceOrientation:orientation];
+        }
+        [scene updateSettings:mutableSettings withTransitionContext:nil];
+        self.floatingHostReferenceSize = referenceSize;
+        [self layoutFloatingHostView];
+        return YES;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+- (void)prepareFloatingSceneForInteractiveFullscreen {
+    if (self.floatingInteractiveScenePrepared) {
+        return;
+    }
+    self.floatingInteractiveScenePrepared = YES;
+    self.floatingInteractiveFullscreenTransition = YES;
+    self.floatingCenteredReferenceSize = self.floatingHostReferenceSize;
+
+    UIView *snapshot =
+        [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
+    snapshot.frame = self.floatingContainer.bounds;
+    snapshot.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.floatingContainer addSubview:snapshot];
+    self.floatingInteractiveSnapshot = snapshot;
+
+    CGSize fullscreenSize =
+        self.floatingWindow.rootViewController.view.bounds.size;
+    NSInteger orientation = (NSInteger)FLMActiveInterfaceOrientation();
+    [self updateFloatingSceneToReferenceSize:fullscreenSize
+                                 orientation:orientation];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.06 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *currentSnapshot = self.floatingInteractiveSnapshot;
+        if (!currentSnapshot) {
+            return;
+        }
+        [UIView animateWithDuration:0.10
+                         animations:^{
+                             currentSnapshot.alpha = 0.0;
+                         }
+                         completion:^(BOOL finished) {
+                             (void)finished;
+                             [currentSnapshot removeFromSuperview];
+                             if (self.floatingInteractiveSnapshot == currentSnapshot) {
+                                 self.floatingInteractiveSnapshot = nil;
+                             }
+                         }];
+    });
+}
+
+- (void)restoreFloatingSceneAfterCancelledTransition {
+    [self.floatingInteractiveSnapshot removeFromSuperview];
+    self.floatingInteractiveSnapshot = nil;
+    BOOL wasPrepared = self.floatingInteractiveScenePrepared;
+    self.floatingInteractiveScenePrepared = NO;
+    self.floatingInteractiveFullscreenTransition = NO;
+    if (wasPrepared &&
+        self.floatingCenteredReferenceSize.width > 0.0 &&
+        self.floatingCenteredReferenceSize.height > 0.0) {
+        [self updateFloatingSceneToReferenceSize:self.floatingCenteredReferenceSize
+                                     orientation:1];
+    }
+    self.floatingCenteredReferenceSize = CGSizeZero;
 }
 
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
@@ -1472,6 +1604,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandleStartPoint = point;
         self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
         self.floatingHandleMoved = NO;
+        self.floatingInteractiveScenePrepared = NO;
+        if (@available(iOS 10.0, *)) {
+            UIImpactFeedbackGenerator *feedback =
+                [[UIImpactFeedbackGenerator alloc]
+                    initWithStyle:UIImpactFeedbackStyleLight];
+            [feedback impactOccurred];
+        }
+        [UIView animateWithDuration:0.12
+                         animations:^{
+                             self.floatingHandleBar.alpha = 1.0;
+                             self.floatingHandleBar.transform =
+                                 landscape
+                                     ? CGAffineTransformMakeScale(1.28, 1.06)
+                                     : CGAffineTransformMakeScale(1.06, 1.28);
+                         }];
         return;
     }
 
@@ -1487,11 +1634,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             fabs(primaryMovement) >= fabs(crossMovement) * 0.55) {
             if (primaryMovement >= 3.0) {
                 self.floatingHandleMoved = YES;
+                [self prepareFloatingSceneForInteractiveFullscreen];
             }
             CGRect start = self.floatingHandleInitialContainerFrame;
             CGFloat available =
-                landscape ? MAX(1.0, CGRectGetWidth(bounds) - CGRectGetMinX(start))
-                          : MAX(1.0, CGRectGetHeight(bounds) - CGRectGetMinY(start));
+                landscape ? MAX(1.0, CGRectGetWidth(bounds) - CGRectGetMaxX(start))
+                          : MAX(1.0, CGRectGetHeight(bounds) - CGRectGetMaxY(start));
             CGFloat progress = MIN(1.0, MAX(0.0, primaryMovement / available));
             CGRect target = bounds;
             CGRect frame = CGRectMake(
@@ -1502,8 +1650,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingContainer.frame = frame;
             self.floatingContainer.layer.cornerRadius = 18.0 * (1.0 - progress);
             self.floatingDimView.alpha = 1.0 - progress;
-            self.floatingHandle.alpha = 1.0 - progress;
+            self.floatingHandle.alpha =
+                1.0 - MAX(0.0, (progress - 0.88) / 0.12);
             [self layoutFloatingHostView];
+            [self layoutFloatingHandleForCurrentContainer];
         } else {
             CGFloat resistance = MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
             self.floatingHandleBar.transform =
@@ -1523,6 +1673,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
+    [self restoreFloatingSceneAfterCancelledTransition];
     void (^changes)(void) = ^{
         self.floatingContainer.layer.cornerRadius = 18.0;
         self.floatingDimView.alpha = 1.0;
@@ -1562,16 +1713,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingDimView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
                          [self layoutFloatingHostView];
+                         [self layoutFloatingHandleForCurrentContainer];
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
                          NSString *identifier = [self.floatingIdentifier copy];
+                         [self.floatingInteractiveSnapshot removeFromSuperview];
+                         self.floatingInteractiveSnapshot = nil;
                          UIView *snapshot =
                              [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
+                         if (!snapshot) {
+                             snapshot = [[UIView alloc] initWithFrame:targetFrame];
+                             snapshot.backgroundColor = [UIColor blackColor];
+                         }
                          snapshot.frame = targetFrame;
                          [rootView addSubview:snapshot];
 
                          self.floatingReconnectSuppressed = YES;
+                         self.floatingInteractiveScenePrepared = NO;
+                         self.floatingInteractiveFullscreenTransition = NO;
+                         self.floatingCenteredReferenceSize = CGSizeZero;
                          self.floatingLaunchGeneration += 1;
                          id scene = self.floatingScene;
                          id presenter = self.floatingPresenter;
@@ -1599,20 +1760,42 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          }
                          self.floatingContainer.alpha = 0.0;
                          [self activateIdentifierFullscreen:identifier];
-                         [UIView animateWithDuration:0.20
-                                               delay:0.04
-                                             options:UIViewAnimationOptionCurveEaseOut
-                                          animations:^{
-                                              snapshot.alpha = 0.0;
-                                          }
-                                          completion:^(BOOL completed) {
-                                              (void)completed;
-                                              [snapshot removeFromSuperview];
-                                              self.floatingWindow.hidden = YES;
-                                              self.floatingContainer.alpha = 1.0;
-                                              [self resetFloatingInteractiveLayoutAnimated:NO];
-                                              [self stopLockMonitoringIfIdle];
-                                          }];
+                         [self finishFullscreenHandoffWithCover:snapshot
+                                                   identifier:identifier
+                                                      attempt:0];
+                     }];
+}
+
+- (void)finishFullscreenHandoffWithCover:(UIView *)cover
+                              identifier:(NSString *)identifier
+                                 attempt:(NSUInteger)attempt {
+    BOOL targetIsFrontmost =
+        identifier.length > 0 &&
+        [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
+    BOOL minimumCoverTimeElapsed = attempt >= 8;
+    if ((!targetIsFrontmost || !minimumCoverTimeElapsed) && attempt < 24) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.05 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self finishFullscreenHandoffWithCover:cover
+                                       identifier:identifier
+                                          attempt:attempt + 1];
+        });
+        return;
+    }
+    [UIView animateWithDuration:0.12
+                          delay:targetIsFrontmost ? 0.05 : 0.0
+                        options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+                         cover.alpha = 0.0;
+                     }
+                     completion:^(BOOL finished) {
+                         (void)finished;
+                         [cover removeFromSuperview];
+                         self.floatingWindow.hidden = YES;
+                         self.floatingContainer.alpha = 1.0;
+                         [self resetFloatingInteractiveLayoutAnimated:NO];
+                         [self stopLockMonitoringIfIdle];
                      }];
 }
 
@@ -1701,7 +1884,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRectMake(originX, top, containerWidth, containerHeight);
     [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
+    [self layoutFloatingHandleForCurrentContainer];
+}
 
+- (void)layoutFloatingHandleForCurrentContainer {
+    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    BOOL landscape =
+        CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
+    CGFloat containerWidth = CGRectGetWidth(self.floatingContainer.frame);
+    CGFloat containerHeight = CGRectGetHeight(self.floatingContainer.frame);
     if (landscape) {
         CGFloat handleHeight = containerHeight * 0.30;
         self.floatingHandle.frame =
@@ -1746,8 +1937,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGSizeMake(referenceSize.height, referenceSize.width);
     }
 
-    CGFloat scale = MIN(targetSize.width / referenceSize.width,
-                        targetSize.height / referenceSize.height);
+    CGFloat widthScale = targetSize.width / referenceSize.width;
+    CGFloat heightScale = targetSize.height / referenceSize.height;
+    CGFloat scale = self.floatingInteractiveFullscreenTransition
+                        ? MAX(widthScale, heightScale)
+                        : MIN(widthScale, heightScale);
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0.0,
                              0.0,
@@ -2148,6 +2342,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     self.floatingReconnectSuppressed = NO;
+    self.floatingInteractiveScenePrepared = NO;
+    self.floatingInteractiveFullscreenTransition = NO;
+    self.floatingCenteredReferenceSize = CGSizeZero;
+    [self.floatingInteractiveSnapshot removeFromSuperview];
+    self.floatingInteractiveSnapshot = nil;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
@@ -2286,6 +2485,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
     self.floatingLaunchGeneration += 1;
+    [self.floatingInteractiveSnapshot removeFromSuperview];
+    self.floatingInteractiveSnapshot = nil;
+    self.floatingInteractiveScenePrepared = NO;
+    self.floatingInteractiveFullscreenTransition = NO;
+    self.floatingCenteredReferenceSize = CGSizeZero;
     NSUInteger generation = self.floatingLaunchGeneration;
     id scene = self.floatingScene;
     id presenter = self.floatingPresenter;

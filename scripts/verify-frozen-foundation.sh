@@ -22,6 +22,7 @@ required_lines=(
     "CGFloat containerHeight = 520.0;"
     "floor((height - containerHeight) * 0.5 - 44.0);"
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
+    "CGRectGetHeight(bounds) - CGRectGetMaxY(start)"
 )
 
 for required_line in "${required_lines[@]}"; do
