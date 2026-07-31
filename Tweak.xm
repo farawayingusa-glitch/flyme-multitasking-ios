@@ -51,13 +51,18 @@
 @end
 
 @interface FLMSBApplication : NSObject
-- (id)applicationSceneHandle;
 @end
 
 @interface FLMApplicationSceneHandle : NSObject
 - (NSInteger)currentInterfaceOrientation;
 - (id)sceneIfExists;
 - (id)scene;
+@end
+
+@interface FLMDeviceApplicationSceneEntity : NSObject
+- (instancetype)initWithApplicationForMainDisplay:(id)application
+             generatingNewPrimarySceneIfRequired:(BOOL)required;
+- (FLMApplicationSceneHandle *)sceneHandle;
 @end
 
 @interface NSObject (FLMSceneHostingPrivate)
@@ -307,6 +312,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL wheelGestureActive;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
+@property(nonatomic, strong) FLMDeviceApplicationSceneEntity *floatingSceneEntity;
 @property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
 @property(nonatomic, strong) id floatingScene;
 @property(nonatomic, strong) id floatingPresentationManager;
@@ -1204,6 +1210,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return nil;
     }
     @try {
+        if (self.floatingSceneEntity &&
+            [identifier isEqualToString:self.floatingIdentifier] &&
+            [self.floatingSceneEntity respondsToSelector:@selector(sceneHandle)]) {
+            id existingCandidate = [self.floatingSceneEntity sceneHandle];
+            if ([existingCandidate respondsToSelector:@selector(sceneIfExists)] ||
+                [existingCandidate respondsToSelector:@selector(scene)]) {
+                return (FLMApplicationSceneHandle *)existingCandidate;
+            }
+        }
+
         Class controllerClass = NSClassFromString(@"SBApplicationController");
         if (![controllerClass respondsToSelector:@selector(sharedInstance)]) {
             return nil;
@@ -1217,11 +1233,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMSBApplication *application =
             (FLMSBApplication *)[controller
                 applicationWithBundleIdentifier:identifier];
-        if (![application respondsToSelector:
-                             @selector(applicationSceneHandle)]) {
+        if (!application) {
             return nil;
         }
-        id candidate = [application applicationSceneHandle];
+
+        Class entityClass =
+            NSClassFromString(@"SBDeviceApplicationSceneEntity");
+        SEL initializer =
+            @selector(initWithApplicationForMainDisplay:
+                 generatingNewPrimarySceneIfRequired:);
+        id allocatedEntity = [entityClass alloc];
+        if (!allocatedEntity ||
+            ![allocatedEntity respondsToSelector:initializer]) {
+            return nil;
+        }
+        FLMDeviceApplicationSceneEntity *entity =
+            [(FLMDeviceApplicationSceneEntity *)allocatedEntity
+                initWithApplicationForMainDisplay:application
+                generatingNewPrimarySceneIfRequired:YES];
+        if (!entity ||
+            ![entity respondsToSelector:@selector(sceneHandle)]) {
+            return nil;
+        }
+        self.floatingSceneEntity = entity;
+        id candidate = [entity sceneHandle];
         if (![candidate respondsToSelector:@selector(sceneIfExists)] &&
             ![candidate respondsToSelector:@selector(scene)]) {
             return nil;
@@ -1389,6 +1424,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSUInteger generation = self.floatingLaunchGeneration;
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
+    self.floatingSceneEntity = nil;
     self.floatingSceneHandle = nil;
     self.floatingScene = nil;
     self.floatingPresentationManager = nil;
@@ -1512,6 +1548,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id scene = self.floatingScene;
     id presenter = self.floatingPresenter;
     UIWindow *previousKeyWindow = self.previousKeyWindow;
+    self.floatingSceneEntity = nil;
     self.floatingSceneHandle = nil;
     self.floatingScene = nil;
     self.floatingPresentationManager = nil;
