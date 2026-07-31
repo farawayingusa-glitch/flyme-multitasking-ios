@@ -256,53 +256,6 @@ static NSString *FLMFrontmostApplicationIdentifier(void) {
     return nil;
 }
 
-static BOOL FLMSwitcherIsVisible(void) {
-    NSArray<NSString *> *classNames = @[
-        @"SBMainSwitcherViewController",
-        @"SBMainSwitcherController"
-    ];
-    NSArray<NSString *> *sharedSelectors = @[
-        @"sharedInstanceIfExists",
-        @"sharedInstance"
-    ];
-    NSArray<NSString *> *visibilitySelectors = @[
-        @"isSwitcherVisible",
-        @"isSwitcherShowing",
-        @"isPresentingSwitcher",
-        @"isVisible"
-    ];
-    for (NSString *className in classNames) {
-        Class controllerClass = NSClassFromString(className);
-        id controller = nil;
-        for (NSString *sharedSelectorName in sharedSelectors) {
-            SEL sharedSelector = NSSelectorFromString(sharedSelectorName);
-            if (![controllerClass respondsToSelector:sharedSelector]) {
-                continue;
-            }
-            id (*sharedGetter)(id, SEL) =
-                (id (*)(id, SEL))[controllerClass methodForSelector:sharedSelector];
-            controller = sharedGetter ? sharedGetter(controllerClass, sharedSelector)
-                                      : nil;
-            if (controller) {
-                break;
-            }
-        }
-        for (NSString *visibilitySelectorName in visibilitySelectors) {
-            SEL visibilitySelector =
-                NSSelectorFromString(visibilitySelectorName);
-            if (![controller respondsToSelector:visibilitySelector]) {
-                continue;
-            }
-            BOOL (*visibilityGetter)(id, SEL) =
-                (BOOL (*)(id, SEL))[controller methodForSelector:visibilitySelector];
-            if (visibilityGetter && visibilityGetter(controller, visibilitySelector)) {
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
@@ -774,6 +727,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (CGRect)centeredFloatingFrame;
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width;
 - (void)layoutFloatingDockShadow;
+- (void)updateFloatingDockAccessoryPositions;
 - (void)layoutFloatingResizeHandle;
 - (void)layoutFloatingDockReadyIndicator;
 - (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated;
@@ -1640,7 +1594,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (CGRect)systemHomeHandoffFrameForLocation:(CGPoint)location
                                       bounds:(CGRect)bounds {
-    CGRect target = [self centeredFloatingFrame];
+    CGRect target =
+        [self dockedFloatingFrameOnRight:YES width:FLMMinimumDockWidth];
     CGFloat height = MAX(1.0, CGRectGetHeight(bounds));
     CGFloat upwardProgress =
         MIN(0.90, MAX(0.0, ((height - location.y) / height) * 1.45));
@@ -1708,7 +1663,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (CGRectIsNull(startFrame) || CGRectIsEmpty(startFrame)) {
         startFrame = bounds;
     }
-    CGRect target = [self centeredFloatingFrame];
+    CGRect target =
+        [self dockedFloatingFrameOnRight:YES width:FLMMinimumDockWidth];
     UIView *cover = self.systemHomeGesturePendingCover;
     self.systemHomeGesturePendingCover = nil;
     if (cover) {
@@ -1735,7 +1691,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)showSystemHomeGestureSuccessFeedback {
-    self.systemHomeGestureHandoffFrame = [self centeredFloatingFrame];
+    self.systemHomeGestureHandoffFrame =
+        [self dockedFloatingFrameOnRight:YES width:FLMMinimumDockWidth];
     [self layoutSystemHomeGestureIndicator];
     [self setSystemHomeGestureReady:YES animated:YES];
     NSUInteger generation = self.systemHomeGestureGeneration;
@@ -1893,29 +1850,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                               startFrame:(CGRect)startFrame
                              generation:(NSUInteger)generation
                                 attempt:(NSUInteger)attempt {
+    (void)attempt;
     if (generation != self.systemHomeGestureGeneration ||
         identifier.length == 0 || !self.enabled || FLMDeviceIsLocked() ||
         !self.floatingWindow.hidden || self.wheelPinned) {
         [self cancelSystemHomeGestureTransition];
-        return;
-    }
-    BOOL originalAppStillFrontmost =
-        [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    BOOL switcherStillVisible = FLMSwitcherIsVisible();
-    if (originalAppStillFrontmost || switcherStillVisible) {
-        if (attempt < 48) {
-            dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW,
-                              (int64_t)(0.025 * NSEC_PER_SEC)),
-                dispatch_get_main_queue(), ^{
-                    [self openSystemHomeGestureIdentifier:identifier
-                                               startFrame:startFrame
-                                               generation:generation
-                                                  attempt:attempt + 1];
-                });
-        } else {
-            [self cancelSystemHomeGestureTransition];
-        }
         return;
     }
     [self beginSystemHomeGestureTransitionWithStartFrame:startFrame];
@@ -2369,8 +2308,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [CATransaction setDisableActions:YES];
             [UIView performWithoutAnimation:^{
                 self.floatingContainer.center = center;
-                [self layoutFloatingDockShadow];
-                [self layoutFloatingResizeHandle];
+                [self updateFloatingDockAccessoryPositions];
             }];
             [CATransaction commit];
         }
@@ -2520,8 +2458,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [CATransaction setDisableActions:YES];
         [UIView performWithoutAnimation:^{
             self.floatingContainer.center = center;
-            [self layoutFloatingDockShadow];
-            [self layoutFloatingResizeHandle];
+            [self updateFloatingDockAccessoryPositions];
         }];
         [CATransaction commit];
         return;
@@ -3163,6 +3100,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
          belowSubview:self.floatingContainer];
 }
 
+- (void)updateFloatingDockAccessoryPositions {
+    if (!self.floatingDocked) {
+        return;
+    }
+    self.floatingDockShadowView.center = self.floatingContainer.center;
+    self.floatingDockShadowView.transform = self.floatingContainer.transform;
+
+    CGRect frame = self.floatingContainer.frame;
+    const CGFloat hitSize = 46.0;
+    self.floatingResizeHandle.frame =
+        self.floatingDockedOnRight
+            ? CGRectMake(CGRectGetMinX(frame) - 32.0,
+                         CGRectGetMaxY(frame) - 14.0,
+                         hitSize,
+                         hitSize)
+            : CGRectMake(CGRectGetMaxX(frame) - 14.0,
+                         CGRectGetMaxY(frame) - 14.0,
+                         hitSize,
+                         hitSize);
+}
+
 - (void)layoutFloatingDockReadyIndicator {
     CGSize size = self.floatingDockReadyIndicator.bounds.size;
     self.floatingDockReadyIndicator.center =
@@ -3449,18 +3407,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect target =
         [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
                                    width:self.floatingDockWidth];
-    [UIView animateWithDuration:0.22
+    [UIView animateWithDuration:0.28
                           delay:0.0
+         usingSpringWithDamping:0.88
+          initialSpringVelocity:0.28
                         options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionCurveEaseOut |
                                 UIViewAnimationOptionAllowUserInteraction
                      animations:^{
                          self.floatingContainer.center =
                              CGPointMake(CGRectGetMidX(target),
                                          CGRectGetMidY(target));
                          self.floatingResizeHandle.alpha = 1.0;
-                         [self layoutFloatingDockShadow];
-                         [self layoutFloatingResizeHandle];
+                         [self updateFloatingDockAccessoryPositions];
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
@@ -3468,12 +3426,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              self.floatingContainer.transform =
                                  CGAffineTransformIdentity;
                              self.floatingContainer.layer.borderWidth = 0.0;
-                             self.floatingContainer.bounds =
-                                 CGRectMake(0.0,
-                                            0.0,
-                                            CGRectGetWidth(target),
-                                            CGRectGetHeight(target));
-                             [self layoutFloatingHostView];
                              [self layoutFloatingDockShadow];
                              [self layoutFloatingResizeHandle];
                          }];
@@ -4032,7 +3984,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSystemHomeHandoffStartFrame = startFrame;
     self.floatingDockWidth = FLMMinimumDockWidth;
     self.floatingReconnectSuppressed = NO;
-    self.floatingDocked = NO;
+    // The system bottom gesture now hands the current application directly to
+    // the existing docked mode. Wheel launches continue to start centered.
+    self.floatingDocked = systemHomeHandoff;
     self.floatingDockedOnRight = YES;
     self.floatingDockTransitionActive = NO;
     self.floatingResizeCenterReady = NO;
@@ -4201,10 +4155,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
     if (self.floatingLaunchUsesSystemHomeHandoff) {
-        CGRect target = [self centeredFloatingFrame];
+        CGRect target =
+            [self dockedFloatingFrameOnRight:YES width:FLMMinimumDockWidth];
         CGRect start = self.floatingSystemHomeHandoffStartFrame;
         if (CGRectIsNull(start) || CGRectIsEmpty(start)) {
-            start = CGRectInset(target, -18.0, -30.0);
+            start = target;
         }
         self.floatingLaunchUsesSystemHomeHandoff = NO;
         self.floatingSystemHomeHandoffStartFrame = CGRectNull;
@@ -4214,26 +4169,33 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingContainer.frame = transitionAlreadyVisible ? target : start;
             self.floatingContainer.alpha = 1.0;
             self.floatingContainer.transform = CGAffineTransformIdentity;
-            self.floatingHandle.alpha = transitionAlreadyVisible ? 1.0 : 0.0;
-            self.floatingDimView.alpha = transitionAlreadyVisible ? 1.0 : 0.0;
+            self.floatingContainer.layer.cornerRadius = 16.0;
+            self.floatingHandle.alpha = 0.0;
+            self.floatingDimView.alpha = 0.0;
+            self.floatingDockShadowView.hidden = NO;
+            self.floatingDockShadowView.alpha = 1.0;
             [self layoutFloatingHostView];
-            [self layoutFloatingHandleForCurrentContainer];
+            [self layoutFloatingDockShadow];
+            [self layoutFloatingResizeHandle];
         }];
+        self.floatingDocked = YES;
+        self.floatingDockedOnRight = YES;
+        self.floatingDockWidth = FLMMinimumDockWidth;
+        [self configureFloatingInteractionForDockedState];
         [self showSystemHomeGestureSuccessFeedback];
         if (transitionAlreadyVisible) {
             [self finishSystemHomeGestureTransition];
         } else {
-            [UIView animateWithDuration:0.34
+            [UIView animateWithDuration:0.30
                                   delay:0.0
                                 options:UIViewAnimationOptionBeginFromCurrentState |
                                         UIViewAnimationOptionCurveEaseOut |
                                         UIViewAnimationOptionAllowUserInteraction
                              animations:^{
                                  self.floatingContainer.frame = target;
-                                 self.floatingDimView.alpha = 1.0;
-                                 self.floatingHandle.alpha = 1.0;
                                  [self layoutFloatingHostView];
-                                 [self layoutFloatingHandleForCurrentContainer];
+                                 [self layoutFloatingDockShadow];
+                                 [self layoutFloatingResizeHandle];
                              }
                              completion:nil];
         }
@@ -4319,13 +4281,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [UIView animateWithDuration:0.24
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionCurveEaseIn
+                                UIViewAnimationOptionCurveEaseOut
                      animations:^{
                          self.floatingDimView.alpha = 0.0;
                          self.floatingContainer.alpha = 0.0;
-                         self.floatingContainer.transform =
-                             CGAffineTransformMakeScale(0.94, 0.94);
                          self.floatingHandle.alpha = 0.0;
+                         self.floatingDockShadowView.alpha = 0.0;
+                         self.floatingResizeHandle.alpha = 0.0;
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
@@ -4488,30 +4450,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     %orig;
     (void)touches;
     (void)event;
-}
-
-%end
-
-%hook UIRemoteKeyboardWindow
-
-- (void)setFrame:(CGRect)frame {
-    CGRect adjustedFrame =
-        [[FLMWheelController sharedController]
-            adjustedKeyboardFrameForWindow:(UIWindow *)self
-                             requestedFrame:frame];
-    %orig(adjustedFrame);
-}
-
-%end
-
-%hook UIKeyboardWindow
-
-- (void)setFrame:(CGRect)frame {
-    CGRect adjustedFrame =
-        [[FLMWheelController sharedController]
-            adjustedKeyboardFrameForWindow:(UIWindow *)self
-                             requestedFrame:frame];
-    %orig(adjustedFrame);
 }
 
 %end

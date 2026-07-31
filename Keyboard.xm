@@ -60,6 +60,8 @@ static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
     });
 }
 
+%group FLMKeyboardHooks
+
 %hook UITextEffectsWindow
 
 - (CGSize)keyboardScreenReferenceSize {
@@ -102,7 +104,15 @@ static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
 
 %end
 
+%end
+
 %ctor {
+    NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    if (currentIdentifier.length == 0 ||
+        [currentIdentifier isEqualToString:@"com.apple.springboard"]) {
+        return;
+    }
+    %init(FLMKeyboardHooks);
     FLMReloadKeyboardRoute();
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
