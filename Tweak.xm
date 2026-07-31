@@ -317,6 +317,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) id floatingScene;
 @property(nonatomic, strong) id floatingPresentationManager;
 @property(nonatomic, strong) id floatingPresenter;
+@property(nonatomic, assign) CGSize floatingHostReferenceSize;
 @property(nonatomic, assign) NSUInteger floatingLaunchGeneration;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
 + (instancetype)sharedController;
@@ -351,6 +352,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)backgroundFloatingScene:(id)scene;
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
+- (void)layoutFloatingHostView;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -572,7 +574,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleFloatingExclusiveGesture:)];
     self.floatingExclusiveGesture.delegate = self;
-    self.floatingExclusiveGesture.cancelsTouchesInView = YES;
+    self.floatingExclusiveGesture.cancelsTouchesInView = NO;
     self.floatingExclusiveGesture.delaysTouchesBegan = NO;
     self.floatingExclusiveGesture.delaysTouchesEnded = NO;
     self.floatingExclusiveGesture.numberOfTouchesRequired = 1;
@@ -746,6 +748,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
     if (gestureRecognizer == self.floatingBackdropTap) {
+        UIView *touchView = touch.view;
+        if (touchView == self.floatingContainer ||
+            [touchView isDescendantOfView:self.floatingContainer] ||
+            touchView == self.floatingHandle ||
+            [touchView isDescendantOfView:self.floatingHandle]) {
+            return NO;
+        }
         CGPoint point =
             [touch locationInView:self.floatingWindow.rootViewController.view];
         return !self.floatingWindow.hidden &&
@@ -755,6 +764,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     if (gestureRecognizer == self.floatingExclusiveGesture) {
         if (self.floatingWindow.hidden || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        UIView *touchView = touch.view;
+        if (touchView == self.floatingContainer ||
+            [touchView isDescendantOfView:self.floatingContainer] ||
+            touchView == self.floatingHandle ||
+            [touchView isDescendantOfView:self.floatingHandle]) {
             return NO;
         }
         CGPoint point =
@@ -1122,6 +1138,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     if (gesture.state == UIGestureRecognizerStateEnded) {
+        CGPoint point =
+            [gesture locationInView:self.floatingWindow.rootViewController.view];
+        CGRect handleHitFrame =
+            CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
+        if (CGRectContainsPoint(self.floatingContainer.frame, point) ||
+            CGRectContainsPoint(handleHitFrame, point)) {
+            return;
+        }
         [self closeFloatingWindowKeepingApplication:YES];
     }
 }
@@ -1191,7 +1215,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat originX = floor((width - containerWidth) * 0.5);
     self.floatingContainer.frame =
         CGRectMake(originX, top, containerWidth, containerHeight);
-    self.floatingHostView.frame = self.floatingContainer.bounds;
+    [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
 
     CGFloat handleWidth = containerWidth * 0.30;
@@ -1203,6 +1227,39 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                    44.0);
     self.floatingHandleBar.frame =
         CGRectMake(0.0, floor((44.0 - 5.0) * 0.5), handleWidth, 5.0);
+}
+
+- (void)layoutFloatingHostView {
+    UIView *host = self.floatingHostView;
+    if (!host || !self.floatingContainer) {
+        return;
+    }
+    CGSize referenceSize = self.floatingHostReferenceSize;
+    if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+        referenceSize = self.floatingWindow.bounds.size;
+    }
+    CGSize targetSize = self.floatingContainer.bounds.size;
+    if (targetSize.width < 1.0 || targetSize.height < 1.0) {
+        return;
+    }
+
+    BOOL targetIsLandscape = targetSize.width > targetSize.height;
+    BOOL referenceIsLandscape = referenceSize.width > referenceSize.height;
+    if (targetIsLandscape != referenceIsLandscape) {
+        referenceSize =
+            CGSizeMake(referenceSize.height, referenceSize.width);
+    }
+
+    CGFloat scale = MIN(targetSize.width / referenceSize.width,
+                        targetSize.height / referenceSize.height);
+    host.transform = CGAffineTransformIdentity;
+    host.bounds = CGRectMake(0.0,
+                             0.0,
+                             referenceSize.width,
+                             referenceSize.height);
+    host.center = CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
+                              CGRectGetMidY(self.floatingContainer.bounds));
+    host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
@@ -1367,26 +1424,36 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (![self prepareFloatingScene:scene handle:sceneHandle]) {
         return nil;
     }
-    id manager = nil;
-    id presenter = nil;
+    self.floatingScene = scene;
+    id manager = self.floatingPresentationManager;
+    id presenter = self.floatingPresenter;
     UIView *host = nil;
     @try {
-        if ([scene respondsToSelector:@selector(uiPresentationManager)]) {
+        if (!manager &&
+            [scene respondsToSelector:@selector(uiPresentationManager)]) {
             manager = [scene uiPresentationManager];
         }
         if (!manager &&
             [scene respondsToSelector:@selector(presentationManager)]) {
             manager = [scene presentationManager];
         }
-        if (![manager respondsToSelector:
-                         @selector(createPresenterWithIdentifier:)]) {
-            return nil;
+        if (manager && manager != self.floatingPresentationManager) {
+            self.floatingPresentationManager = manager;
         }
-        presenter =
-            [manager createPresenterWithIdentifier:
-                         @"com.codex.flymemultitasking.centered"];
-        if ([presenter respondsToSelector:@selector(activate)]) {
-            [presenter activate];
+        if (!presenter) {
+            if (![manager respondsToSelector:
+                             @selector(createPresenterWithIdentifier:)]) {
+                return nil;
+            }
+            presenter =
+                [manager createPresenterWithIdentifier:
+                             @"com.codex.flymemultitasking.centered"];
+            if (presenter) {
+                self.floatingPresenter = presenter;
+            }
+            if ([presenter respondsToSelector:@selector(activate)]) {
+                [presenter activate];
+            }
         }
         if ([presenter respondsToSelector:@selector(presentationView)]) {
             host = [presenter presentationView];
@@ -1395,18 +1462,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         host = nil;
     }
     if (![host isKindOfClass:[UIView class]]) {
-        @try {
-            if ([presenter respondsToSelector:@selector(deactivate)]) {
-                [presenter deactivate];
-            }
-            if ([presenter respondsToSelector:@selector(invalidate)]) {
-                [presenter invalidate];
-            }
-        } @catch (__unused NSException *exception) {
-        }
         return nil;
     }
-    self.floatingScene = scene;
     self.floatingPresentationManager = manager;
     self.floatingPresenter = presenter;
     host.backgroundColor = [UIColor blackColor];
@@ -1424,6 +1481,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSUInteger generation = self.floatingLaunchGeneration;
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
+    self.floatingHostReferenceSize = CGSizeZero;
     self.floatingSceneEntity = nil;
     self.floatingSceneHandle = nil;
     self.floatingScene = nil;
@@ -1535,10 +1593,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingSceneHandle = sceneHandle;
     self.floatingHostView = host;
-    host.frame = self.floatingContainer.bounds;
-    host.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    CGSize referenceSize = host.bounds.size;
+    if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+        referenceSize = self.floatingWindow.bounds.size;
+    }
+    self.floatingHostReferenceSize = referenceSize;
+    host.autoresizingMask = UIViewAutoresizingNone;
     [self.floatingContainer insertSubview:host atIndex:0];
+    [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
 }
 
@@ -1551,6 +1613,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneEntity = nil;
     self.floatingSceneHandle = nil;
     self.floatingScene = nil;
+    self.floatingHostReferenceSize = CGSizeZero;
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
     self.floatingIdentifier = nil;
