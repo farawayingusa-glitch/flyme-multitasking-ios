@@ -251,6 +251,20 @@ static NSString *FLMFrontmostApplicationIdentifier(void) {
     return nil;
 }
 
+static BOOL FLMPrewarmApplicationIdentifier(NSString *identifier) {
+    if (identifier.length == 0 ||
+        [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+        return NO;
+    }
+    UIApplication *application = [UIApplication sharedApplication];
+    if (![application respondsToSelector:
+                         @selector(launchApplicationWithIdentifier:suspended:)]) {
+        return NO;
+    }
+    return [application launchApplicationWithIdentifier:identifier
+                                               suspended:YES];
+}
+
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
@@ -645,6 +659,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) int keyboardFrameNotifyToken;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
+@property(nonatomic, copy) NSString *prewarmedIdentifier;
+@property(nonatomic, copy) NSString *lastObservedFrontmostIdentifier;
+@property(nonatomic, assign) BOOL floatingExternalActivationArmed;
 @property(nonatomic, strong) FLMDeviceApplicationSceneEntity *floatingSceneEntity;
 @property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
 @property(nonatomic, strong) id floatingScene;
@@ -1692,6 +1709,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)dismissWheelLaunchingItem:(FLMWheelItemView *)item {
+    NSString *selectedIdentifier = [item.identifier copy];
+    BOOL selectedIsCurrentFloating =
+        !self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
+        [selectedIdentifier isEqualToString:self.floatingIdentifier];
+    BOOL selectedIsFrontmost =
+        selectedIdentifier.length > 0 &&
+        [selectedIdentifier isEqualToString:FLMFrontmostApplicationIdentifier()];
+    if (selectedIdentifier.length > 0 && !selectedIsCurrentFloating &&
+        !selectedIsFrontmost &&
+        ![selectedIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM] &&
+        FLMPrewarmApplicationIdentifier(selectedIdentifier)) {
+        // Start the suspended scene while the wheel is completing its existing
+        // dismissal animation. This gives scene creation a 240 ms head start.
+        self.prewarmedIdentifier = selectedIdentifier;
+    } else {
+        self.prewarmedIdentifier = nil;
+    }
     self.highlightedItem.highlighted = NO;
     self.highlightedItem = nil;
     self.wheelPinned = NO;
@@ -2594,6 +2628,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     NSString *identifier = [self.floatingIdentifier copy];
+    if (self.floatingDocked &&
+        [identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+        // The user opened the docked application through SpringBoard. Its
+        // primary scene now belongs to the fullscreen transition; reconnecting
+        // that same scene into the dock produces a black, permanently stale
+        // presenter. Detach our presenter without backgrounding the app.
+        self.floatingReconnectSuppressed = YES;
+        [self closeFloatingWindowKeepingApplication:NO];
+        return;
+    }
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
     id presenter = self.floatingPresenter;
@@ -2957,6 +3001,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          (void)finished;
                          self.floatingDockTransitionActive = NO;
                          self.floatingDocked = YES;
+                         self.lastObservedFrontmostIdentifier =
+                             FLMFrontmostApplicationIdentifier();
+                         self.floatingExternalActivationArmed =
+                             ![self.lastObservedFrontmostIdentifier
+                                 isEqualToString:self.floatingIdentifier];
                          self.floatingContainer.transform = CGAffineTransformIdentity;
                          self.floatingHandleBar.alpha = 1.0;
                          self.floatingHandleBar.transform =
@@ -2982,6 +3031,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.hidden = YES;
     self.floatingDockShadowView.hidden = NO;
     self.floatingDocked = NO;
+    self.floatingExternalActivationArmed = NO;
+    self.lastObservedFrontmostIdentifier = nil;
     FLMPublishKeyboardState(self.floatingIdentifier);
     [self.floatingWindow makeKeyWindow];
     CGRect target = [self centeredFloatingFrame];
@@ -3407,11 +3458,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return nil;
     }
     id scene = [self sceneForHandle:sceneHandle];
+    BOOL sceneChanged = scene && scene != self.floatingScene;
     if (![self prepareFloatingScene:scene handle:sceneHandle]) {
         return nil;
     }
     self.floatingScene = scene;
     self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
+
+    // Let the foreground/frame settings reach the application process before
+    // creating the remote presenter. Creating both in the same transaction is
+    // fast on a warm app but intermittently leaves a permanently black surface
+    // during cold launch.
+    if (sceneChanged) {
+        return nil;
+    }
 
     id manager = self.floatingPresentationManager;
     id presenter = self.floatingPresenter;
@@ -3462,16 +3522,43 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)openFloatingIdentifier:(NSString *)identifier {
     if (identifier.length == 0 || FLMDeviceIsLocked()) {
+        self.prewarmedIdentifier = nil;
+        return;
+    }
+    if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
+        [identifier isEqualToString:self.floatingIdentifier]) {
+        self.prewarmedIdentifier = nil;
+        return;
+    }
+    if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0) {
+        NSString *pendingIdentifier = [identifier copy];
+        BOOL pendingWasPrewarmed =
+            [self.prewarmedIdentifier isEqualToString:pendingIdentifier];
+        [self closeFloatingWindowKeepingApplication:YES];
+        self.prewarmedIdentifier =
+            pendingWasPrewarmed ? pendingIdentifier : nil;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.26 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                [self openFloatingIdentifier:pendingIdentifier];
+            });
         return;
     }
     if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+        self.prewarmedIdentifier = nil;
         return;
     }
+
+    BOOL alreadyPrewarmed =
+        [self.prewarmedIdentifier isEqualToString:identifier];
+    self.prewarmedIdentifier = nil;
 
     self.floatingDockWidth = FLMMinimumDockWidth;
     self.floatingReconnectSuppressed = NO;
     self.floatingDocked = NO;
     self.floatingDockedOnRight = YES;
+    self.floatingExternalActivationArmed = NO;
+    self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
@@ -3542,10 +3629,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      }
                      completion:nil];
 
-    UIApplication *application = [UIApplication sharedApplication];
-    if ([application respondsToSelector:
-                     @selector(launchApplicationWithIdentifier:suspended:)]) {
-        [application launchApplicationWithIdentifier:identifier suspended:YES];
+    if (!alreadyPrewarmed) {
+        FLMPrewarmApplicationIdentifier(identifier);
     }
     [self beginLockMonitoring];
     [self attachFloatingIdentifier:identifier
@@ -3583,6 +3668,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     if (![self sceneForHandle:sceneHandle]) {
         self.floatingStatusLabel.text = @"正在启动应用…";
+        if (attempt > 0 && attempt % 6 == 0) {
+            // A generated primary-scene entity can retain a handle whose scene
+            // was replaced during application launch. Resolve a fresh entity
+            // instead of polling the dead handle for the full timeout.
+            self.floatingSceneEntity = nil;
+            self.floatingSceneHandle = nil;
+        }
+        if (attempt == 8) {
+            FLMPrewarmApplicationIdentifier(identifier);
+        }
         if (attempt < 30) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -3602,6 +3697,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingStatusLabel.text = @"正在连接画面…";
+        if (attempt > 0 && attempt % 6 == 0) {
+            id stalePresenter = self.floatingPresenter;
+            @try {
+                if ([stalePresenter respondsToSelector:@selector(deactivate)]) {
+                    [stalePresenter deactivate];
+                }
+                if ([stalePresenter respondsToSelector:@selector(invalidate)]) {
+                    [stalePresenter invalidate];
+                }
+            } @catch (__unused NSException *exception) {
+            }
+            self.floatingPresentationManager = nil;
+            self.floatingPresenter = nil;
+        }
         if (attempt < 30) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -3644,6 +3753,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingCenteredReferenceSize = CGSizeZero;
     self.floatingDocked = NO;
     self.floatingDockTransitionActive = NO;
+    self.floatingExternalActivationArmed = NO;
+    self.lastObservedFrontmostIdentifier = nil;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
@@ -3773,6 +3884,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)checkLockState:(NSTimer *)timer {
     (void)timer;
+    if (self.floatingDocked && !self.floatingWindow.hidden &&
+        self.floatingIdentifier.length > 0) {
+        NSString *frontmostIdentifier = FLMFrontmostApplicationIdentifier();
+        BOOL targetIsFrontmost =
+            [frontmostIdentifier isEqualToString:self.floatingIdentifier];
+        BOOL targetWasFrontmost =
+            [self.lastObservedFrontmostIdentifier
+                isEqualToString:self.floatingIdentifier];
+        if (!targetIsFrontmost) {
+            self.floatingExternalActivationArmed = YES;
+        }
+        self.lastObservedFrontmostIdentifier = frontmostIdentifier;
+        if (self.floatingExternalActivationArmed && targetIsFrontmost &&
+            !targetWasFrontmost) {
+            // The docked app was opened by SpringBoard. Release only our
+            // presenter; backgrounding here would black out the fullscreen app.
+            self.floatingReconnectSuppressed = YES;
+            [self closeFloatingWindowKeepingApplication:NO];
+            return;
+        }
+    }
     if (!FLMDeviceIsLocked()) {
         [self stopLockMonitoringIfIdle];
         return;
@@ -3822,7 +3954,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         return;
     }
+    if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
+        [identifier isEqualToString:self.floatingIdentifier]) {
+        self.prewarmedIdentifier = nil;
+        return;
+    }
     if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+        self.prewarmedIdentifier = nil;
         return;
     }
     [self openFloatingIdentifier:identifier];

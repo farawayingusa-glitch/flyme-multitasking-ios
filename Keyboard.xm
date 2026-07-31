@@ -36,6 +36,18 @@ static CGSize FLMFullPhysicalScreenSize(void) {
     return CGSizeMake(width, height);
 }
 
+static UIWindow *FLMKeyWindowForScene(UIWindowScene *scene) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        return nil;
+    }
+    for (UIWindow *window in scene.windows) {
+        if (window.isKeyWindow) {
+            return window;
+        }
+    }
+    return nil;
+}
+
 static void FLMReloadKeyboardRoute(void) {
     NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:FLYME_KEYBOARD_ROUTE_PATH];
     id activeValue = state[@"active"];
@@ -94,10 +106,43 @@ static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
 %hook UIWindowScene
 
 - (CGRect)_referenceBounds {
-    if (!FLMKeyboardRouteActive) {
-        return %orig;
+    CGRect bounds = %orig;
+    // TrollOpen only uses this hook to make sure the physical reference size
+    // has been resolved. Changing the scene bounds itself also changes the app
+    // layout and is the reason the previous bridge still behaved incorrectly.
+    if (FLMKeyboardRouteActive) {
+        (void)FLMFullPhysicalScreenSize();
     }
-    return (CGRect){CGPointZero, FLMFullPhysicalScreenSize()};
+    return bounds;
+}
+
+%end
+
+%hook _UIRemoteKeyboards
+
+- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
+                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
+                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
+    CGFloat height = %orig(windowScene,
+                           isLocalMinimumHeightOut,
+                           ignoreHorizontalOffset);
+    if (!FLMKeyboardRouteActive || height <= 0.0 ||
+        ![windowScene isKindOfClass:[UIWindowScene class]] ||
+        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        return height;
+    }
+
+    UIWindow *keyWindow = FLMKeyWindowForScene(windowScene);
+    CGFloat sceneHeight = CGRectGetHeight(keyWindow.frame);
+    CGFloat physicalHeight = FLMFullPhysicalScreenSize().height;
+    if (sceneHeight < 1.0 || physicalHeight <= sceneHeight) {
+        return height;
+    }
+
+    // The centered scene is intentionally shorter than the physical screen.
+    // Compensate that missing bottom segment so the remote keyboard is laid
+    // out against the device screen instead of inside the centered card.
+    return height + (physicalHeight - sceneHeight);
 }
 
 %end

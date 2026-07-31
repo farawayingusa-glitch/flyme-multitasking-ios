@@ -62,6 +62,8 @@ for keyboard_line in \
     '%hook UITextEffectsWindow' \
     'keyboardScreenReferenceSize' \
     '%hook UIWindowScene' \
+    '%hook _UIRemoteKeyboards' \
+    'intersectionHeightForWindowScene:' \
     'FLYME_KEYBOARD_ROUTE_PATH'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
         echo "safe keyboard bridge changed: $keyboard_line" >&2
@@ -69,8 +71,7 @@ for keyboard_line in \
     fi
 done
 
-if grep -Fq '%hook _UIRemoteKeyboards' "$keyboard_source" ||
-   grep -Eq '^%hook UIWindow[[:space:]]*$' "$keyboard_source"; then
+if grep -Eq '^%hook UIWindow[[:space:]]*$' "$keyboard_source"; then
     echo "keyboard bridge grew beyond the verified minimal hook surface" >&2
     exit 1
 fi
