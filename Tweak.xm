@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 #import <notify.h>
 #import <objc/message.h>
@@ -27,6 +28,19 @@ static const CGFloat FLMMaximumDockWidth = 270.0;
 static const CGFloat FLMDockSideMargin = 10.0;
 static const CGFloat FLMDockTopMargin = 8.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
+static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
+static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
+static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
+
+typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
+    FLMFloatingLaunchStateIdle,
+    FLMFloatingLaunchStatePrewarming,
+    FLMFloatingLaunchStateWaitingForScene,
+    FLMFloatingLaunchStateWaitingForPresenter,
+    FLMFloatingLaunchStateAttached,
+    FLMFloatingLaunchStateFailing,
+    FLMFloatingLaunchStateClosing,
+};
 
 @interface NSObject (FLMRuntimePrivate)
 + (id)defaultWorkspace;
@@ -667,6 +681,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) id floatingPresenter;
 @property(nonatomic, assign) CGSize floatingHostReferenceSize;
 @property(nonatomic, assign) NSUInteger floatingLaunchGeneration;
+@property(nonatomic, assign) FLMFloatingLaunchState floatingLaunchState;
+@property(nonatomic, assign) NSTimeInterval floatingLaunchStartedAt;
+@property(nonatomic, assign) NSTimeInterval floatingScenePreparedAt;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
 + (instancetype)sharedController;
 - (void)start;
@@ -723,7 +740,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)openFloatingIdentifier:(NSString *)identifier;
 - (void)attachFloatingIdentifier:(NSString *)identifier
                       generation:(NSUInteger)generation
-                         attempt:(NSUInteger)attempt;
+                           attempt:(NSUInteger)attempt;
+- (void)failFloatingLaunchForIdentifier:(NSString *)identifier
+                              generation:(NSUInteger)generation;
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
 - (id)sceneForHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (BOOL)prepareFloatingScene:(id)scene
@@ -2560,6 +2579,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
+    self.floatingLaunchState = FLMFloatingLaunchStatePrewarming;
+    self.floatingLaunchStartedAt = CACurrentMediaTime();
+    self.floatingScenePreparedAt = 0.0;
     id presenter = self.floatingPresenter;
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
@@ -3189,10 +3211,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [identifier isEqualToString:self.floatingIdentifier] &&
             [self.floatingSceneEntity respondsToSelector:@selector(sceneHandle)]) {
             id existingCandidate = [self.floatingSceneEntity sceneHandle];
-            if ([existingCandidate respondsToSelector:@selector(sceneIfExists)] ||
-                [existingCandidate respondsToSelector:@selector(scene)]) {
+            if (([existingCandidate respondsToSelector:@selector(sceneIfExists)] ||
+                 [existingCandidate respondsToSelector:@selector(scene)]) &&
+                [self sceneForHandle:existingCandidate]) {
                 return (FLMApplicationSceneHandle *)existingCandidate;
             }
+            // Do not keep polling a handle whose primary scene was replaced
+            // during cold launch.  This was the main source of the permanent
+            // "Launching application" card on iOS 16.
+            self.floatingSceneEntity = nil;
+            self.floatingSceneHandle = nil;
         }
 
         Class controllerClass = NSClassFromString(@"SBApplicationController");
@@ -3222,19 +3250,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             ![allocatedEntity respondsToSelector:initializer]) {
             return nil;
         }
+        // First let the normal suspended launch create its own primary scene.
+        // Forcing one synchronously races UIKit's scene connection and often
+        // yields a valid handle with a black, never-ready surface.  Only ask
+        // SpringBoard to generate a scene after a bounded grace period.
+        BOOL generatePrimaryScene =
+            self.floatingLaunchStartedAt > 0.0 &&
+            CACurrentMediaTime() - self.floatingLaunchStartedAt >=
+                FLMFloatingSceneGenerationDelay;
         FLMDeviceApplicationSceneEntity *entity =
             [(FLMDeviceApplicationSceneEntity *)allocatedEntity
                 initWithApplicationForMainDisplay:application
-                generatingNewPrimarySceneIfRequired:YES];
+                generatingNewPrimarySceneIfRequired:generatePrimaryScene];
         if (!entity ||
             ![entity respondsToSelector:@selector(sceneHandle)]) {
             return nil;
         }
-        self.floatingSceneEntity = entity;
         id candidate = [entity sceneHandle];
         if (![candidate respondsToSelector:@selector(sceneIfExists)] &&
             ![candidate respondsToSelector:@selector(scene)]) {
             return nil;
+        }
+        if (generatePrimaryScene || [self sceneForHandle:candidate]) {
+            self.floatingSceneEntity = entity;
         }
         return (FLMApplicationSceneHandle *)candidate;
     } @catch (__unused NSException *exception) {
@@ -3390,6 +3428,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // fast on a warm app but intermittently leaves a permanently black surface
     // during cold launch.
     if (sceneChanged) {
+        self.floatingScenePreparedAt = CACurrentMediaTime();
+        self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
+        return nil;
+    }
+    if (self.floatingScenePreparedAt > 0.0 &&
+        CACurrentMediaTime() - self.floatingScenePreparedAt <
+            FLMFloatingSceneSettleDelay) {
         return nil;
     }
 
@@ -3437,6 +3482,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
     host.clipsToBounds = YES;
+    self.floatingLaunchState = FLMFloatingLaunchStateAttached;
     return host;
 }
 
@@ -3508,6 +3554,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
+    self.floatingLaunchState = FLMFloatingLaunchStatePrewarming;
+    self.floatingLaunchStartedAt = CACurrentMediaTime();
+    self.floatingScenePreparedAt = 0.0;
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
     self.floatingHostReferenceSize = CGSizeZero;
@@ -3552,9 +3601,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMPrewarmApplicationIdentifier(identifier);
     }
     [self beginLockMonitoring];
-    [self attachFloatingIdentifier:identifier
-                        generation:generation
-                           attempt:0];
+    // Let UIKit publish its normal primary scene before querying an entity.
+    // Creating both transactions in the same run-loop turn is racy on iOS 16.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self attachFloatingIdentifier:identifier
+                            generation:generation
+                               attempt:0];
+    });
 }
 
 - (void)attachFloatingIdentifier:(NSString *)identifier
@@ -3565,11 +3620,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
+    if (self.floatingLaunchStartedAt <= 0.0) {
+        self.floatingLaunchStartedAt = CACurrentMediaTime();
+    }
+    if (CACurrentMediaTime() - self.floatingLaunchStartedAt >
+        FLMFloatingLaunchTimeout) {
+        [self failFloatingLaunchForIdentifier:identifier generation:generation];
+        return;
+    }
     FLMApplicationSceneHandle *sceneHandle =
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
+        self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
         self.floatingStatusLabel.text = @"正在准备应用…";
-        if (attempt < 30) {
+        if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
@@ -3579,15 +3643,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 });
             return;
         }
-        self.floatingReconnectSuppressed = YES;
-        [self closeFloatingWindowKeepingApplication:YES];
-        [self activateIdentifierFullscreen:identifier];
+        [self failFloatingLaunchForIdentifier:identifier generation:generation];
         return;
     }
 
     if (![self sceneForHandle:sceneHandle]) {
+        self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
         self.floatingStatusLabel.text = @"正在启动应用…";
-        if (attempt > 0 && attempt % 6 == 0) {
+        if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
             // instead of polling the dead handle for the full timeout.
@@ -3597,7 +3660,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (attempt == 8) {
             FLMPrewarmApplicationIdentifier(identifier);
         }
-        if (attempt < 30) {
+        if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
@@ -3607,14 +3670,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 });
             return;
         }
-        self.floatingReconnectSuppressed = YES;
-        [self closeFloatingWindowKeepingApplication:YES];
-        [self activateIdentifierFullscreen:identifier];
+        [self failFloatingLaunchForIdentifier:identifier generation:generation];
         return;
     }
 
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
+        self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
         self.floatingStatusLabel.text = @"正在连接画面…";
         if (attempt > 0 && attempt % 6 == 0) {
             id stalePresenter = self.floatingPresenter;
@@ -3630,7 +3692,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingPresentationManager = nil;
             self.floatingPresenter = nil;
         }
-        if (attempt < 30) {
+        if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
@@ -3640,10 +3702,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 });
             return;
         }
-        self.floatingReconnectSuppressed = YES;
-        [self backgroundFloatingScene:[self sceneForHandle:sceneHandle]];
-        [self closeFloatingWindowKeepingApplication:YES];
-        [self activateIdentifierFullscreen:identifier];
+        [self failFloatingLaunchForIdentifier:identifier generation:generation];
         return;
     }
     self.floatingSceneHandle = sceneHandle;
@@ -3662,9 +3721,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingStatusLabel.hidden = YES;
 }
 
+- (void)failFloatingLaunchForIdentifier:(NSString *)identifier
+                              generation:(NSUInteger)generation {
+    if (generation != self.floatingLaunchGeneration ||
+        self.floatingWindow.hidden) {
+        return;
+    }
+    // Invalidate delayed retries before releasing the protection lease.  A
+    // retry from a prior launch must never attach a replaced primary scene.
+    self.floatingLaunchState = FLMFloatingLaunchStateFailing;
+    self.floatingReconnectSuppressed = YES;
+    [self closeFloatingWindowKeepingApplication:YES];
+    [self activateIdentifierFullscreen:identifier];
+}
+
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
     FLMPublishKeyboardState(nil);
     self.floatingLaunchGeneration += 1;
+    self.floatingLaunchState = FLMFloatingLaunchStateClosing;
+    self.floatingLaunchStartedAt = 0.0;
+    self.floatingScenePreparedAt = 0.0;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
     self.floatingInteractiveScenePrepared = NO;
@@ -3732,6 +3808,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } @catch (__unused NSException *exception) {
         }
+        self.floatingLaunchState = FLMFloatingLaunchStateIdle;
         [self stopLockMonitoringIfIdle];
         return;
     }
@@ -3769,6 +3846,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            } @catch (__unused NSException *exception) {
                            }
                            self.floatingWindow.hidden = YES;
+                         self.floatingLaunchState = FLMFloatingLaunchStateIdle;
                          self.floatingDimView.alpha = 1.0;
                          self.floatingContainer.alpha = 1.0;
                          self.floatingContainer.transform =

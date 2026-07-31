@@ -14,7 +14,7 @@ FlymeMultitasking_FRAMEWORKS = UIKit
 
 FlymeKeyboard_FILES = Keyboard.xm
 FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra
-FlymeKeyboard_FRAMEWORKS = UIKit
+FlymeKeyboard_FRAMEWORKS = UIKit QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

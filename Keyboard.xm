@@ -40,12 +40,29 @@ static UIWindow *FLMKeyWindowForScene(UIWindowScene *scene) {
     if (![scene isKindOfClass:[UIWindowScene class]]) {
         return nil;
     }
+    UIWindow *bestWindow = nil;
+    CGFloat bestArea = 0.0;
     for (UIWindow *window in scene.windows) {
         if (window.isKeyWindow) {
             return window;
         }
+        // SpringBoard's floating overlay is intentionally made key while the
+        // card is interactive.  The application's scene then has no key
+        // window, even though its normal content window is still the correct
+        // coordinate space for _UIRemoteKeyboards.  Prefer the largest visible
+        // app window as a deterministic fallback instead of silently skipping
+        // the full-screen keyboard compensation.
+        if (!window.hidden && window.alpha > 0.01 &&
+            window.windowLevel <= UIWindowLevelNormal + 1.0) {
+            CGFloat area = CGRectGetWidth(window.bounds) *
+                           CGRectGetHeight(window.bounds);
+            if (area > bestArea) {
+                bestArea = area;
+                bestWindow = window;
+            }
+        }
     }
-    return nil;
+    return bestWindow;
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -97,6 +114,22 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return %orig;
     }
     return FLMFullPhysicalScreenSize();
+}
+
+- (CGRect)_referenceBounds {
+    CGRect bounds = %orig;
+    if (!FLMKeyboardRouteActive) {
+        return bounds;
+    }
+    // On iOS 16 this is consulted by the remote keyboard layout before the
+    // host application's reduced scene bounds.  Keep the keyboard in the
+    // physical display coordinate space; changing UIWindowScene bounds would
+    // resize (and break) the application itself.
+    CGSize physicalSize = FLMFullPhysicalScreenSize();
+    if (physicalSize.width < 1.0 || physicalSize.height < 1.0) {
+        return bounds;
+    }
+    return CGRectMake(0.0, 0.0, physicalSize.width, physicalSize.height);
 }
 
 %end

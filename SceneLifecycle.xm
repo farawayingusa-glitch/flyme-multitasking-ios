@@ -18,12 +18,22 @@ void FLMProtectScene(id scene, id sceneHandle) {
 
 void FLMClearProtectedScene(id scene) {
     @synchronized([NSObject class]) {
+        // A scene can be destroyed through its handle.  iOS 16 reports the
+        // handle to _didDestroyScene: on some paths and the scene on others;
+        // accepting either prevents a stale protection lease from surviving a
+        // scene replacement and subsequently pinning the next launch.
         if (scene && scene != FLMProtectedScene &&
             scene != FLMProtectedSceneHandle) {
             return;
         }
         FLMProtectedScene = nil;
         FLMProtectedSceneHandle = nil;
+    }
+}
+
+BOOL FLMProtectedSceneIsAlive(void) {
+    @synchronized([NSObject class]) {
+        return FLMProtectedScene != nil || FLMProtectedSceneHandle != nil;
     }
 }
 
@@ -91,6 +101,10 @@ static void FLMPatchSceneSettings(id settings) {
                         FLMObjectMatchesProtectedScene(self);
     %orig;
     if (wasProtected) {
+        // Clear by handle as well as the destroyed scene.  Passing only
+        // `scene` is insufficient when SpringBoard has already replaced the
+        // primary scene object before this callback arrives.
+        FLMClearProtectedScene(self);
         FLMClearProtectedScene(scene);
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
