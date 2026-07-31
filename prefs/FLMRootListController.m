@@ -1,5 +1,6 @@
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
+#import <Preferences/PSTableCell.h>
 #import <Preferences/PSViewController.h>
 #import <UIKit/UIKit.h>
 #import <errno.h>
@@ -137,6 +138,117 @@ static NSString *FLMNameForIdentifier(
     }
     return identifier;
 }
+
+@interface FLMWheelSliderCell : PSTableCell
+@property(nonatomic, strong) UILabel *settingTitleLabel;
+@property(nonatomic, strong) UILabel *valueLabel;
+@property(nonatomic, strong) UIButton *defaultButton;
+@property(nonatomic, strong) UISlider *slider;
+@property(nonatomic, copy) NSString *preferenceKey;
+@property(nonatomic, assign) CGFloat minimumValue;
+@property(nonatomic, assign) CGFloat maximumValue;
+@property(nonatomic, assign) CGFloat defaultValue;
+@end
+
+@implementation FLMWheelSliderCell
+
++ (CGFloat)preferredHeightForWidth:(CGFloat)width {
+    (void)width;
+    return 92.0;
+}
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style
+              reuseIdentifier:(NSString *)reuseIdentifier
+                    specifier:(PSSpecifier *)specifier {
+    self = [super initWithStyle:style
+                reuseIdentifier:reuseIdentifier
+                      specifier:specifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _preferenceKey = [[specifier propertyForKey:@"preferenceKey"] copy];
+        _minimumValue = [[specifier propertyForKey:@"minimumValue"] doubleValue];
+        _maximumValue = [[specifier propertyForKey:@"maximumValue"] doubleValue];
+        _defaultValue = [[specifier propertyForKey:@"defaultValue"] doubleValue];
+
+        _settingTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _settingTitleLabel.text = specifier.name;
+        _settingTitleLabel.font = [UIFont systemFontOfSize:16.0];
+        [self.contentView addSubview:_settingTitleLabel];
+
+        _valueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _valueLabel.font =
+            [UIFont monospacedDigitSystemFontOfSize:13.0 weight:UIFontWeightMedium];
+        _valueLabel.textColor = [UIColor secondaryLabelColor];
+        _valueLabel.textAlignment = NSTextAlignmentRight;
+        [self.contentView addSubview:_valueLabel];
+
+        _defaultButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [_defaultButton setTitle:@"默认" forState:UIControlStateNormal];
+        _defaultButton.titleLabel.font =
+            [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
+        _defaultButton.backgroundColor = [UIColor tertiarySystemFillColor];
+        _defaultButton.layer.cornerRadius = 12.0;
+        [_defaultButton addTarget:self
+                           action:@selector(resetToDefault)
+                 forControlEvents:UIControlEventTouchUpInside];
+        [self.contentView addSubview:_defaultButton];
+
+        _slider = [[UISlider alloc] initWithFrame:CGRectZero];
+        _slider.minimumValue = (float)_minimumValue;
+        _slider.maximumValue = (float)_maximumValue;
+        _slider.continuous = YES;
+        [_slider addTarget:self
+                    action:@selector(sliderValueChanged:)
+          forControlEvents:UIControlEventValueChanged];
+        [_slider addTarget:self
+                    action:@selector(commitSliderValue)
+          forControlEvents:UIControlEventTouchUpInside |
+                           UIControlEventTouchUpOutside |
+                           UIControlEventTouchCancel];
+        [self.contentView addSubview:_slider];
+
+        id storedValue = FLMCopyPreference(_preferenceKey);
+        CGFloat value = [storedValue isKindOfClass:[NSNumber class]]
+                            ? [storedValue doubleValue]
+                            : _defaultValue;
+        _slider.value =
+            (float)MAX(_minimumValue, MIN(_maximumValue, round(value)));
+        [self updateValueLabel];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = CGRectGetWidth(self.contentView.bounds);
+    self.settingTitleLabel.frame = CGRectMake(16.0, 9.0, width - 150.0, 24.0);
+    self.defaultButton.frame = CGRectMake(width - 66.0, 8.0, 50.0, 25.0);
+    self.valueLabel.frame = CGRectMake(width - 128.0, 9.0, 56.0, 24.0);
+    self.slider.frame = CGRectMake(16.0, 41.0, width - 32.0, 42.0);
+}
+
+- (void)sliderValueChanged:(UISlider *)slider {
+    slider.value = roundf(slider.value);
+    [self updateValueLabel];
+}
+
+- (void)commitSliderValue {
+    FLMSetPreference(self.preferenceKey, @(lroundf(self.slider.value)));
+}
+
+- (void)resetToDefault {
+    [self.slider setValue:(float)self.defaultValue animated:YES];
+    [self updateValueLabel];
+    [self commitSliderValue];
+}
+
+- (void)updateValueLabel {
+    self.valueLabel.text =
+        [NSString stringWithFormat:@"%ld pt", (long)lroundf(self.slider.value)];
+}
+
+@end
 
 @interface FLMRootListController : PSListController
 @end

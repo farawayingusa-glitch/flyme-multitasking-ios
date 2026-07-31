@@ -13,6 +13,13 @@
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
+static const CGFloat FLMDefaultWheelRadius = 202.0;
+static const CGFloat FLMMinimumWheelRadius = 170.0;
+static const CGFloat FLMMaximumWheelRadius = 225.0;
+static const CGFloat FLMDefaultWheelIconSize = 56.0;
+static const CGFloat FLMMinimumWheelIconSize = 44.0;
+static const CGFloat FLMMaximumWheelIconSize = 68.0;
+
 @interface NSObject (FLMRuntimePrivate)
 + (id)defaultWorkspace;
 + (id)sharedInstance;
@@ -228,6 +235,99 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 @end
 
+@interface FLMOutsideTapGestureRecognizer : UIGestureRecognizer
+@property(nonatomic, weak) UIView *protectedView;
+@property(nonatomic, strong) NSMutableDictionary<NSValue *, NSValue *> *startPoints;
+@property(nonatomic, assign) NSTimeInterval firstTouchTimestamp;
+@end
+
+@implementation FLMOutsideTapGestureRecognizer
+
+- (instancetype)initWithTarget:(id)target action:(SEL)action {
+    self = [super initWithTarget:target action:action];
+    if (self) {
+        _startPoints = [NSMutableDictionary dictionary];
+        self.cancelsTouchesInView = NO;
+        self.delaysTouchesBegan = NO;
+        self.delaysTouchesEnded = NO;
+    }
+    return self;
+}
+
+- (NSValue *)keyForTouch:(UITouch *)touch {
+    return [NSValue valueWithNonretainedObject:touch];
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event;
+    if (self.firstTouchTimestamp <= 0.0) {
+        UITouch *firstTouch = [touches anyObject];
+        self.firstTouchTimestamp = firstTouch.timestamp;
+    }
+    for (UITouch *touch in touches) {
+        CGPoint point = [touch locationInView:self.view];
+        if (self.protectedView &&
+            CGRectContainsPoint(self.protectedView.frame, point)) {
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
+        self.startPoints[[self keyForTouch:touch]] = [NSValue valueWithCGPoint:point];
+    }
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event;
+    for (UITouch *touch in touches) {
+        NSValue *startValue = self.startPoints[[self keyForTouch:touch]];
+        if (!startValue) {
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
+        CGPoint start = startValue.CGPointValue;
+        CGPoint current = [touch locationInView:self.view];
+        if (hypot(current.x - start.x, current.y - start.y) > 12.0) {
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event;
+    NSTimeInterval lastTimestamp = self.firstTouchTimestamp;
+    for (UITouch *touch in touches) {
+        lastTimestamp = MAX(lastTimestamp, touch.timestamp);
+        [self.startPoints removeObjectForKey:[self keyForTouch:touch]];
+    }
+    if (self.startPoints.count != 0) {
+        return;
+    }
+    self.state =
+        lastTimestamp - self.firstTouchTimestamp <= 0.35
+            ? UIGestureRecognizerStateRecognized
+            : UIGestureRecognizerStateFailed;
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)touches;
+    (void)event;
+    self.state = UIGestureRecognizerStateCancelled;
+}
+
+- (void)reset {
+    [super reset];
+    [self.startPoints removeAllObjects];
+    self.firstTouchTimestamp = 0.0;
+}
+
+- (BOOL)canBePreventedByGestureRecognizer:
+    (UIGestureRecognizer *)preventingGestureRecognizer {
+    (void)preventingGestureRecognizer;
+    return NO;
+}
+
+@end
+
 @interface FLMWheelItemView : UIView
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, strong) UIImageView *iconView;
@@ -236,13 +336,15 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 @implementation FLMWheelItemView
 
-- (instancetype)initWithIdentifier:(NSString *)identifier image:(UIImage *)image {
-    self = [super initWithFrame:CGRectMake(0.0, 0.0, 56.0, 56.0)];
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                             image:(UIImage *)image
+                              size:(CGFloat)size {
+    self = [super initWithFrame:CGRectMake(0.0, 0.0, size, size)];
     if (self) {
         _identifier = [identifier copy];
         BOOL isLockItem = [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM];
         self.backgroundColor = isLockItem ? [UIColor systemBlueColor] : [UIColor clearColor];
-        self.layer.cornerRadius = 28.0;
+        self.layer.cornerRadius = size * 0.5;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOpacity = 0.22;
         self.layer.shadowRadius = 8.0;
@@ -250,13 +352,15 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
         self.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:self.bounds].CGPath;
 
         _iconView = [[UIImageView alloc] initWithImage:image];
-        _iconView.frame = isLockItem ? CGRectInset(self.bounds, 15.0, 15.0) : self.bounds;
+        CGFloat lockInset = size * (15.0 / FLMDefaultWheelIconSize);
+        _iconView.frame =
+            isLockItem ? CGRectInset(self.bounds, lockInset, lockInset) : self.bounds;
         _iconView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _iconView.contentMode =
             isLockItem ? UIViewContentModeScaleAspectFit : UIViewContentModeScaleAspectFill;
         _iconView.clipsToBounds = YES;
-        _iconView.layer.cornerRadius = isLockItem ? 0.0 : 28.0;
+        _iconView.layer.cornerRadius = isLockItem ? 0.0 : size * 0.5;
         [self addSubview:_iconView];
     }
     return self;
@@ -294,7 +398,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) UIView *floatingHandleBar;
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
-@property(nonatomic, strong) UITapGestureRecognizer *floatingBackdropTap;
+@property(nonatomic, strong) FLMOutsideTapGestureRecognizer *floatingBackdropTap;
 @property(nonatomic, strong) UIPanGestureRecognizer *floatingHandlePan;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *floatingExclusiveGesture;
 @property(nonatomic, weak) UIWindow *previousKeyWindow;
@@ -312,6 +416,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL wheelPinned;
 @property(nonatomic, assign) BOOL wheelGestureActive;
+@property(nonatomic, assign) CGFloat wheelRadius;
+@property(nonatomic, assign) CGFloat wheelIconSize;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, strong) FLMDeviceApplicationSceneEntity *floatingSceneEntity;
@@ -339,7 +445,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)updateHighlightForPoint:(CGPoint)point;
 - (void)pinWheel;
 - (void)handleWheelTap:(UITapGestureRecognizer *)gesture;
-- (void)handleFloatingBackdropTap:(UITapGestureRecognizer *)gesture;
+- (void)handleFloatingBackdropTap:(UIGestureRecognizer *)gesture;
 - (void)handleFloatingHandlePan:(UIPanGestureRecognizer *)gesture;
 - (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture;
 - (void)protectedSceneDidDisappear:(NSNotification *)notification;
@@ -633,12 +739,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingWindow.rootViewController.view addSubview:self.floatingHandle];
 
     self.floatingBackdropTap =
-        [[UITapGestureRecognizer alloc] initWithTarget:self
-                                               action:@selector(handleFloatingBackdropTap:)];
+        [[FLMOutsideTapGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleFloatingBackdropTap:)];
+    self.floatingBackdropTap.protectedView = self.floatingContainer;
     self.floatingBackdropTap.delegate = self;
-    self.floatingBackdropTap.cancelsTouchesInView = NO;
-    self.floatingBackdropTap.delaysTouchesBegan = NO;
-    self.floatingBackdropTap.delaysTouchesEnded = NO;
     [self.floatingWindow.rootViewController.view
         addGestureRecognizer:self.floatingBackdropTap];
 
@@ -681,9 +786,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              kCFPreferencesAnyHost);
     id enabledValue = FLMCopyPreference(@"enabled");
     id itemsValue = FLMCopyPreference(@"wheelItems");
+    id radiusValue = FLMCopyPreference(@"wheelRadius");
+    id iconSizeValue = FLMCopyPreference(@"wheelIconSize");
     self.enabled = [enabledValue isKindOfClass:[NSNumber class]] && [enabledValue boolValue];
     self.itemIdentifiers =
         [itemsValue isKindOfClass:[NSArray class]] ? [itemsValue copy] : @[];
+    CGFloat requestedRadius =
+        [radiusValue isKindOfClass:[NSNumber class]]
+            ? [radiusValue doubleValue]
+            : FLMDefaultWheelRadius;
+    CGFloat requestedIconSize =
+        [iconSizeValue isKindOfClass:[NSNumber class]]
+            ? [iconSizeValue doubleValue]
+            : FLMDefaultWheelIconSize;
+    self.wheelRadius =
+        MAX(FLMMinimumWheelRadius, MIN(FLMMaximumWheelRadius, requestedRadius));
+    self.wheelIconSize =
+        MAX(FLMMinimumWheelIconSize,
+            MIN(FLMMaximumWheelIconSize, requestedIconSize));
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     if (!self.enabled) {
@@ -751,19 +871,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
     if (gestureRecognizer == self.floatingBackdropTap) {
-        UIView *touchView = touch.view;
-        if (touchView == self.floatingContainer ||
-            [touchView isDescendantOfView:self.floatingContainer] ||
-            touchView == self.floatingHandle ||
-            [touchView isDescendantOfView:self.floatingHandle]) {
-            return NO;
-        }
-        CGPoint point =
-            [touch locationInView:self.floatingWindow.rootViewController.view];
-        return !self.floatingWindow.hidden &&
-               !CGRectContainsPoint(self.floatingContainer.frame, point) &&
-               !CGRectContainsPoint(CGRectInset(self.floatingHandle.frame, -18.0, -18.0),
-                                     point);
+        return !self.floatingWindow.hidden;
     }
     if (gestureRecognizer == self.floatingExclusiveGesture) {
         if (self.floatingWindow.hidden || FLMDeviceIsLocked()) {
@@ -847,7 +955,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             break;
         case UIGestureRecognizerStateEnded: {
             FLMWheelItemView *item =
-                [self itemNearPoint:point maximumDistance:30.0];
+                [self itemNearPoint:point
+                    maximumDistance:self.wheelIconSize * 0.5 + 2.0];
             [self dismissWheelLaunchingItem:item];
             break;
         }
@@ -955,24 +1064,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat fullStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
     CGFloat fullEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
     CGFloat fullAngleSpan = fullEndAngle - fullStartAngle;
-    CGFloat safeCenterMargin = 38.0;
+    CGFloat safeCenterMargin = self.wheelIconSize * 0.5 + 10.0;
     CGFloat maximumRadiusByWidth =
         (width - 4.0 - safeCenterMargin) / cos(fullEndAngle);
     CGFloat maximumRadiusByHeight =
         (height - 4.0 - safeCenterMargin) / fabs(sin(fullStartAngle));
     CGFloat maximumRadius = MAX(120.0, MIN(maximumRadiusByWidth,
                                            maximumRadiusByHeight));
-    CGFloat firstRadius = MIN(202.0, maximumRadius);
+    CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);
     CGFloat ringSpacing = 0.0;
     if (ringCounts.count > 1) {
         CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
-        CGFloat desiredSpacing = 76.0;
+        CGFloat desiredSpacing = self.wheelIconSize + 20.0;
+        CGFloat minimumSpacing = self.wheelIconSize + 6.0;
         CGFloat desiredOuterRadius = firstRadius + desiredSpacing * ringIntervals;
         if (desiredOuterRadius <= maximumRadius) {
             ringSpacing = desiredSpacing;
         } else {
             firstRadius =
-                MIN(firstRadius, MAX(132.0, maximumRadius - 62.0 * ringIntervals));
+                MIN(firstRadius,
+                    MAX(132.0, maximumRadius - minimumSpacing * ringIntervals));
             ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
         }
     }
@@ -992,7 +1103,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             NSString *identifier = self.itemIdentifiers[itemIndex++];
             FLMWheelItemView *item =
                 [[FLMWheelItemView alloc] initWithIdentifier:identifier
-                                                       image:FLMApplicationIcon(identifier)];
+                                                       image:FLMApplicationIcon(identifier)
+                                                        size:self.wheelIconSize];
             item.center = CGPointMake(centerX, centerY);
             item.alpha = 0.0;
             item.transform = CGAffineTransformMakeScale(0.42, 0.42);
@@ -1022,7 +1134,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateHighlightForPoint:(CGPoint)point {
-    FLMWheelItemView *nearest = [self itemNearPoint:point maximumDistance:30.0];
+    FLMWheelItemView *nearest =
+        [self itemNearPoint:point
+            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
     if (nearest == self.highlightedItem) {
         return;
     }
@@ -1086,7 +1200,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGPoint point = [gesture locationInView:self.wheelContainer];
-    FLMWheelItemView *item = [self itemNearPoint:point maximumDistance:30.0];
+    FLMWheelItemView *item =
+        [self itemNearPoint:point
+            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
     [self dismissWheelLaunchingItem:item];
 }
 
@@ -1128,7 +1244,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      }];
 }
 
-- (void)handleFloatingBackdropTap:(UITapGestureRecognizer *)gesture {
+- (void)handleFloatingBackdropTap:(UIGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateEnded ||
         self.floatingWindow.hidden) {
         return;
@@ -1137,20 +1253,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
-    if (self.floatingWindow.hidden) {
-        return;
-    }
-    if (gesture.state == UIGestureRecognizerStateEnded) {
-        CGPoint point =
-            [gesture locationInView:self.floatingWindow.rootViewController.view];
-        CGRect handleHitFrame =
-            CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
-        if (CGRectContainsPoint(self.floatingContainer.frame, point) ||
-            CGRectContainsPoint(handleHitFrame, point)) {
-            return;
-        }
-        [self closeFloatingWindowKeepingApplication:YES];
-    }
+    // The system-level recognizer only reserves input priority outside the card.
+    // FLMOutsideTapGestureRecognizer owns the close decision using every touch's
+    // starting point, movement and duration.
+    (void)gesture;
 }
 
 - (void)handleFloatingHandlePan:(UIPanGestureRecognizer *)gesture {
