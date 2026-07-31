@@ -1711,7 +1711,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        44.0,
                        handleHeight);
         self.floatingHandleBar.frame =
-            CGRectMake(floor((44.0 - 5.0) * 0.5), 0.0, 5.0, handleHeight);
+            CGRectMake(0.0, 0.0, 5.0, handleHeight);
     } else {
         CGFloat handleWidth = containerWidth * 0.30;
         self.floatingHandle.frame =
