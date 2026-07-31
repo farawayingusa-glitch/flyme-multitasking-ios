@@ -66,9 +66,6 @@ fi
 for keyboard_line in \
     '%hook UITextEffectsWindow' \
     'keyboardScreenReferenceSize' \
-    '%hook UIWindowScene' \
-    '%hook _UIRemoteKeyboards' \
-    'intersectionHeightForWindowScene:' \
     'FLMIdentifierHash' \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
@@ -80,6 +77,28 @@ for keyboard_line in \
         exit 1
     fi
 done
+
+for overlay_line in \
+    '@interface FLMKeyboardOverlayWindow' \
+    'keyboardLayerHostView:' \
+    'valueForKey:@"_owningScene"' \
+    'floatingKeyboardOriginalSuperview' \
+    'const CGFloat widthStageEnd = 0.72;'; do
+    if ! grep -Fq "$overlay_line" "$source_file"; then
+        echo "keyboard overlay or continuous fullscreen morph changed: $overlay_line" >&2
+        exit 1
+    fi
+done
+
+if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
+    echo "whole application Scene keyboard expansion was reintroduced" >&2
+    exit 1
+fi
+
+if grep -Fq '%hook UIWindowScene' "$keyboard_source"; then
+    echo "application Scene reference bounds are being overridden again" >&2
+    exit 1
+fi
 
 if grep -Eq '^%hook UIWindow[[:space:]]*$' "$keyboard_source"; then
     echo "keyboard bridge grew beyond the verified minimal hook surface" >&2

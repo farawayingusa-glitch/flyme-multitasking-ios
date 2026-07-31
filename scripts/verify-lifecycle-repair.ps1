@@ -32,7 +32,6 @@ Require-Text $Source 'pointIsInsideFloatingInteractionDomain:'
 Require-Text $Source 'self.floatingExclusiveTapEligible &&'
 Require-Text $Source 'UIKeyboardDidHideNotification'
 Require-Text $Source 'FLMPublishKeyboardState(self.floatingIdentifier, scene);'
-Require-Text $KeyboardSource 'window.windowLevel <= UIWindowLevelNormal + 1.0'
 Require-Text $KeyboardSource '%hook UITextEffectsWindow'
 Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
 Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
@@ -40,6 +39,13 @@ Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
 Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
+Require-Text $Source '@interface FLMKeyboardOverlayWindow'
+Require-Text $Source 'keyboardLayerHostView:'
+Require-Text $Source 'valueForKey:@"_owningScene"'
+Require-Text $Source 'valueForKey:@"_keyboardScene"'
+Require-Text $Source 'floatingKeyboardOriginalSuperview'
+Require-Text $Source 'pairing timeout; promoting'
+Require-Text $Source 'const CGFloat widthStageEnd = 0.72;'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 
 if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {
@@ -50,6 +56,14 @@ if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapse
 # SpringBoard keyboard-window hook (those are unsafe across iOS 16 point releases).
 if (Select-String -LiteralPath $KeyboardSource -Pattern '^%hook UIWindow\s*$|^%hook UIRemoteKeyboardWindow\s*$|^%hook UIKeyboardWindow\s*$' -Quiet) {
     throw 'Unsafe direct keyboard-window hook detected.'
+}
+
+if (Select-String -LiteralPath $KeyboardSource -SimpleMatch '%hook UIWindowScene' -Quiet) {
+    throw 'Application Scene reference bounds are being overridden again.'
+}
+
+if (Select-String -LiteralPath $Source -SimpleMatch 'setFloatingSceneUsesFullscreenKeyboardHost' -Quiet) {
+    throw 'Whole application Scene keyboard expansion was reintroduced.'
 }
 
 Write-Output 'lifecycle, launch, and keyboard repair markers verified'

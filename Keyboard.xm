@@ -12,7 +12,6 @@ static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
-static BOOL FLMLoggedPhysicalSceneBounds = NO;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 static BOOL FLMKeyboardPreparePosted = NO;
@@ -40,35 +39,6 @@ static CGSize FLMFullPhysicalScreenSize(void) {
         height = MAX(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
     }
     return CGSizeMake(width, height);
-}
-
-static UIWindow *FLMKeyWindowForScene(UIWindowScene *scene) {
-    if (![scene isKindOfClass:[UIWindowScene class]]) {
-        return nil;
-    }
-    UIWindow *bestWindow = nil;
-    CGFloat bestArea = 0.0;
-    for (UIWindow *window in scene.windows) {
-        if (window.isKeyWindow) {
-            return window;
-        }
-        // SpringBoard's floating overlay is intentionally made key while the
-        // card is interactive.  The application's scene then has no key
-        // window, even though its normal content window is still the correct
-        // coordinate space for _UIRemoteKeyboards.  Prefer the largest visible
-        // app window as a deterministic fallback instead of silently skipping
-        // the full-screen keyboard compensation.
-        if (!window.hidden && window.alpha > 0.01 &&
-            window.windowLevel <= UIWindowLevelNormal + 1.0) {
-            CGFloat area = CGRectGetWidth(window.bounds) *
-                           CGRectGetHeight(window.bounds);
-            if (area > bestArea) {
-                bestArea = area;
-                bestWindow = window;
-            }
-        }
-    }
-    return bestWindow;
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -147,7 +117,6 @@ static void FLMReloadKeyboardRoute(void) {
         notify_get_state(FLMKeyboardSceneToken,
                          &FLMKeyboardTargetSceneHash);
     }
-    FLMLoggedPhysicalSceneBounds = NO;
     if (!FLMKeyboardRouteActive) {
         FLMKeyboardPreparePosted = NO;
     }
@@ -224,55 +193,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return bounds;
     }
     return physicalBounds;
-}
-
-%end
-
-%hook UIWindowScene
-
-- (CGRect)_referenceBounds {
-    CGRect bounds = %orig;
-    if (!FLMSceneMatchesKeyboardRoute(self)) {
-        return bounds;
-    }
-    CGRect physicalBounds = FLMPhysicalReferenceBoundsForScene(self);
-    if (!FLMLoggedPhysicalSceneBounds) {
-        FLMLoggedPhysicalSceneBounds = YES;
-        NSLog(@"[FlymeKeyboard] scene=%@ reference %@ -> %@",
-              FLMSceneIdentifier(self) ?: @"<unknown>",
-              NSStringFromCGRect(bounds),
-              NSStringFromCGRect(physicalBounds));
-    }
-    return physicalBounds;
-}
-
-%end
-
-%hook _UIRemoteKeyboards
-
-- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
-                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
-                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
-    CGFloat height = %orig(windowScene,
-                           isLocalMinimumHeightOut,
-                           ignoreHorizontalOffset);
-    if (!FLMSceneMatchesKeyboardRoute(windowScene) || height <= 0.0 ||
-        ![windowScene isKindOfClass:[UIWindowScene class]] ||
-        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
-        return height;
-    }
-
-    UIWindow *keyWindow = FLMKeyWindowForScene(windowScene);
-    CGFloat sceneHeight = CGRectGetHeight(keyWindow.frame);
-    CGFloat physicalHeight = FLMFullPhysicalScreenSize().height;
-    if (sceneHeight < 1.0 || physicalHeight <= sceneHeight) {
-        return height;
-    }
-
-    // The centered scene is intentionally shorter than the physical screen.
-    // Compensate that missing bottom segment so the remote keyboard is laid
-    // out against the device screen instead of inside the centered card.
-    return height + (physicalHeight - sceneHeight);
 }
 
 %end
