@@ -75,7 +75,7 @@ for keyboard_line in \
     '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
-    if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
+    if ! grep -Fq -- "$keyboard_line" "$keyboard_source"; then
         echo "safe keyboard bridge changed: $keyboard_line" >&2
         exit 1
     fi
