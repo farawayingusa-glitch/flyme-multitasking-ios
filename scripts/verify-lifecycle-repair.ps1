@@ -24,6 +24,8 @@ Require-Text $Source '- (void)restoreFloatingHandleInteraction'
 Require-Text $Source 'self.floatingHandle.userInteractionEnabled = YES;'
 Require-Text $Source 'UIView *primaryControl = self.floatingPrimaryControlView;'
 Require-Text $Source 'updateFloatingFullscreenSnapshotForProgress:'
+Require-Text $Source 'wrapper.frame = frame;'
+Require-Text $Source 'displayCommitted = targetIsFrontmost && attempt >= 1'
 Require-Text $Source 'setFloatingApplicationInputBlocked:YES'
 Require-Text $Source 'CGFloat handleWidth = visibleHandleWidth + 40.0;'
 Require-Text $Source 'FLMPublishKeyboardState(self.floatingIdentifier, scene);'
@@ -32,7 +34,13 @@ Require-Text $KeyboardSource '%hook UITextEffectsWindow'
 Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
 Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
+Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
+Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
+
+if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {
+    throw 'Fixed fullscreen handoff stall was reintroduced.'
+}
 
 # The repair must retain a bounded escape route and must not add a direct
 # SpringBoard keyboard-window hook (those are unsafe across iOS 16 point releases).

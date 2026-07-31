@@ -5,6 +5,7 @@
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
+#define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
@@ -14,6 +15,7 @@ static uint64_t FLMKeyboardTargetSceneHash = 0;
 static BOOL FLMLoggedPhysicalSceneBounds = NO;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardHideObserver = nil;
+static BOOL FLMKeyboardPreparePosted = NO;
 
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
@@ -146,11 +148,40 @@ static void FLMReloadKeyboardRoute(void) {
                          &FLMKeyboardTargetSceneHash);
     }
     FLMLoggedPhysicalSceneBounds = NO;
+    if (!FLMKeyboardRouteActive) {
+        FLMKeyboardPreparePosted = NO;
+    }
     NSLog(@"[FlymeKeyboard] route=%@ bundle=%@ targetSceneHash=%llu",
           FLMKeyboardRouteActive ? @"active" : @"inactive",
           currentIdentifier ?: @"<unknown>",
           (unsigned long long)FLMKeyboardTargetSceneHash);
 }
+
+static void FLMPrepareFullscreenKeyboardHost(void) {
+    if (!FLMKeyboardRouteActive || FLMKeyboardPreparePosted) {
+        return;
+    }
+    FLMKeyboardPreparePosted = YES;
+    notify_post(FLYME_KEYBOARD_PREPARE_NOTIFICATION);
+    NSLog(@"[FlymeKeyboard] requested physical-screen keyboard host");
+}
+
+%hook UIResponder
+
+- (BOOL)becomeFirstResponder {
+    if (FLMKeyboardRouteActive &&
+        [self conformsToProtocol:@protocol(UITextInput)]) {
+        // Request the physical display host before UIKit creates or pairs the
+        // remote keyboard scene. The SpringBoard-side notification is handled
+        // on its main queue while this responder transaction is still being
+        // committed, so the keyboard originates at the device bottom instead
+        // of the reduced floating application scene.
+        FLMPrepareFullscreenKeyboardHost();
+    }
+    return %orig;
+}
+
+%end
 
 static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     if (!FLMKeyboardRouteActive) {
@@ -278,6 +309,9 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
             CGSize screenSize = FLMFullPhysicalScreenSize();
             BOOL visible = CGRectGetHeight(frame) > 0.0 &&
                            CGRectGetMinY(frame) < screenSize.height;
+            if (visible) {
+                FLMPrepareFullscreenKeyboardHost();
+            }
             FLMPublishKeyboardFrame(frame, visible);
         }];
         FLMKeyboardHideObserver =
@@ -285,6 +319,7 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(__unused NSNotification *notification) {
+            FLMKeyboardPreparePosted = NO;
             FLMPublishKeyboardFrame(CGRectZero, NO);
         }];
     }

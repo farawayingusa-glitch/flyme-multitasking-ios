@@ -14,6 +14,7 @@
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
+#define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -679,11 +680,16 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
+@property(nonatomic, strong) UIView *floatingInteractiveSnapshotBackground;
+@property(nonatomic, strong) UIView *floatingInteractiveSnapshotContent;
 @property(nonatomic, assign) BOOL floatingReconnectSuppressed;
 @property(nonatomic, assign) BOOL floatingKeyboardVisible;
 @property(nonatomic, assign) CGRect floatingKeyboardFrame;
 @property(nonatomic, assign) CGFloat lastPortraitKeyboardHeight;
 @property(nonatomic, assign) int keyboardFrameNotifyToken;
+@property(nonatomic, assign) int keyboardPrepareNotifyToken;
+@property(nonatomic, assign) BOOL floatingKeyboardSceneExpanded;
+@property(nonatomic, assign) CGSize floatingKeyboardOriginalReferenceSize;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -729,6 +735,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
 - (void)keyboardWillHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
+- (void)prepareFloatingKeyboardHostIfNeeded;
+- (void)setFloatingSceneUsesFullscreenKeyboardHost:(BOOL)active;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked;
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress;
@@ -1032,6 +1040,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                                visible:visible];
         }) == NOTIFY_STATUS_OK) {
             self.keyboardFrameNotifyToken = keyboardToken;
+        }
+        int keyboardPrepareToken = -1;
+        if (notify_register_dispatch(FLYME_KEYBOARD_PREPARE_NOTIFICATION,
+                                     &keyboardPrepareToken,
+                                     dispatch_get_main_queue(),
+                                     ^(__unused int token) {
+            [[FLMWheelController sharedController]
+                prepareFloatingKeyboardHostIfNeeded];
+        }) == NOTIFY_STATUS_OK) {
+            self.keyboardPrepareNotifyToken = keyboardPrepareToken;
         }
         // Clear a stale per-app keyboard route left by a prior SpringBoard
         // process before any new centered card is opened.
@@ -2286,8 +2304,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress {
-    UIView *snapshot = self.floatingInteractiveSnapshot;
-    if (!snapshot) {
+    UIView *wrapper = self.floatingInteractiveSnapshot;
+    UIView *background = self.floatingInteractiveSnapshotBackground;
+    UIView *content = self.floatingInteractiveSnapshotContent;
+    if (!wrapper || !content) {
         return;
     }
     progress = MIN(1.0, MAX(0.0, progress));
@@ -2296,24 +2316,47 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (CGRectGetWidth(start) < 1.0 || CGRectGetHeight(start) < 1.0) {
         return;
     }
-    CGFloat targetScale =
-        MAX(CGRectGetWidth(bounds) / CGRectGetWidth(start),
-            CGRectGetHeight(bounds) / CGRectGetHeight(start));
-    CGFloat scale = 1.0 + (targetScale - 1.0) * progress;
-    CGPoint center =
-        CGPointMake(CGRectGetMidX(start) +
-                        (CGRectGetMidX(bounds) - CGRectGetMidX(start)) * progress,
-                    CGRectGetMidY(start) +
-                        (CGRectGetMidY(bounds) - CGRectGetMidY(start)) * progress);
-    snapshot.center = center;
-    snapshot.transform = CGAffineTransformMakeScale(scale, scale);
-    snapshot.layer.cornerRadius =
-        18.0 * (1.0 - progress) / MAX(1.0, scale);
-    self.floatingContainer.frame =
-        CGRectMake(center.x - CGRectGetWidth(start) * scale * 0.5,
-                   center.y - CGRectGetHeight(start) * scale * 0.5,
-                   CGRectGetWidth(start) * scale,
-                   CGRectGetHeight(start) * scale);
+    // One continuous bounded morph: the clipping wrapper follows a single
+    // interpolation from the card to the display and never exceeds it. The
+    // two image layers are both uniformly scaled, so app content is never
+    // stretched; their continuous blend reveals the extra screen height
+    // without a visible mid-animation mode switch.
+    CGRect frame = CGRectMake(
+        CGRectGetMinX(start) +
+            (CGRectGetMinX(bounds) - CGRectGetMinX(start)) * progress,
+        CGRectGetMinY(start) +
+            (CGRectGetMinY(bounds) - CGRectGetMinY(start)) * progress,
+        CGRectGetWidth(start) +
+            (CGRectGetWidth(bounds) - CGRectGetWidth(start)) * progress,
+        CGRectGetHeight(start) +
+            (CGRectGetHeight(bounds) - CGRectGetHeight(start)) * progress);
+    wrapper.transform = CGAffineTransformIdentity;
+    wrapper.frame = frame;
+    wrapper.layer.cornerRadius = 18.0 * (1.0 - progress);
+
+    CGFloat fitScale =
+        MIN(CGRectGetWidth(frame) / CGRectGetWidth(start),
+            CGRectGetHeight(frame) / CGRectGetHeight(start));
+    CGFloat fillScale =
+        MAX(CGRectGetWidth(frame) / CGRectGetWidth(start),
+            CGRectGetHeight(frame) / CGRectGetHeight(start));
+    CGPoint localCenter =
+        CGPointMake(CGRectGetMidX(wrapper.bounds), CGRectGetMidY(wrapper.bounds));
+    content.center = localCenter;
+    content.transform = CGAffineTransformMakeScale(fitScale, fitScale);
+    if (background) {
+        background.center = localCenter;
+        background.transform =
+            CGAffineTransformMakeScale(fillScale, fillScale);
+    }
+    CGFloat blend = progress * progress * (3.0 - 2.0 * progress);
+    content.alpha = 1.0 - blend;
+    background.alpha = blend;
+
+    // The real container remains hidden but tracks exactly the same bounded
+    // geometry, which keeps the handle and final handoff spatially continuous.
+    self.floatingContainer.transform = CGAffineTransformIdentity;
+    self.floatingContainer.frame = frame;
 }
 
 - (void)prepareFloatingSceneForInteractiveFullscreen {
@@ -2323,39 +2366,67 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = YES;
     self.floatingInteractiveFullscreenTransition = YES;
 
-    UIView *snapshot =
+    UIView *content =
         [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
-    if (!snapshot) {
-        snapshot = [[UIView alloc] initWithFrame:self.floatingContainer.bounds];
-        snapshot.backgroundColor = [UIColor blackColor];
+    if (!content) {
+        content = [[UIView alloc] initWithFrame:self.floatingContainer.bounds];
+        content.backgroundColor = [UIColor blackColor];
     }
+    UIView *background =
+        [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
     CGRect start = self.floatingHandleInitialContainerFrame;
-    snapshot.bounds = CGRectMake(0.0,
-                                 0.0,
-                                 CGRectGetWidth(start),
-                                 CGRectGetHeight(start));
-    snapshot.center = CGPointMake(CGRectGetMidX(start), CGRectGetMidY(start));
-    snapshot.autoresizingMask = UIViewAutoresizingNone;
-    snapshot.userInteractionEnabled = NO;
-    snapshot.clipsToBounds = YES;
-    snapshot.layer.cornerRadius = 18.0;
-    [self.floatingWindow.rootViewController.view addSubview:snapshot];
+    UIView *wrapper = [[UIView alloc] initWithFrame:start];
+    wrapper.backgroundColor = self.floatingContainer.backgroundColor ?: [UIColor blackColor];
+    wrapper.autoresizingMask = UIViewAutoresizingNone;
+    wrapper.userInteractionEnabled = NO;
+    wrapper.clipsToBounds = YES;
+    wrapper.layer.cornerRadius = 18.0;
+    CGRect sourceBounds = CGRectMake(0.0,
+                                     0.0,
+                                     CGRectGetWidth(start),
+                                     CGRectGetHeight(start));
+    if (background) {
+        background.bounds = sourceBounds;
+        background.center = CGPointMake(CGRectGetMidX(wrapper.bounds),
+                                        CGRectGetMidY(wrapper.bounds));
+        background.autoresizingMask = UIViewAutoresizingNone;
+        background.userInteractionEnabled = NO;
+        background.alpha = 0.0;
+        [wrapper addSubview:background];
+    }
+    content.bounds = sourceBounds;
+    content.center = CGPointMake(CGRectGetMidX(wrapper.bounds),
+                                 CGRectGetMidY(wrapper.bounds));
+    content.autoresizingMask = UIViewAutoresizingNone;
+    content.userInteractionEnabled = NO;
+    [wrapper addSubview:content];
+    [self.floatingWindow.rootViewController.view addSubview:wrapper];
     [self.floatingWindow.rootViewController.view
         bringSubviewToFront:self.floatingHandle];
-    self.floatingInteractiveSnapshot = snapshot;
+    self.floatingInteractiveSnapshot = wrapper;
+    self.floatingInteractiveSnapshotBackground = background;
+    self.floatingInteractiveSnapshotContent = content;
     self.floatingContainer.alpha = 0.0;
     [self updateFloatingFullscreenSnapshotForProgress:0.0];
 }
 
 - (void)restoreFloatingSceneAfterCancelledTransition {
+    if (!self.floatingInteractiveScenePrepared &&
+        !self.floatingInteractiveSnapshot) {
+        return;
+    }
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
+    self.floatingInteractiveSnapshotBackground = nil;
+    self.floatingInteractiveSnapshotContent = nil;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingContainer.alpha = 1.0;
+    self.floatingContainer.transform = CGAffineTransformIdentity;
     if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
         self.floatingContainer.frame = self.floatingHandleInitialContainerFrame;
     }
+    [self layoutFloatingHostView];
 }
 
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
@@ -2455,8 +2526,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     self.floatingContainer.transform;
             }];
             [CATransaction commit];
-            self.floatingContainer.layer.cornerRadius =
+            CGFloat visualCornerRadius =
                 18.0 + (16.0 - 18.0) * progress;
+            self.floatingContainer.layer.cornerRadius =
+                visualCornerRadius / MAX(0.01, scale);
             self.floatingDimView.alpha = 1.0 - progress;
             self.floatingDockShadowView.hidden = NO;
             self.floatingDockShadowView.alpha = progress;
@@ -2519,7 +2592,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingDockReady && primaryMovement < 0.0) {
         [self setFloatingDockReady:NO animated:YES];
-        [self restoreFloatingSceneAfterCancelledTransition];
         [self transitionFloatingWindowToDocked];
         return;
     }
@@ -2582,6 +2654,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     UIView *rootView = self.floatingWindow.rootViewController.view;
+    [self.floatingHostView endEditing:YES];
+    [self setFloatingSceneUsesFullscreenKeyboardHost:NO];
     FLMPublishKeyboardState(nil, nil);
     CGRect targetFrame = rootView.bounds;
     if (!self.floatingInteractiveScenePrepared) {
@@ -2604,6 +2678,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          NSString *identifier = [self.floatingIdentifier copy];
                          UIView *snapshot = self.floatingInteractiveSnapshot;
                          self.floatingInteractiveSnapshot = nil;
+                         self.floatingInteractiveSnapshotBackground = nil;
+                         self.floatingInteractiveSnapshotContent = nil;
                          if (!snapshot) {
                              snapshot = [[UIView alloc] initWithFrame:targetFrame];
                              snapshot.backgroundColor = [UIColor blackColor];
@@ -2617,31 +2693,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingInteractiveScenePrepared = NO;
                          self.floatingInteractiveFullscreenTransition = NO;
                          self.floatingLaunchGeneration += 1;
-                         id scene = self.floatingScene;
-                         id presenter = self.floatingPresenter;
-                         [self.floatingHostView removeFromSuperview];
-                         self.floatingHostView = nil;
-                         self.floatingSceneEntity = nil;
-                         self.floatingSceneHandle = nil;
-                         self.floatingScene = nil;
-                         self.floatingPresentationManager = nil;
-                         self.floatingPresenter = nil;
-                         self.floatingIdentifier = nil;
                          self.floatingExclusiveGesture.enabled = NO;
                          self.cornerGuardGesture.enabled = self.enabled;
                          self.cornerGesture.enabled = self.enabled;
-                         [self applyKeyboardFrame:CGRectNull visible:NO];
-                         FLMClearProtectedScene(scene);
-                         @try {
-                             if ([presenter respondsToSelector:@selector(deactivate)]) {
-                                 [presenter deactivate];
-                             }
-                             if ([presenter respondsToSelector:@selector(invalidate)]) {
-                                 [presenter invalidate];
-                             }
-                         } @catch (__unused NSException *exception) {
-                         }
                          self.floatingContainer.alpha = 0.0;
+                         // Ask SpringBoard to promote the already-running scene
+                         // before detaching its embedded presenter. Keeping that
+                         // scene alive under the full-screen cover removes the
+                         // old destroy/relaunch pause at the end of the gesture.
                          [self activateIdentifierFullscreen:identifier];
                          [self finishFullscreenHandoffWithCover:snapshot
                                                    identifier:identifier
@@ -2655,8 +2714,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL targetIsFrontmost =
         identifier.length > 0 &&
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    BOOL minimumCoverTimeElapsed = attempt >= 8;
-    if ((!targetIsFrontmost || !minimumCoverTimeElapsed) && attempt < 24) {
+    BOOL displayCommitted = targetIsFrontmost && attempt >= 1;
+    if (!displayCommitted && attempt < 24) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(0.05 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -2666,8 +2725,34 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         });
         return;
     }
-    [UIView animateWithDuration:0.12
-                          delay:targetIsFrontmost ? 0.05 : 0.0
+
+    id scene = self.floatingScene;
+    id presenter = self.floatingPresenter;
+    [self.floatingHostView removeFromSuperview];
+    self.floatingHostView = nil;
+    self.floatingHostReferenceSize = CGSizeZero;
+    self.floatingSceneEntity = nil;
+    self.floatingSceneHandle = nil;
+    self.floatingScene = nil;
+    self.floatingPresentationManager = nil;
+    self.floatingPresenter = nil;
+    self.floatingIdentifier = nil;
+    self.floatingKeyboardSceneExpanded = NO;
+    self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
+    [self applyKeyboardFrame:CGRectNull visible:NO];
+    FLMClearProtectedScene(scene);
+    @try {
+        if ([presenter respondsToSelector:@selector(deactivate)]) {
+            [presenter deactivate];
+        }
+        if ([presenter respondsToSelector:@selector(invalidate)]) {
+            [presenter invalidate];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+
+    [UIView animateWithDuration:0.10
+                          delay:0.0
                         options:UIViewAnimationOptionCurveEaseOut
                      animations:^{
                          cover.alpha = 0.0;
@@ -3055,12 +3140,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardState(nil, nil);
     [self applyKeyboardFrame:CGRectNull visible:NO];
-    [self normalizeFloatingContainerTransform];
     self.floatingDockTransitionActive = YES;
     self.floatingDockedOnRight = YES;
     self.floatingDockWidth = FLMMinimumDockWidth;
     CGRect target =
         [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
+    CGFloat targetScale =
+        CGRectGetWidth(target) /
+        MAX(1.0, CGRectGetWidth(self.floatingContainer.bounds));
     self.floatingDockShadowView.hidden = NO;
     [UIView animateWithDuration:0.40
                           delay:0.0
@@ -3070,19 +3157,47 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                 UIViewAnimationOptionAllowUserInteraction |
                                 UIViewAnimationOptionCurveEaseOut
                      animations:^{
-                         self.floatingContainer.frame = target;
-                         self.floatingContainer.layer.cornerRadius = 16.0;
+                         // Continue from the exact transform produced by the
+                         // finger. Do not restore the centered frame or relayout
+                         // the remote host before the card reaches its dock.
+                         self.floatingContainer.center =
+                             CGPointMake(CGRectGetMidX(target),
+                                         CGRectGetMidY(target));
+                         self.floatingContainer.transform =
+                             CGAffineTransformMakeScale(targetScale,
+                                                        targetScale);
+                         self.floatingContainer.layer.cornerRadius =
+                             16.0 / MAX(0.01, targetScale);
                          self.floatingDimView.alpha = 0.0;
                          self.floatingDockShadowView.alpha = 1.0;
-                         self.floatingDockShadowView.frame = target;
-                         self.floatingDockShadowView.layer.cornerRadius = 16.0;
                          [self layoutFloatingDockShadow];
                          self.floatingHandle.alpha = 0.0;
-                         [self layoutFloatingHostView];
                          [self layoutFloatingHandleForCurrentContainer];
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
+                         UIView *settleCover =
+                             [self.floatingContainer
+                                 snapshotViewAfterScreenUpdates:NO];
+                         if (settleCover) {
+                             settleCover.frame = target;
+                             settleCover.userInteractionEnabled = NO;
+                             settleCover.layer.cornerRadius = 16.0;
+                             settleCover.clipsToBounds = YES;
+                             [self.floatingWindow.rootViewController.view
+                                 addSubview:settleCover];
+                         }
+                         [UIView performWithoutAnimation:^{
+                             self.floatingContainer.transform =
+                                 CGAffineTransformIdentity;
+                             self.floatingContainer.frame = target;
+                             self.floatingContainer.layer.cornerRadius = 16.0;
+                             self.floatingDockShadowView.transform =
+                                 CGAffineTransformIdentity;
+                             self.floatingDockShadowView.frame = target;
+                             self.floatingDockShadowView.layer.cornerRadius = 16.0;
+                             [self layoutFloatingHostView];
+                         }];
                          self.floatingDockTransitionActive = NO;
                          self.floatingDocked = YES;
                          self.lastObservedFrontmostIdentifier =
@@ -3090,11 +3205,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingExternalActivationArmed =
                              ![self.lastObservedFrontmostIdentifier
                                  isEqualToString:self.floatingIdentifier];
-                         self.floatingContainer.transform = CGAffineTransformIdentity;
                          self.floatingHandleBar.alpha = 1.0;
                          self.floatingHandleBar.transform =
                              CGAffineTransformIdentity;
                          [self configureFloatingInteractionForDockedState];
+                         if (settleCover) {
+                             [UIView animateWithDuration:0.08
+                                              animations:^{
+                                                  settleCover.alpha = 0.0;
+                                              }
+                                              completion:^(__unused BOOL done) {
+                                                  [settleCover removeFromSuperview];
+                                              }];
+                         }
                      }];
 }
 
@@ -3273,16 +3396,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    CGFloat scale = self.floatingInteractiveFullscreenTransition
-                        ? MAX(widthScale, heightScale)
-                        : MIN(widthScale, heightScale);
+    CGFloat scale = self.floatingKeyboardSceneExpanded
+                        ? widthScale
+                        : (self.floatingInteractiveFullscreenTransition
+                               ? MAX(widthScale, heightScale)
+                               : MIN(widthScale, heightScale));
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0.0,
                              0.0,
                              referenceSize.width,
                              referenceSize.height);
+    CGFloat centerY = CGRectGetMidY(self.floatingContainer.bounds);
+    if (self.floatingKeyboardSceneExpanded && !targetIsLandscape) {
+        // Preserve the card's content width while the owning scene temporarily
+        // uses full-screen keyboard geometry. Anchor the full-height surface to
+        // the card top instead of shrinking it to fit and letterboxing it.
+        centerY = referenceSize.height * scale * 0.5;
+    }
     host.center = CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
-                              CGRectGetMidY(self.floatingContainer.bounds));
+                              centerY);
     host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
@@ -3290,6 +3422,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.floatingWindow.hidden || self.floatingDocked) {
         visible = NO;
     }
+    [self setFloatingSceneUsesFullscreenKeyboardHost:visible];
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
     if (visible) {
         CGFloat height = CGRectGetHeight(frame);
@@ -3313,6 +3446,87 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
+}
+
+- (void)prepareFloatingKeyboardHostIfNeeded {
+    if (self.floatingWindow.hidden || self.floatingDocked ||
+        self.floatingIdentifier.length == 0 || !self.floatingScene) {
+        return;
+    }
+    [self setFloatingSceneUsesFullscreenKeyboardHost:YES];
+}
+
+- (void)setFloatingSceneUsesFullscreenKeyboardHost:(BOOL)active {
+    if (active && (self.floatingWindow.hidden || self.floatingDocked ||
+                   self.floatingIdentifier.length == 0 || !self.floatingScene)) {
+        return;
+    }
+    if (self.floatingKeyboardSceneExpanded == active) {
+        return;
+    }
+
+    id scene = self.floatingScene;
+    if (!scene) {
+        self.floatingKeyboardSceneExpanded = NO;
+        self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
+        return;
+    }
+
+    CGSize referenceSize = CGSizeZero;
+    if (active) {
+        self.floatingKeyboardOriginalReferenceSize =
+            self.floatingHostReferenceSize;
+        referenceSize = FLMVisualScreenBounds().size;
+    } else {
+        referenceSize = self.floatingKeyboardOriginalReferenceSize;
+        if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+            referenceSize = [self floatingSceneReferenceSize];
+        }
+    }
+    if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+        return;
+    }
+
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings &&
+            [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if (!mutableSettings ||
+            ![scene respondsToSelector:
+                       @selector(updateSettings:withTransitionContext:)]) {
+            return;
+        }
+        if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
+            [mutableSettings setFrame:CGRectMake(0.0,
+                                                  0.0,
+                                                  referenceSize.width,
+                                                  referenceSize.height)];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
+            [mutableSettings setForeground:YES];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
+            [mutableSettings setBackgrounded:NO];
+        }
+        [scene updateSettings:mutableSettings withTransitionContext:nil];
+        self.floatingKeyboardSceneExpanded = active;
+        self.floatingHostReferenceSize = referenceSize;
+        [self layoutFloatingHostView];
+        NSLog(@"[FlymeKeyboardHost] %@ scene=%@ frame=%@",
+              active ? @"physical" : @"floating",
+              FLMSceneIdentifier(scene) ?: @"<unknown>",
+              NSStringFromCGSize(referenceSize));
+        if (!active) {
+            self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[FlymeKeyboardHost] update failed %@", exception);
+    }
 }
 
 - (void)keyboardFrameWillChange:(NSNotification *)notification {
@@ -3696,6 +3910,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveFullscreenTransition = NO;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
+    self.floatingInteractiveSnapshotBackground = nil;
+    self.floatingInteractiveSnapshotContent = nil;
+    self.floatingKeyboardSceneExpanded = NO;
+    self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
@@ -3891,6 +4109,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingScenePreparedAt = 0.0;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
+    self.floatingInteractiveSnapshotBackground = nil;
+    self.floatingInteractiveSnapshotContent = nil;
+    self.floatingKeyboardSceneExpanded = NO;
+    self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingDocked = NO;
@@ -4111,6 +4333,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 @end
+
+%hook _UIKeyboardLayerHostView
+
+- (void)scene:(id)scene
+    didUpdateClientSettingsWithDiff:(id)diff
+                  oldClientSettings:(id)oldClientSettings
+                  transitionContext:(id)transitionContext {
+    // This is the SpringBoard-side source transaction that pairs the remote
+    // keyboard layer with its owning application scene. Promote the floating
+    // scene to the physical display before UIKit commits that pairing; merely
+    // changing UITextEffectsWindow bounds happens too late and leaves the
+    // keyboard originating at the card's bottom edge.
+    [[FLMWheelController sharedController]
+        prepareFloatingKeyboardHostIfNeeded];
+    %orig;
+}
+
+%end
 
 %hook SpringBoard
 

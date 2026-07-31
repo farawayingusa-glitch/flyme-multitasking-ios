@@ -24,6 +24,8 @@ required_lines=(
     "floor((height - containerHeight) * 0.5 - 44.0);"
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "updateFloatingFullscreenSnapshotForProgress"
+    "wrapper.frame = frame;"
+    "displayCommitted = targetIsFrontmost && attempt >= 1"
     "CGAffineTransformMakeScale(scale, scale)"
     "setFloatingApplicationInputBlocked:YES"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
@@ -70,6 +72,8 @@ for keyboard_line in \
     'FLMIdentifierHash' \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
+    'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
+    '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
     if ! grep -Fq "$keyboard_line" "$keyboard_source"; then
         echo "safe keyboard bridge changed: $keyboard_line" >&2
