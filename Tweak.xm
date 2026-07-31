@@ -116,7 +116,7 @@ static BOOL FLMDeviceIsLocked(void) {
     return NO;
 }
 
-static CGRect FLMVisualScreenBounds(void) {
+static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) {
@@ -124,11 +124,61 @@ static CGRect FLMVisualScreenBounds(void) {
             }
             if (scene.activationState == UISceneActivationStateForegroundActive ||
                 scene.activationState == UISceneActivationStateForegroundInactive) {
-                return ((UIWindowScene *)scene).coordinateSpace.bounds;
+                UIInterfaceOrientation orientation =
+                    ((UIWindowScene *)scene).interfaceOrientation;
+                if (orientation != UIInterfaceOrientationUnknown) {
+                    return orientation;
+                }
             }
         }
     }
-    return [UIScreen mainScreen].bounds;
+    UIDeviceOrientation deviceOrientation = [UIDevice currentDevice].orientation;
+    if (deviceOrientation == UIDeviceOrientationLandscapeLeft) {
+        return UIInterfaceOrientationLandscapeRight;
+    }
+    if (deviceOrientation == UIDeviceOrientationLandscapeRight) {
+        return UIInterfaceOrientationLandscapeLeft;
+    }
+    if (deviceOrientation == UIDeviceOrientationPortraitUpsideDown) {
+        return UIInterfaceOrientationPortraitUpsideDown;
+    }
+    return UIInterfaceOrientationPortrait;
+}
+
+static CGRect FLMVisualScreenBounds(void) {
+    CGRect bounds = [UIScreen mainScreen].bounds;
+    UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
+    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
+    BOOL boundsLandscape =
+        CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
+    if (targetLandscape && !boundsLandscape) {
+        bounds.size = CGSizeMake(bounds.size.height, bounds.size.width);
+    }
+    return bounds;
+}
+
+static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
+    CGRect rawBounds = [UIScreen mainScreen].bounds;
+    UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
+    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
+    BOOL rawBoundsLandscape =
+        CGRectGetWidth(rawBounds) > CGRectGetHeight(rawBounds);
+    if (rawBoundsLandscape || !targetLandscape) {
+        return rawPoint;
+    }
+
+    CGFloat rawWidth = CGRectGetWidth(rawBounds);
+    CGFloat rawHeight = CGRectGetHeight(rawBounds);
+    if (orientation == UIInterfaceOrientationLandscapeLeft) {
+        return CGPointMake(rawPoint.y, rawWidth - rawPoint.x);
+    }
+    if (orientation == UIInterfaceOrientationLandscapeRight) {
+        return CGPointMake(rawHeight - rawPoint.y, rawPoint.x);
+    }
+    if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+        return CGPointMake(rawHeight - rawPoint.y, rawWidth - rawPoint.x);
+    }
+    return rawPoint;
 }
 
 static NSString *FLMIdentifierForApplication(id application) {
@@ -1022,8 +1072,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
             return NO;
         }
-        CGPoint point =
-            [touch locationInView:self.overlayWindow.rootViewController.view];
+        CGPoint rawPoint = [touch locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
         return FLMPointInsideCornerTrigger(point,
                                            FLMVisualScreenBounds(),
                                            NULL);
@@ -1035,8 +1085,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
     CGRect bounds = FLMVisualScreenBounds();
-    CGPoint point =
-        [touch locationInView:self.overlayWindow.rootViewController.view];
+    CGPoint rawPoint = [touch locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     BOOL fromRight = NO;
     if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
         return NO;
@@ -1073,8 +1123,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.wheelPinned) {
         return;
     }
-    CGPoint point =
-        [gesture locationInView:self.overlayWindow.rootViewController.view];
+    CGPoint rawPoint = [gesture locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged:
@@ -1112,8 +1162,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
-    CGPoint point =
-        [gesture locationInView:self.overlayWindow.rootViewController.view];
+    CGPoint rawPoint = [gesture locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
 
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:

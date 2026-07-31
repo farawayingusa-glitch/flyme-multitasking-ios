@@ -8,6 +8,9 @@ required_lines=(
     "const CGFloat verticalRadius = 65.0;"
     "self.cornerGesture.minimumPressDuration = 0.12;"
     "self.cornerGuardGesture.minimumPressDuration = 0.0;"
+    "CGPoint rawPoint = [touch locationInView:nil];"
+    "CGPoint rawPoint = [gesture locationInView:nil];"
+    "CGPoint point = FLMVisualPointFromRawPoint(rawPoint);"
     "return totalMovement >= 14.0 &&"
     "(inwardMovement >= 4.0 || upwardMovement >= 4.0);"
     "static const CGFloat FLMDefaultWheelRadius = 202.0;"
@@ -26,6 +29,11 @@ for required_line in "${required_lines[@]}"; do
         exit 1
     fi
 done
+
+if grep -Fq "locationInView:self.overlayWindow.rootViewController.view" "$source_file"; then
+    echo "global wheel touch was incorrectly converted through the overlay window" >&2
+    exit 1
+fi
 
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" |
     head -n1 | cut -d: -f1)"
