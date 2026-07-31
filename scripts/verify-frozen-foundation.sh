@@ -25,7 +25,7 @@ required_lines=(
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "updateFloatingFullscreenSnapshotForProgress"
     "CGAffineTransformMakeScale(scale, scale)"
-    "setFloatingApplicationInputSuppressed:YES"
+    "setFloatingApplicationInputBlocked:YES"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "self.floatingDockWidth = FLMMinimumDockWidth;"
     "updateFloatingDockAccessoryPositions"

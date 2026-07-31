@@ -678,7 +678,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL floatingResizeCenterReady;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
-@property(nonatomic, assign) BOOL floatingApplicationInputSuppressed;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, assign) BOOL floatingReconnectSuppressed;
 @property(nonatomic, assign) BOOL floatingKeyboardVisible;
@@ -731,7 +730,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)keyboardWillHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
-- (void)setFloatingApplicationInputSuppressed:(BOOL)suppressed;
+- (void)setFloatingApplicationInputBlocked:(BOOL)blocked;
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress;
 - (void)layoutFloatingHandleForCurrentContainer;
 - (CGRect)centeredFloatingFrame;
@@ -1308,7 +1307,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
-    self.floatingApplicationInputSuppressed = self.floatingDocked;
     floatingWindow.floatingContentView = self.floatingContainer;
     floatingWindow.floatingPrimaryControlView = self.floatingHandle;
     floatingWindow.floatingSecondaryControlView = self.floatingResizeHandle;
@@ -2273,16 +2271,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
-- (void)setFloatingApplicationInputSuppressed:(BOOL)suppressed {
-    self.floatingApplicationInputSuppressed = suppressed;
+- (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
     if (self.floatingDocked) {
         return;
     }
-    self.floatingHostView.userInteractionEnabled = !suppressed;
+    self.floatingHostView.userInteractionEnabled = !blocked;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-    self.floatingDockInteractionShield.hidden = !suppressed;
-    self.floatingDockInteractionShield.userInteractionEnabled = suppressed;
-    if (suppressed) {
+    self.floatingDockInteractionShield.hidden = !blocked;
+    self.floatingDockInteractionShield.userInteractionEnabled = blocked;
+    if (blocked) {
         [self.floatingContainer
             bringSubviewToFront:self.floatingDockInteractionShield];
     }
@@ -2379,7 +2376,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandleMoved = NO;
         self.floatingDockTransitionActive = NO;
         self.floatingInteractiveScenePrepared = NO;
-        [self setFloatingApplicationInputSuppressed:NO];
+        [self setFloatingApplicationInputBlocked:NO];
         [self setFloatingDockReady:NO animated:NO];
         [UIView animateWithDuration:0.12
                          animations:^{
@@ -2433,7 +2430,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             if (self.floatingInteractiveScenePrepared) {
                 [self restoreFloatingSceneAfterCancelledTransition];
             }
-            [self setFloatingApplicationInputSuppressed:YES];
+            [self setFloatingApplicationInputBlocked:YES];
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = YES;
             CGRect start = self.floatingHandleInitialContainerFrame;
@@ -2479,7 +2476,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } else if (primaryMovement >= 3.0) {
             [self setFloatingDockReady:NO animated:YES];
-            [self setFloatingApplicationInputSuppressed:NO];
+            [self setFloatingApplicationInputBlocked:NO];
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = NO;
             self.floatingDockShadowView.alpha = 0.0;
@@ -2499,7 +2496,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [self layoutFloatingHandleForCurrentContainer];
         } else {
             [self setFloatingDockReady:NO animated:YES];
-            [self setFloatingApplicationInputSuppressed:NO];
+            [self setFloatingApplicationInputBlocked:NO];
             if (self.floatingInteractiveScenePrepared) {
                 [self restoreFloatingSceneAfterCancelledTransition];
             }
@@ -2542,7 +2539,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
     [self setFloatingDockReady:NO animated:animated];
     [self restoreFloatingSceneAfterCancelledTransition];
-    [self setFloatingApplicationInputSuppressed:NO];
+    [self setFloatingApplicationInputBlocked:NO];
     [self normalizeFloatingContainerTransform];
     void (^changes)(void) = ^{
         self.floatingContainer.alpha = 1.0;
@@ -2996,7 +2993,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)configureFloatingInteractionForDockedState {
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
-    self.floatingApplicationInputSuppressed = self.floatingDocked;
     floatingWindow.passesTouchesOutsideFloatingContent = self.floatingDocked;
     self.floatingBackdropTap.enabled = !self.floatingDocked;
     self.floatingDockTap.enabled = NO;
@@ -3055,7 +3051,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.floatingWindow.hidden || self.floatingDocked) {
         return;
     }
-    [self setFloatingApplicationInputSuppressed:YES];
+    [self setFloatingApplicationInputBlocked:YES];
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardState(nil, nil);
     [self applyKeyboardFrame:CGRectNull visible:NO];
@@ -3119,7 +3115,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.hidden = YES;
     self.floatingDockShadowView.hidden = NO;
     self.floatingDocked = NO;
-    self.floatingApplicationInputSuppressed = YES;
+    [self setFloatingApplicationInputBlocked:YES];
     [self restoreFloatingHandleInteraction];
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
