@@ -655,8 +655,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) CAShapeLayer *floatingResizeShapeLayer;
 @property(nonatomic, strong) UIView *floatingHostView;
 @property(nonatomic, strong) UILabel *floatingStatusLabel;
-@property(nonatomic, strong) UIView *floatingLaunchCoverView;
-@property(nonatomic, strong) UIImageView *floatingLaunchIconView;
 @property(nonatomic, strong) FLMOutsideTapGestureRecognizer *floatingBackdropTap;
 @property(nonatomic, strong) UILongPressGestureRecognizer *floatingHandlePress;
 @property(nonatomic, strong) UITapGestureRecognizer *floatingHandleTap;
@@ -815,9 +813,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)backgroundFloatingScene:(id)scene;
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
-- (void)configureFloatingLaunchCoverForIdentifier:(NSString *)identifier;
-- (void)revealFloatingContentForGeneration:(NSUInteger)generation
-                                    attempt:(NSUInteger)attempt;
 - (void)layoutFloatingHostView;
 - (CGSize)floatingSceneReferenceSize;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
@@ -1255,24 +1250,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingStatusLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
                                                      weight:UIFontWeightMedium];
-    self.floatingStatusLabel.hidden = YES;
     [self.floatingContainer addSubview:self.floatingStatusLabel];
-
-    self.floatingLaunchCoverView = [[UIView alloc] initWithFrame:CGRectZero];
-    self.floatingLaunchCoverView.backgroundColor =
-        [UIColor colorWithRed:0.075 green:0.082 blue:0.098 alpha:1.0];
-    self.floatingLaunchCoverView.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.floatingLaunchCoverView.hidden = YES;
-    self.floatingLaunchCoverView.userInteractionEnabled = YES;
-    [self.floatingContainer addSubview:self.floatingLaunchCoverView];
-
-    self.floatingLaunchIconView = [[UIImageView alloc] initWithFrame:CGRectZero];
-    self.floatingLaunchIconView.contentMode = UIViewContentModeScaleAspectFit;
-    self.floatingLaunchIconView.layer.cornerRadius = 20.0;
-    self.floatingLaunchIconView.layer.masksToBounds = YES;
-    self.floatingLaunchIconView.userInteractionEnabled = NO;
-    [self.floatingLaunchCoverView addSubview:self.floatingLaunchIconView];
 
     self.floatingDockInteractionShield = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingDockInteractionShield.backgroundColor = [UIColor clearColor];
@@ -2480,14 +2458,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         background.transform =
             CGAffineTransformMakeScale(fillScale, fillScale);
     }
-    // The proportional foreground never disappears. A fill layer only
+    // The proportional foreground never disappears. A faint fill layer only
     // covers the newly revealed top/bottom area before the real scene takes
     // over, so there is no mid-gesture visual mode switch.
     content.alpha = 1.0;
-    // The fill snapshot becomes opaque exactly when the wrapper starts gaining
-    // height. It is behind the proportional foreground, so only newly exposed
-    // pixels are visible and the former black triangular corner gaps disappear.
-    background.alpha = heightStage > 0.0001 ? 1.0 : 0.0;
+    background.alpha = 0.18 * heightStage;
 
     // The real container remains hidden but tracks exactly the same bounded
     // geometry, which keeps the handle and final handoff spatially continuous.
@@ -2513,7 +2488,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
     CGRect start = self.floatingHandleInitialContainerFrame;
     UIView *wrapper = [[UIView alloc] initWithFrame:start];
-    wrapper.backgroundColor = [UIColor clearColor];
+    wrapper.backgroundColor = self.floatingContainer.backgroundColor ?: [UIColor blackColor];
     wrapper.autoresizingMask = UIViewAutoresizingNone;
     wrapper.userInteractionEnabled = NO;
     wrapper.clipsToBounds = YES;
@@ -2620,7 +2595,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         CGRectGetWidth(bounds) -
                             CGRectGetMaxX(self.floatingHandleInitialContainerFrame));
                 CGFloat progress =
-                    MIN(0.93, MAX(0.0, primaryMovement / available));
+                    MIN(1.0, MAX(0.0, primaryMovement / available));
                 [self updateFloatingFullscreenSnapshotForProgress:progress];
                 self.floatingDimView.alpha = 1.0 - progress;
                 self.floatingHandle.alpha =
@@ -2699,7 +2674,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 MAX(1.0,
                     CGRectGetHeight(bounds) -
                         CGRectGetMaxY(self.floatingHandleInitialContainerFrame));
-            CGFloat progress = MIN(0.93, MAX(0.0, primaryMovement / available));
+            CGFloat progress = MIN(1.0, MAX(0.0, primaryMovement / available));
             [self updateFloatingFullscreenSnapshotForProgress:progress];
             self.floatingDimView.alpha = 1.0 - progress;
             self.floatingHandle.alpha =
@@ -2806,13 +2781,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // same card morph is still on screen. The old implementation waited until
     // that animation ended, producing a visible motion/pause/activation split.
     [self activateIdentifierFullscreen:identifier];
-    // The drag itself is capped below completion. Only after the real touch
-    // Ended, continue from that exact presentation state to full screen in one
-    // uninterrupted geometry animation. Scene readiness later controls only a
-    // crossfade; it must never cause a second size change.
-    CGFloat remainingProgress =
-        MAX(0.0, 1.0 - self.floatingFullscreenProgress);
-    NSTimeInterval finishDuration = 0.20 + 0.30 * remainingProgress;
+    CGFloat remainingProgress = 1.0 - self.floatingFullscreenProgress;
+    NSTimeInterval finishDuration = 0.16 + 0.18 * remainingProgress;
     [UIView animateWithDuration:finishDuration
                            delay:0.0
                          options:UIViewAnimationOptionBeginFromCurrentState |
@@ -2820,6 +2790,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                  UIViewAnimationOptionAllowUserInteraction
                       animations:^{
                          [self updateFloatingFullscreenSnapshotForProgress:1.0];
+                         self.floatingContainer.layer.cornerRadius = 0.0;
                          self.floatingDimView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
                          [self layoutFloatingHandleForCurrentContainer];
@@ -2827,12 +2798,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       completion:^(BOOL finished) {
                           (void)finished;
                           UIView *snapshot = self.floatingInteractiveSnapshot;
+                         self.floatingInteractiveSnapshot = nil;
+                         self.floatingInteractiveSnapshotBackground = nil;
+                         self.floatingInteractiveSnapshotContent = nil;
                          if (!snapshot) {
                              snapshot = [[UIView alloc] initWithFrame:targetFrame];
                              snapshot.backgroundColor = [UIColor blackColor];
                              [rootView addSubview:snapshot];
-                          }
+                         } else {
+                             snapshot.layer.cornerRadius = 0.0;
+                             [rootView addSubview:snapshot];
+                         }
 
+                          self.floatingInteractiveScenePrepared = NO;
+                          self.floatingInteractiveFullscreenTransition = NO;
+                          self.floatingFullscreenProgress = 1.0;
                          self.floatingLaunchGeneration += 1;
                          self.floatingExclusiveGesture.enabled = NO;
                          self.cornerGuardGesture.enabled = self.enabled;
@@ -2873,6 +2853,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
     self.floatingIdentifier = nil;
+    self.floatingFullscreenProgress = 0.0;
     [self detachFloatingKeyboardLayerHost];
     [self applyKeyboardFrame:CGRectNull visible:NO];
     FLMClearProtectedScene(scene);
@@ -2886,23 +2867,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     } @catch (__unused NSException *exception) {
     }
 
-    [UIView animateWithDuration:0.20
+    [UIView animateWithDuration:0.18
                            delay:0.0
                          options:UIViewAnimationOptionCurveEaseInOut |
                                  UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
-                         cover.layer.cornerRadius = 0.0;
                          cover.alpha = 0.0;
                      }
                      completion:^(BOOL finished) {
-                          (void)finished;
-                          self.floatingInteractiveSnapshot = nil;
-                          self.floatingInteractiveSnapshotBackground = nil;
-                          self.floatingInteractiveSnapshotContent = nil;
-                          self.floatingInteractiveScenePrepared = NO;
-                          self.floatingInteractiveFullscreenTransition = NO;
-                          self.floatingFullscreenProgress = 0.0;
-                          [cover removeFromSuperview];
+                         (void)finished;
+                         [cover removeFromSuperview];
                          self.floatingWindow.hidden = YES;
                          self.floatingContainer.alpha = 1.0;
                          [self resetFloatingInteractiveLayoutAnimated:NO];
@@ -2957,9 +2931,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
     } @catch (__unused NSException *exception) {
     }
-    [self configureFloatingLaunchCoverForIdentifier:identifier];
-    self.floatingHandle.userInteractionEnabled = NO;
-    self.floatingExclusiveGesture.enabled = NO;
+    self.floatingStatusLabel.hidden = NO;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
@@ -3319,8 +3291,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingHandle.alpha = 0.0;
                          [self layoutFloatingHandleForCurrentContainer];
                      }
-                      completion:^(BOOL finished) {
-                          (void)finished;
+                     completion:^(BOOL finished) {
+                         (void)finished;
                          UIView *settleCover =
                              [self.floatingContainer
                                  snapshotViewAfterScreenUpdates:NO];
@@ -3413,8 +3385,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
-                          [self configureFloatingInteractionForDockedState];
-                      }];
+                         [self configureFloatingInteractionForDockedState];
+                     }];
 }
 
 - (void)snapDockedFloatingWindowUsingTouchPoint:(CGPoint)point {
@@ -3457,56 +3429,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockWidth = width;
 }
 
-- (void)configureFloatingLaunchCoverForIdentifier:(NSString *)identifier {
-    self.floatingLaunchIconView.image = FLMApplicationIcon(identifier);
-    self.floatingLaunchCoverView.alpha = 1.0;
-    self.floatingLaunchCoverView.hidden = NO;
-    self.floatingLaunchCoverView.userInteractionEnabled = YES;
-    self.floatingStatusLabel.hidden = YES;
-    [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
-    if (!self.floatingDockInteractionShield.hidden) {
-        [self.floatingContainer
-            bringSubviewToFront:self.floatingDockInteractionShield];
-    }
-}
-
-- (void)revealFloatingContentForGeneration:(NSUInteger)generation
-                                    attempt:(NSUInteger)attempt {
-    NSTimeInterval delay = attempt <= 3 ? 0.08 : 0.16;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(delay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (generation != self.floatingLaunchGeneration ||
-            self.floatingWindow.hidden || !self.floatingHostView ||
-            self.floatingLaunchState != FLMFloatingLaunchStateAttached) {
-            return;
-        }
-        [self.floatingHostView setNeedsLayout];
-        [self.floatingHostView layoutIfNeeded];
-        [UIView animateWithDuration:0.18
-                              delay:0.0
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionCurveEaseOut |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:^{
-                             self.floatingLaunchCoverView.alpha = 0.0;
-                         }
-                         completion:^(BOOL finished) {
-            (void)finished;
-            if (generation != self.floatingLaunchGeneration ||
-                self.floatingWindow.hidden) {
-                return;
-            }
-            self.floatingLaunchCoverView.hidden = YES;
-            self.floatingLaunchCoverView.alpha = 1.0;
-            self.floatingLaunchCoverView.userInteractionEnabled = NO;
-            self.floatingHostView.userInteractionEnabled = YES;
-            self.floatingHandle.userInteractionEnabled = YES;
-            self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
-        }];
-    });
-}
-
 - (void)layoutFloatingWindow {
     if (!self.floatingWindow) {
         return;
@@ -3525,16 +3447,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             : [self centeredFloatingFrame];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
-    self.floatingLaunchCoverView.frame = self.floatingContainer.bounds;
-    CGFloat iconSide = MIN(92.0,
-                           MAX(68.0,
-                               CGRectGetWidth(self.floatingContainer.bounds) *
-                                   0.25));
-    self.floatingLaunchIconView.bounds =
-        CGRectMake(0.0, 0.0, iconSide, iconSide);
-    self.floatingLaunchIconView.center =
-        CGPointMake(CGRectGetMidX(self.floatingLaunchCoverView.bounds),
-                    CGRectGetMidY(self.floatingLaunchCoverView.bounds));
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     [self layoutFloatingHandleForCurrentContainer];
     [self layoutFloatingDockShadow];
@@ -4264,16 +4176,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
     FLMPublishKeyboardState(identifier, nil);
+    self.floatingStatusLabel.hidden = NO;
+    self.floatingStatusLabel.text = @"正在打开…";
     [self layoutFloatingWindow];
-    [self configureFloatingLaunchCoverForIdentifier:identifier];
 
     self.floatingDimView.alpha = 0.0;
     self.floatingContainer.alpha = 0.0;
     self.floatingContainer.transform = CGAffineTransformMakeScale(0.90, 0.90);
     self.floatingHandle.alpha = 0.0;
-    self.floatingHandle.userInteractionEnabled = NO;
     self.previousKeyWindow = FLMCurrentKeyWindow();
-    self.floatingExclusiveGesture.enabled = NO;
+    self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
     self.cornerGuardGesture.enabled = NO;
     self.cornerGesture.enabled = NO;
     [self.floatingWindow makeKeyAndVisible];
@@ -4299,12 +4211,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [self beginLockMonitoring];
     // Let UIKit publish its normal primary scene before querying an entity.
-    // A wheel selection already gave the app a full dismissal-animation head
-    // start, so begin polling almost immediately in that case. Creating both
-    // transactions in the same run-loop turn remains racy on iOS 16.
-    NSTimeInterval initialAttachDelay = alreadyPrewarmed ? 0.02 : 0.10;
+    // Creating both transactions in the same run-loop turn is racy on iOS 16.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(initialAttachDelay * NSEC_PER_SEC)),
+                                 (int64_t)(0.12 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [self attachFloatingIdentifier:identifier
                             generation:generation
@@ -4332,6 +4241,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
+        self.floatingStatusLabel.text = @"正在准备应用…";
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -4348,6 +4258,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     if (![self sceneForHandle:sceneHandle]) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
+        self.floatingStatusLabel.text = @"正在启动应用…";
         if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
@@ -4375,6 +4286,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
+        self.floatingStatusLabel.text = @"正在连接画面…";
         if (attempt > 0 && attempt % 6 == 0) {
             id stalePresenter = self.floatingPresenter;
             @try {
@@ -4413,12 +4325,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHostReferenceSize = referenceSize;
     }
     host.autoresizingMask = UIViewAutoresizingNone;
-    host.userInteractionEnabled = NO;
     [self.floatingContainer insertSubview:host atIndex:0];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
-    [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
-    [self revealFloatingContentForGeneration:generation attempt:attempt];
 }
 
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
@@ -4515,11 +4424,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } @catch (__unused NSException *exception) {
         }
-        self.floatingLaunchCoverView.hidden = YES;
-        self.floatingLaunchCoverView.alpha = 1.0;
-        self.floatingLaunchCoverView.userInteractionEnabled = NO;
-        self.floatingLaunchIconView.image = nil;
-        self.floatingStatusLabel.hidden = YES;
         self.floatingLaunchState = FLMFloatingLaunchStateIdle;
         [self stopLockMonitoringIfIdle];
         return;
@@ -4558,11 +4462,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            } @catch (__unused NSException *exception) {
                            }
                            self.floatingWindow.hidden = YES;
-                         self.floatingLaunchCoverView.hidden = YES;
-                         self.floatingLaunchCoverView.alpha = 1.0;
-                         self.floatingLaunchCoverView.userInteractionEnabled = NO;
-                         self.floatingLaunchIconView.image = nil;
-                         self.floatingStatusLabel.hidden = YES;
                          self.floatingLaunchState = FLMFloatingLaunchStateIdle;
                          self.floatingDimView.alpha = 1.0;
                          self.floatingContainer.alpha = 1.0;

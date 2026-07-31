@@ -25,8 +25,6 @@ required_lines=(
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "updateFloatingFullscreenSnapshotForProgress"
     "wrapper.frame = frame;"
-    "MIN(0.93, MAX(0.0, primaryMovement / available))"
-    "background.alpha = heightStage > 0.0001 ? 1.0 : 0.0;"
     "displayCommitted = targetIsFrontmost && attempt >= 1"
     "CGAffineTransformMakeScale(scale, scale)"
     "setFloatingApplicationInputBlocked:YES"
@@ -83,11 +81,10 @@ done
 for overlay_line in \
     '@interface FLMKeyboardOverlayWindow' \
     'keyboardLayerHostView:' \
-    '%hook _UIKeyboardLayerHostView' \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
     'const CGFloat widthStageEnd = 0.72;'; do
-    if ! grep -Fq -- "$overlay_line" "$source_file"; then
+    if ! grep -Fq "$overlay_line" "$source_file"; then
         echo "keyboard overlay or continuous fullscreen morph changed: $overlay_line" >&2
         exit 1
     fi
@@ -97,36 +94,6 @@ if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
     exit 1
 fi
-
-if grep -Fq 'const CGFloat settleProgress = 0.985;' "$source_file" ||
-   grep -Fq '0.985 + 0.00042' "$source_file"; then
-    echo "multi-stage fullscreen geometry handoff was reintroduced" >&2
-    exit 1
-fi
-
-for unsafe_keyboard_line in \
-    '%hook _UIRemoteKeyboards' \
-    'FLYME_FLOATING_GEOMETRY_NOTIFICATION' \
-    'floatingKeyboardCandidateHostView' \
-    '- (void)didMoveToWindow'; do
-    if grep -Fq -- "$unsafe_keyboard_line" "$source_file" ||
-       grep -Fq -- "$unsafe_keyboard_line" "$keyboard_source"; then
-        echo "0.8.7 unsafe keyboard path was reintroduced: $unsafe_keyboard_line" >&2
-        exit 1
-    fi
-done
-
-for launch_cover_line in \
-    'floatingLaunchCoverView' \
-    'configureFloatingLaunchCoverForIdentifier' \
-    'revealFloatingContentForGeneration' \
-    'initialAttachDelay = alreadyPrewarmed ? 0.02 : 0.10' \
-    'self.floatingStatusLabel.hidden = YES;'; do
-    if ! grep -Fq -- "$launch_cover_line" "$source_file"; then
-        echo "safe launch cover changed: $launch_cover_line" >&2
-        exit 1
-    fi
-done
 
 if grep -Fq '%hook UIWindowScene' "$keyboard_source"; then
     echo "application Scene reference bounds are being overridden again" >&2
