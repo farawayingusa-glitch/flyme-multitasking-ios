@@ -312,10 +312,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
             if (visible) {
                 FLMPrepareFullscreenKeyboardHost();
             }
-            FLMPublishKeyboardFrame(frame, visible);
+            if (visible) {
+                FLMPublishKeyboardFrame(frame, YES);
+            }
         }];
         FLMKeyboardHideObserver =
-            [center addObserverForName:UIKeyboardWillHideNotification
+            [center addObserverForName:UIKeyboardDidHideNotification
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(__unused NSNotification *notification) {

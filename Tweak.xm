@@ -481,6 +481,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     (void)event;
+    if (self.startPoints.count + touches.count > 1) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
     if (self.firstTouchTimestamp <= 0.0) {
         UITouch *firstTouch = [touches anyObject];
         self.firstTouchTimestamp = firstTouch.timestamp;
@@ -677,6 +681,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSUInteger floatingDockInputGeneration;
 @property(nonatomic, assign) BOOL floatingDockReady;
 @property(nonatomic, assign) BOOL floatingResizeCenterReady;
+@property(nonatomic, assign) CGPoint floatingExclusiveStartPoint;
+@property(nonatomic, assign) NSTimeInterval floatingExclusiveStartTimestamp;
+@property(nonatomic, assign) BOOL floatingExclusiveTapEligible;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
@@ -690,6 +697,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) int keyboardPrepareNotifyToken;
 @property(nonatomic, assign) BOOL floatingKeyboardSceneExpanded;
 @property(nonatomic, assign) CGSize floatingKeyboardOriginalReferenceSize;
+@property(nonatomic, assign) BOOL floatingKeyboardInteractionSessionActive;
+@property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -733,10 +742,14 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture;
 - (void)activateFloatingDockDragForGeneration:(NSUInteger)generation;
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
-- (void)keyboardWillHide:(NSNotification *)notification;
+- (void)keyboardDidHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
 - (void)prepareFloatingKeyboardHostIfNeeded;
 - (void)setFloatingSceneUsesFullscreenKeyboardHost:(BOOL)active;
+- (CGRect)floatingKeyboardInteractionFrame;
+- (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
+- (void)beginFloatingKeyboardInteractionSession;
+- (void)endFloatingKeyboardInteractionSession;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked;
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress;
@@ -1008,8 +1021,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                  object:nil];
         [[NSNotificationCenter defaultCenter]
             addObserver:self
-               selector:@selector(keyboardWillHide:)
-                   name:UIKeyboardWillHideNotification
+               selector:@selector(keyboardDidHide:)
+                   name:UIKeyboardDidHideNotification
                  object:nil];
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
@@ -1129,6 +1142,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingExclusiveGesture.delaysTouchesBegan = NO;
     self.floatingExclusiveGesture.delaysTouchesEnded = NO;
     self.floatingExclusiveGesture.numberOfTouchesRequired = 1;
+    self.floatingExclusiveGesture.maximumNumberOfTouches = 1;
     self.floatingExclusiveGesture.minimumPressDuration = 0.0;
     self.floatingExclusiveGesture.allowableMovement = CGFLOAT_MAX;
     self.floatingExclusiveGesture.enabled = NO;
@@ -1483,15 +1497,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [touchView isDescendantOfView:self.floatingHandle]) {
             return NO;
         }
-        CGPoint point =
-            [touch locationInView:self.floatingWindow.rootViewController.view];
-        CGRect handleHitFrame = CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
-        if (self.floatingKeyboardVisible &&
-            CGRectContainsPoint(self.floatingKeyboardFrame, point)) {
-            return NO;
-        }
-        return !CGRectContainsPoint(self.floatingContainer.frame, point) &&
-               !CGRectContainsPoint(handleHitFrame, point);
+        CGPoint rawPoint = [touch locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        return ![self pointIsInsideFloatingInteractionDomain:point];
     }
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
@@ -1877,10 +1885,46 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
-    // The system-level recognizer only reserves input priority outside the card.
-    // FLMOutsideTapGestureRecognizer owns the close decision using every touch's
-    // starting point, movement and duration.
-    (void)gesture;
+    if (self.floatingWindow.hidden || self.floatingDocked) {
+        self.floatingExclusiveTapEligible = NO;
+        return;
+    }
+
+    CGPoint rawPoint = [gesture locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    switch (gesture.state) {
+        case UIGestureRecognizerStateBegan:
+            self.floatingExclusiveStartPoint = point;
+            self.floatingExclusiveStartTimestamp = CACurrentMediaTime();
+            self.floatingExclusiveTapEligible =
+                ![self pointIsInsideFloatingInteractionDomain:point];
+            break;
+        case UIGestureRecognizerStateChanged:
+            if (self.floatingExclusiveTapEligible &&
+                hypot(point.x - self.floatingExclusiveStartPoint.x,
+                      point.y - self.floatingExclusiveStartPoint.y) > 12.0) {
+                self.floatingExclusiveTapEligible = NO;
+            }
+            break;
+        case UIGestureRecognizerStateEnded: {
+            BOOL shouldClose =
+                self.floatingExclusiveTapEligible &&
+                CACurrentMediaTime() - self.floatingExclusiveStartTimestamp <= 0.35 &&
+                hypot(point.x - self.floatingExclusiveStartPoint.x,
+                      point.y - self.floatingExclusiveStartPoint.y) <= 12.0;
+            self.floatingExclusiveTapEligible = NO;
+            if (shouldClose && !self.floatingWindow.hidden && !self.floatingDocked) {
+                [self closeFloatingWindowKeepingApplication:YES];
+            }
+            break;
+        }
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            self.floatingExclusiveTapEligible = NO;
+            break;
+        default:
+            break;
+    }
 }
 
 - (void)activateFloatingDockDragForGeneration:(NSUInteger)generation {
@@ -3425,6 +3469,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self setFloatingSceneUsesFullscreenKeyboardHost:visible];
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
     if (visible) {
+        [self beginFloatingKeyboardInteractionSession];
         CGFloat height = CGRectGetHeight(frame);
         if (height < 180.0) {
             height = self.lastPortraitKeyboardHeight;
@@ -3446,6 +3491,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
+    [self endFloatingKeyboardInteractionSession];
 }
 
 - (void)prepareFloatingKeyboardHostIfNeeded {
@@ -3453,7 +3499,71 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingIdentifier.length == 0 || !self.floatingScene) {
         return;
     }
+    [self beginFloatingKeyboardInteractionSession];
     [self setFloatingSceneUsesFullscreenKeyboardHost:YES];
+}
+
+- (CGRect)floatingKeyboardInteractionFrame {
+    if (!self.floatingKeyboardInteractionSessionActive) {
+        return CGRectNull;
+    }
+    if (self.floatingKeyboardVisible &&
+        !CGRectIsNull(self.floatingKeyboardFrame) &&
+        CGRectGetWidth(self.floatingKeyboardFrame) > 1.0 &&
+        CGRectGetHeight(self.floatingKeyboardFrame) > 1.0) {
+        return self.floatingKeyboardFrame;
+    }
+    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGFloat height = MIN(CGRectGetHeight(bounds),
+                         MAX(216.0, self.lastPortraitKeyboardHeight));
+    return CGRectMake(0.0,
+                      CGRectGetHeight(bounds) - height,
+                      CGRectGetWidth(bounds),
+                      height);
+}
+
+- (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point {
+    CGRect contentFrame = CGRectInset(self.floatingContainer.frame, -2.0, -2.0);
+    CGRect handleFrame = CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
+    if (CGRectContainsPoint(contentFrame, point) ||
+        (!self.floatingHandle.hidden && CGRectContainsPoint(handleFrame, point))) {
+        return YES;
+    }
+    CGRect keyboardFrame = [self floatingKeyboardInteractionFrame];
+    return !CGRectIsNull(keyboardFrame) &&
+           CGRectContainsPoint(keyboardFrame, point);
+}
+
+- (void)beginFloatingKeyboardInteractionSession {
+    if (self.floatingWindow.hidden || self.floatingDocked) {
+        return;
+    }
+    if (self.floatingKeyboardInteractionSessionActive) {
+        self.floatingBackdropTap.additionalProtectedFrame =
+            [self floatingKeyboardInteractionFrame];
+        return;
+    }
+    self.floatingKeyboardInteractionSessionActive = YES;
+    self.floatingKeyboardInteractionGeneration += 1;
+    NSUInteger generation = self.floatingKeyboardInteractionGeneration;
+    CGRect protectedFrame = [self floatingKeyboardInteractionFrame];
+    self.floatingBackdropTap.additionalProtectedFrame = protectedFrame;
+
+    // A responder can fail to present a keyboard. Do not leave the lower screen
+    // permanently protected if no keyboard frame arrives for this session.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation == self.floatingKeyboardInteractionGeneration &&
+            self.floatingKeyboardInteractionSessionActive &&
+            !self.floatingKeyboardVisible) {
+            [self applyKeyboardFrame:CGRectNull visible:NO];
+        }
+    });
+}
+
+- (void)endFloatingKeyboardInteractionSession {
+    self.floatingKeyboardInteractionGeneration += 1;
+    self.floatingKeyboardInteractionSessionActive = NO;
 }
 
 - (void)setFloatingSceneUsesFullscreenKeyboardHost:(BOOL)active {
@@ -3538,10 +3648,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect bounds = FLMVisualScreenBounds();
     BOOL visible = CGRectIntersectsRect(bounds, frame) &&
                    CGRectGetMinY(frame) < CGRectGetHeight(bounds);
-    [self applyKeyboardFrame:frame visible:visible];
+    if (visible) {
+        [self applyKeyboardFrame:frame visible:YES];
+    }
 }
 
-- (void)keyboardWillHide:(NSNotification *)notification {
+- (void)keyboardDidHide:(NSNotification *)notification {
     (void)notification;
     [self applyKeyboardFrame:CGRectNull visible:NO];
 }
@@ -3914,8 +4026,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotContent = nil;
     self.floatingKeyboardSceneExpanded = NO;
     self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
+    self.floatingKeyboardInteractionGeneration += 1;
+    self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingExclusiveTapEligible = NO;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
     self.floatingLaunchGeneration += 1;
@@ -4113,6 +4228,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotContent = nil;
     self.floatingKeyboardSceneExpanded = NO;
     self.floatingKeyboardOriginalReferenceSize = CGSizeZero;
+    self.floatingKeyboardInteractionGeneration += 1;
+    self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingDocked = NO;
@@ -4151,6 +4268,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = nil;
     self.floatingIdentifier = nil;
     self.floatingExclusiveGesture.enabled = NO;
+    self.floatingExclusiveTapEligible = NO;
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     self.previousKeyWindow = nil;
