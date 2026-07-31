@@ -57,6 +57,10 @@
 - (NSInteger)currentInterfaceOrientation;
 - (id)sceneIfExists;
 - (id)scene;
+- (UIView *)newSceneViewWithReferenceSize:(CGSize)referenceSize
+                       contentOrientation:(NSInteger)contentOrientation
+                     containerOrientation:(NSInteger)containerOrientation
+                             hostRequester:(id)hostRequester;
 @end
 
 @interface FLMDeviceApplicationSceneEntity : NSObject
@@ -353,6 +357,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (void)layoutFloatingWindow;
 - (void)layoutFloatingHostView;
+- (CGSize)floatingSceneReferenceSize;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -1185,9 +1190,43 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)protectedSceneDidDisappear:(NSNotification *)notification {
     (void)notification;
-    if (!self.floatingWindow.hidden) {
-        [self closeFloatingWindowKeepingApplication:YES];
+    if (self.floatingWindow.hidden) {
+        return;
     }
+    if (FLMDeviceIsLocked() || self.floatingIdentifier.length == 0) {
+        [self closeFloatingWindowKeepingApplication:YES];
+        return;
+    }
+
+    NSString *identifier = [self.floatingIdentifier copy];
+    self.floatingLaunchGeneration += 1;
+    NSUInteger generation = self.floatingLaunchGeneration;
+    id presenter = self.floatingPresenter;
+    [self.floatingHostView removeFromSuperview];
+    self.floatingHostView = nil;
+    self.floatingHostReferenceSize = CGSizeZero;
+    self.floatingSceneEntity = nil;
+    self.floatingSceneHandle = nil;
+    self.floatingScene = nil;
+    self.floatingPresentationManager = nil;
+    self.floatingPresenter = nil;
+    @try {
+        if ([presenter respondsToSelector:@selector(deactivate)]) {
+            [presenter deactivate];
+        }
+        if ([presenter respondsToSelector:@selector(invalidate)]) {
+            [presenter invalidate];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    self.floatingStatusLabel.hidden = NO;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            [self attachFloatingIdentifier:identifier
+                                generation:generation
+                                   attempt:0];
+        });
 }
 
 - (void)layoutFloatingWindow {
@@ -1205,7 +1244,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.rootViewController.view.safeAreaInsets;
     CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
     CGFloat containerWidth = width * 0.77;
-    CGFloat containerHeight = containerWidth * (height / width);
+    CGFloat containerHeight = 520.0;
     CGFloat maximumHeight = MAX(180.0, height - top - 72.0);
     if (containerHeight > maximumHeight) {
         CGFloat scale = maximumHeight / containerHeight;
@@ -1260,6 +1299,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.center = CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
                               CGRectGetMidY(self.floatingContainer.bounds));
     host.transform = CGAffineTransformMakeScale(scale, scale);
+}
+
+- (CGSize)floatingSceneReferenceSize {
+    CGSize screenSize = self.floatingWindow.bounds.size;
+    CGSize containerSize = self.floatingContainer.bounds.size;
+    if (screenSize.width < 1.0 || screenSize.height < 1.0 ||
+        containerSize.width < 1.0 || containerSize.height < 1.0) {
+        return CGSizeZero;
+    }
+    CGFloat visualScale = containerSize.width / screenSize.width;
+    if (visualScale <= 0.0) {
+        return CGSizeZero;
+    }
+    return CGSizeMake(screenSize.width,
+                      containerSize.height / visualScale);
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
@@ -1425,6 +1479,39 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return nil;
     }
     self.floatingScene = scene;
+    SEL sceneViewSelector =
+        @selector(newSceneViewWithReferenceSize:
+                      contentOrientation:
+                    containerOrientation:
+                            hostRequester:);
+    if ([sceneHandle respondsToSelector:sceneViewSelector]) {
+        @try {
+            CGSize referenceSize = [self floatingSceneReferenceSize];
+            NSInteger orientation = 1;
+            if ([sceneHandle respondsToSelector:
+                                 @selector(currentInterfaceOrientation)]) {
+                orientation = [sceneHandle currentInterfaceOrientation];
+            }
+            if (orientation < 1 || orientation > 4) {
+                orientation = 1;
+            }
+            UIView *sceneView =
+                [sceneHandle
+                    newSceneViewWithReferenceSize:referenceSize
+                              contentOrientation:orientation
+                            containerOrientation:orientation
+                                    hostRequester:nil];
+            if ([sceneView isKindOfClass:[UIView class]]) {
+                self.floatingHostReferenceSize = referenceSize;
+                sceneView.backgroundColor = [UIColor blackColor];
+                sceneView.userInteractionEnabled = YES;
+                sceneView.clipsToBounds = YES;
+                return sceneView;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
     id manager = self.floatingPresentationManager;
     id presenter = self.floatingPresenter;
     UIView *host = nil;
@@ -1593,11 +1680,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingSceneHandle = sceneHandle;
     self.floatingHostView = host;
-    CGSize referenceSize = host.bounds.size;
-    if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
-        referenceSize = self.floatingWindow.bounds.size;
+    if (self.floatingHostReferenceSize.width < 1.0 ||
+        self.floatingHostReferenceSize.height < 1.0) {
+        CGSize referenceSize = host.bounds.size;
+        if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
+            referenceSize = [self floatingSceneReferenceSize];
+        }
+        self.floatingHostReferenceSize = referenceSize;
     }
-    self.floatingHostReferenceSize = referenceSize;
     host.autoresizingMask = UIViewAutoresizingNone;
     [self.floatingContainer insertSubview:host atIndex:0];
     [self layoutFloatingHostView];
