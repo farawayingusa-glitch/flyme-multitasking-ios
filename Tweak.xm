@@ -50,6 +50,12 @@ static const CGFloat FLMDockTopMargin = 8.0;
        toDisplayWithIdentity:(id)displayIdentity;
 @end
 
+@interface SBHomeGestureInteraction : NSObject
+@end
+
+@interface SBHomeGesturePanGestureRecognizer : UIPanGestureRecognizer
+@end
+
 @interface UIApplication (FLMRuntimePrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier suspended:(BOOL)suspended;
 - (void)_simulateLockButtonPress;
@@ -570,6 +576,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) FLMOverlayWindow *overlayWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
 @property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
+@property(nonatomic, strong) FLMOverlayWindow *systemHomeGestureWindow;
+@property(nonatomic, strong) UIView *systemHomeGestureIndicator;
+@property(nonatomic, strong) CAShapeLayer *systemHomeGestureCheckLayer;
 @property(nonatomic, strong) FLMOverlayWindow *floatingWindow;
 @property(nonatomic, strong) UIView *floatingDimView;
 @property(nonatomic, strong) UIView *floatingDockShadowView;
@@ -636,6 +645,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) NSMapTable<UIWindow *, NSValue *> *keyboardOriginalFrames;
 @property(nonatomic, strong) NSMapTable<UIWindow *, NSNumber *> *keyboardOriginalLevels;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
+@property(nonatomic, assign) BOOL systemHomeGestureTracking;
+@property(nonatomic, assign) BOOL systemHomeGestureReady;
+@property(nonatomic, copy) NSString *systemHomeGestureIdentifier;
+@property(nonatomic, assign) NSUInteger systemHomeGestureGeneration;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, strong) FLMDeviceApplicationSceneEntity *floatingSceneEntity;
 @property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
@@ -649,6 +662,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)start;
 - (void)reloadPreferences;
 - (void)createWindows;
+- (void)createSystemHomeGestureWindow;
 - (void)createFloatingWindow;
 - (BOOL)registerGlobalCornerGesture;
 - (void)updateWindowFrames;
@@ -656,6 +670,13 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
+- (void)observeSystemHomeGesture:(UIGestureRecognizer *)gesture;
+- (void)setSystemHomeGestureReady:(BOOL)ready animated:(BOOL)animated;
+- (void)resetSystemHomeGestureAnimated:(BOOL)animated;
+- (void)commitSystemHomeGestureIdentifier:(NSString *)identifier;
+- (void)openSystemHomeGestureIdentifier:(NSString *)identifier
+                             generation:(NSUInteger)generation
+                                attempt:(NSUInteger)attempt;
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
@@ -910,6 +931,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.overlayWindow.rootViewController.view addGestureRecognizer:self.wheelTapGesture];
 
     [self createFloatingWindow];
+    [self createSystemHomeGestureWindow];
 
     self.hotspotWindow = FLMCreateHotspotWindow(bounds);
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 90.0;
@@ -984,6 +1006,52 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             addGestureRecognizer:self.floatingDockInputGesture];
     }
     [self updateWindowFrames];
+}
+
+- (void)createSystemHomeGestureWindow {
+    CGRect bounds = FLMVisualScreenBounds();
+    self.systemHomeGestureWindow = (FLMOverlayWindow *)FLMCreateWindow(bounds);
+    self.systemHomeGestureWindow.windowLevel = UIWindowLevelAlert + 94.0;
+    self.systemHomeGestureWindow.backgroundColor = [UIColor clearColor];
+    self.systemHomeGestureWindow.userInteractionEnabled = NO;
+    self.systemHomeGestureWindow.rootViewController =
+        [[FLMOverlayViewController alloc] init];
+    self.systemHomeGestureWindow.rootViewController.view.backgroundColor =
+        [UIColor clearColor];
+    self.systemHomeGestureWindow.hidden = YES;
+
+    self.systemHomeGestureIndicator =
+        [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 38.0, 38.0)];
+    self.systemHomeGestureIndicator.backgroundColor =
+        [UIColor colorWithWhite:1.0 alpha:0.20];
+    self.systemHomeGestureIndicator.layer.cornerRadius = 19.0;
+    self.systemHomeGestureIndicator.layer.borderWidth = 0.8;
+    self.systemHomeGestureIndicator.layer.borderColor =
+        [UIColor colorWithWhite:1.0 alpha:0.24].CGColor;
+    self.systemHomeGestureIndicator.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.systemHomeGestureIndicator.layer.shadowOpacity = 0.14;
+    self.systemHomeGestureIndicator.layer.shadowRadius = 10.0;
+    self.systemHomeGestureIndicator.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+    self.systemHomeGestureIndicator.userInteractionEnabled = NO;
+    self.systemHomeGestureIndicator.alpha = 0.0;
+
+    self.systemHomeGestureCheckLayer = [CAShapeLayer layer];
+    self.systemHomeGestureCheckLayer.fillColor = [UIColor clearColor].CGColor;
+    self.systemHomeGestureCheckLayer.strokeColor =
+        [UIColor colorWithWhite:1.0 alpha:0.92].CGColor;
+    self.systemHomeGestureCheckLayer.lineWidth = 3.0;
+    self.systemHomeGestureCheckLayer.lineCap = kCALineCapRound;
+    self.systemHomeGestureCheckLayer.lineJoin = kCALineJoinRound;
+    UIBezierPath *checkPath = [UIBezierPath bezierPath];
+    [checkPath moveToPoint:CGPointMake(9.0, 19.5)];
+    [checkPath addLineToPoint:CGPointMake(15.5, 25.0)];
+    [checkPath addLineToPoint:CGPointMake(29.0, 11.5)];
+    self.systemHomeGestureCheckLayer.path = checkPath.CGPath;
+    self.systemHomeGestureCheckLayer.frame = self.systemHomeGestureIndicator.bounds;
+    [self.systemHomeGestureIndicator.layer
+        addSublayer:self.systemHomeGestureCheckLayer];
+    [self.systemHomeGestureWindow.rootViewController.view
+        addSubview:self.systemHomeGestureIndicator];
 }
 
 - (void)createFloatingWindow {
@@ -1213,6 +1281,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGesture.enabled = self.enabled;
     if (!self.enabled) {
         self.modalGesture.enabled = NO;
+        [self resetSystemHomeGestureAnimated:NO];
     }
     self.hotspotWindow.hotspotsEnabled = self.enabled && !self.usesSystemGestureManager;
     self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
@@ -1243,6 +1312,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelContainer.frame = bounds;
     self.hotspotWindow.frame = bounds;
     self.hotspotWindow.rootViewController.view.frame = bounds;
+    self.systemHomeGestureWindow.frame = bounds;
+    self.systemHomeGestureWindow.rootViewController.view.frame = bounds;
+    self.systemHomeGestureIndicator.center =
+        CGPointMake(CGRectGetMidX(bounds), CGRectGetHeight(bounds) * 0.43);
     self.floatingWindow.frame = bounds;
     self.floatingWindow.rootViewController.view.frame = bounds;
     self.floatingDimView.frame = bounds;
@@ -1406,6 +1479,177 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         default:
             break;
     }
+}
+
+- (void)setSystemHomeGestureReady:(BOOL)ready animated:(BOOL)animated {
+    if (self.systemHomeGestureReady == ready) {
+        return;
+    }
+    self.systemHomeGestureReady = ready;
+    if (ready) {
+        CGRect bounds = self.systemHomeGestureWindow.bounds;
+        self.systemHomeGestureIndicator.center =
+            CGPointMake(CGRectGetMidX(bounds), CGRectGetHeight(bounds) * 0.43);
+        self.systemHomeGestureWindow.hidden = NO;
+        self.systemHomeGestureIndicator.alpha = 0.0;
+        self.systemHomeGestureIndicator.transform =
+            CGAffineTransformMakeScale(0.72, 0.72);
+        UIImpactFeedbackGenerator *feedback =
+            [[UIImpactFeedbackGenerator alloc]
+                initWithStyle:UIImpactFeedbackStyleMedium];
+        [feedback prepare];
+        [feedback impactOccurred];
+        void (^showChanges)(void) = ^{
+            self.systemHomeGestureIndicator.alpha = 1.0;
+            self.systemHomeGestureIndicator.transform = CGAffineTransformIdentity;
+        };
+        if (!animated) {
+            showChanges();
+            return;
+        }
+        [UIView animateWithDuration:0.26
+                              delay:0.0
+             usingSpringWithDamping:0.66
+              initialSpringVelocity:0.42
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:showChanges
+                         completion:nil];
+        return;
+    }
+
+    void (^hideChanges)(void) = ^{
+        self.systemHomeGestureIndicator.alpha = 0.0;
+        self.systemHomeGestureIndicator.transform =
+            CGAffineTransformMakeScale(0.78, 0.78);
+    };
+    void (^completion)(BOOL) = ^(BOOL finished) {
+        (void)finished;
+        if (!self.systemHomeGestureReady) {
+            self.systemHomeGestureWindow.hidden = YES;
+            self.systemHomeGestureIndicator.transform = CGAffineTransformIdentity;
+        }
+    };
+    if (!animated) {
+        hideChanges();
+        completion(YES);
+        return;
+    }
+    [UIView animateWithDuration:0.18
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionCurveEaseOut |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:hideChanges
+                     completion:completion];
+}
+
+- (void)resetSystemHomeGestureAnimated:(BOOL)animated {
+    self.systemHomeGestureTracking = NO;
+    self.systemHomeGestureIdentifier = nil;
+    [self setSystemHomeGestureReady:NO animated:animated];
+}
+
+- (void)observeSystemHomeGesture:(UIGestureRecognizer *)gesture {
+    Class homeGestureClass = NSClassFromString(@"SBHomeGesturePanGestureRecognizer");
+    if (!homeGestureClass || ![gesture isKindOfClass:homeGestureClass]) {
+        return;
+    }
+
+    UIGestureRecognizerState state = gesture.state;
+    if (state == UIGestureRecognizerStateBegan) {
+        [self resetSystemHomeGestureAnimated:NO];
+        if (!self.enabled || FLMDeviceIsLocked() || self.wheelPinned ||
+            !self.floatingWindow.hidden ||
+            !UIInterfaceOrientationIsPortrait(FLMActiveInterfaceOrientation())) {
+            return;
+        }
+        NSString *identifier = FLMFrontmostApplicationIdentifier();
+        if (identifier.length == 0 ||
+            [identifier isEqualToString:@"com.apple.springboard"]) {
+            return;
+        }
+        self.systemHomeGestureTracking = YES;
+        self.systemHomeGestureIdentifier = identifier;
+        return;
+    }
+
+    if (!self.systemHomeGestureTracking) {
+        return;
+    }
+
+    if (state == UIGestureRecognizerStateChanged) {
+        UIView *gestureView = gesture.view;
+        CGRect bounds = gestureView ? gestureView.bounds : FLMVisualScreenBounds();
+        CGFloat height = CGRectGetHeight(bounds);
+        if (height < 1.0) {
+            return;
+        }
+        CGPoint location = [gesture locationInView:gestureView];
+        CGFloat armY = height * 0.50;
+        CGFloat disarmY = height * 0.55;
+        BOOL ready = self.systemHomeGestureReady
+                         ? location.y <= disarmY
+                         : location.y <= armY;
+        [self setSystemHomeGestureReady:ready animated:YES];
+        return;
+    }
+
+    if (state == UIGestureRecognizerStateEnded) {
+        NSString *identifier =
+            self.systemHomeGestureReady
+                ? [self.systemHomeGestureIdentifier copy]
+                : nil;
+        [self resetSystemHomeGestureAnimated:YES];
+        if (identifier.length > 0) {
+            [self commitSystemHomeGestureIdentifier:identifier];
+        }
+        return;
+    }
+
+    if (state == UIGestureRecognizerStateCancelled ||
+        state == UIGestureRecognizerStateFailed) {
+        [self resetSystemHomeGestureAnimated:YES];
+    }
+}
+
+- (void)commitSystemHomeGestureIdentifier:(NSString *)identifier {
+    if (identifier.length == 0) {
+        return;
+    }
+    self.systemHomeGestureGeneration += 1;
+    NSUInteger generation = self.systemHomeGestureGeneration;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            [self openSystemHomeGestureIdentifier:identifier
+                                       generation:generation
+                                          attempt:0];
+        });
+}
+
+- (void)openSystemHomeGestureIdentifier:(NSString *)identifier
+                             generation:(NSUInteger)generation
+                                attempt:(NSUInteger)attempt {
+    if (generation != self.systemHomeGestureGeneration ||
+        identifier.length == 0 || !self.enabled || FLMDeviceIsLocked() ||
+        !self.floatingWindow.hidden || self.wheelPinned) {
+        return;
+    }
+    if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+        if (attempt < 24) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(0.025 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                    [self openSystemHomeGestureIdentifier:identifier
+                                               generation:generation
+                                                  attempt:attempt + 1];
+                });
+        }
+        return;
+    }
+    [self openFloatingIdentifier:identifier];
 }
 
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture {
@@ -3793,6 +4037,40 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                    dispatch_get_main_queue(), ^{
                        [[FLMWheelController sharedController] start];
                    });
+}
+
+%end
+
+%hook SBHomeGestureInteraction
+
+- (void)_handleGestureRecognizer:(UIGestureRecognizer *)gesture {
+    [[FLMWheelController sharedController] observeSystemHomeGesture:gesture];
+    %orig;
+}
+
+%end
+
+%hook SBHomeGesturePanGestureRecognizer
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    (void)touches;
+    (void)event;
+    [[FLMWheelController sharedController] observeSystemHomeGesture:self];
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    (void)touches;
+    (void)event;
+    [[FLMWheelController sharedController] observeSystemHomeGesture:self];
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    (void)touches;
+    (void)event;
+    [[FLMWheelController sharedController] observeSystemHomeGesture:self];
 }
 
 %end
