@@ -94,11 +94,10 @@ static void FLMKeyboardRouteChanged(CFNotificationCenterRef center,
 %hook UIWindowScene
 
 - (CGRect)_referenceBounds {
-    CGRect bounds = %orig;
-    if (FLMKeyboardRouteActive) {
-        (void)FLMFullPhysicalScreenSize();
+    if (!FLMKeyboardRouteActive) {
+        return %orig;
     }
-    return bounds;
+    return (CGRect){CGPointZero, FLMFullPhysicalScreenSize()};
 }
 
 %end
