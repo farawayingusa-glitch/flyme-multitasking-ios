@@ -3,11 +3,15 @@
 #import <notify.h>
 
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
+#define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
+static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardFrameToken = -1;
+static uint64_t FLMKeyboardTargetSceneHash = 0;
+static BOOL FLMLoggedPhysicalSceneBounds = NO;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 
@@ -80,6 +84,53 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
     return value ?: 1;
 }
 
+static NSString *FLMSceneIdentifier(UIWindowScene *scene) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        return nil;
+    }
+    @try {
+        SEL selector = NSSelectorFromString(@"sceneIdentifier");
+        if ([scene respondsToSelector:selector]) {
+            id (*getter)(id, SEL) =
+                (id (*)(id, SEL))[scene methodForSelector:selector];
+            id value = getter ? getter(scene, selector) : nil;
+            if ([value isKindOfClass:[NSString class]] && [value length] > 0) {
+                return value;
+            }
+        }
+        NSString *persistentIdentifier = scene.session.persistentIdentifier;
+        if (persistentIdentifier.length > 0) {
+            return persistentIdentifier;
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    return nil;
+}
+
+static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
+    if (!FLMKeyboardRouteActive ||
+        ![scene isKindOfClass:[UIWindowScene class]]) {
+        return NO;
+    }
+    if (FLMKeyboardTargetSceneHash == 0) {
+        return YES;
+    }
+    uint64_t currentHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
+    // Some iOS 16 app scenes hide their private sceneIdentifier until the
+    // first keyboard transaction. The process-level bundle route is still a
+    // safer fallback than leaving the keyboard trapped in the card.
+    return currentHash == 0 || currentHash == FLMKeyboardTargetSceneHash;
+}
+
+static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
+    CGSize size = FLMFullPhysicalScreenSize();
+    if ([scene isKindOfClass:[UIWindowScene class]] &&
+        UIInterfaceOrientationIsLandscape(scene.interfaceOrientation)) {
+        size = CGSizeMake(size.height, size.width);
+    }
+    return CGRectMake(0.0, 0.0, size.width, size.height);
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     if (FLMKeyboardRouteToken >= 0) {
@@ -89,6 +140,16 @@ static void FLMReloadKeyboardRoute(void) {
     uint64_t currentHash = FLMIdentifierHash(currentIdentifier);
     FLMKeyboardRouteActive =
         targetHash != 0 && currentHash != 0 && targetHash == currentHash;
+    FLMKeyboardTargetSceneHash = 0;
+    if (FLMKeyboardSceneToken >= 0) {
+        notify_get_state(FLMKeyboardSceneToken,
+                         &FLMKeyboardTargetSceneHash);
+    }
+    FLMLoggedPhysicalSceneBounds = NO;
+    NSLog(@"[FlymeKeyboard] route=%@ bundle=%@ targetSceneHash=%llu",
+          FLMKeyboardRouteActive ? @"active" : @"inactive",
+          currentIdentifier ?: @"<unknown>",
+          (unsigned long long)FLMKeyboardTargetSceneHash);
 }
 
 static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
@@ -110,26 +171,28 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 %hook UITextEffectsWindow
 
 - (CGSize)keyboardScreenReferenceSize {
-    if (!FLMKeyboardRouteActive) {
+    UIWindowScene *scene = ((UIWindow *)self).windowScene;
+    if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return %orig;
     }
-    return FLMFullPhysicalScreenSize();
+    return FLMPhysicalReferenceBoundsForScene(scene).size;
 }
 
 - (CGRect)_referenceBounds {
     CGRect bounds = %orig;
-    if (!FLMKeyboardRouteActive) {
+    UIWindowScene *scene = ((UIWindow *)self).windowScene;
+    if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return bounds;
     }
     // On iOS 16 this is consulted by the remote keyboard layout before the
-    // host application's reduced scene bounds.  Keep the keyboard in the
-    // physical display coordinate space; changing UIWindowScene bounds would
-    // resize (and break) the application itself.
-    CGSize physicalSize = FLMFullPhysicalScreenSize();
-    if (physicalSize.width < 1.0 || physicalSize.height < 1.0) {
+    // host application's reduced scene bounds. Keep only the matched floating
+    // scene's keyboard in physical-display coordinates.
+    CGRect physicalBounds = FLMPhysicalReferenceBoundsForScene(scene);
+    if (CGRectGetWidth(physicalBounds) < 1.0 ||
+        CGRectGetHeight(physicalBounds) < 1.0) {
         return bounds;
     }
-    return CGRectMake(0.0, 0.0, physicalSize.width, physicalSize.height);
+    return physicalBounds;
 }
 
 %end
@@ -138,13 +201,18 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 - (CGRect)_referenceBounds {
     CGRect bounds = %orig;
-    // TrollOpen only uses this hook to make sure the physical reference size
-    // has been resolved. Changing the scene bounds itself also changes the app
-    // layout and is the reason the previous bridge still behaved incorrectly.
-    if (FLMKeyboardRouteActive) {
-        (void)FLMFullPhysicalScreenSize();
+    if (!FLMSceneMatchesKeyboardRoute(self)) {
+        return bounds;
     }
-    return bounds;
+    CGRect physicalBounds = FLMPhysicalReferenceBoundsForScene(self);
+    if (!FLMLoggedPhysicalSceneBounds) {
+        FLMLoggedPhysicalSceneBounds = YES;
+        NSLog(@"[FlymeKeyboard] scene=%@ reference %@ -> %@",
+              FLMSceneIdentifier(self) ?: @"<unknown>",
+              NSStringFromCGRect(bounds),
+              NSStringFromCGRect(physicalBounds));
+    }
+    return physicalBounds;
 }
 
 %end
@@ -157,7 +225,7 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     CGFloat height = %orig(windowScene,
                            isLocalMinimumHeightOut,
                            ignoreHorizontalOffset);
-    if (!FLMKeyboardRouteActive || height <= 0.0 ||
+    if (!FLMSceneMatchesKeyboardRoute(windowScene) || height <= 0.0 ||
         ![windowScene isKindOfClass:[UIWindowScene class]] ||
         UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
         return height;
@@ -182,6 +250,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     @autoreleasepool {
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                                  &FLMKeyboardRouteToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                                 &FLMKeyboardSceneToken,
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
             FLMReloadKeyboardRoute();
