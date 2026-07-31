@@ -575,6 +575,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) UIView *floatingDockShadowView;
 @property(nonatomic, strong) UIView *floatingContainer;
 @property(nonatomic, strong) UIView *floatingDockInteractionShield;
+@property(nonatomic, strong) UIView *floatingDockReadyIndicator;
+@property(nonatomic, strong) CAShapeLayer *floatingDockReadyCheckLayer;
 @property(nonatomic, strong) UIView *floatingHandle;
 @property(nonatomic, strong) UIView *floatingHandleBar;
 @property(nonatomic, strong) UIView *floatingResizeHandle;
@@ -621,6 +623,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL floatingDockInputTargetsResize;
 @property(nonatomic, assign) BOOL floatingDockGlobalDragActivated;
 @property(nonatomic, assign) NSUInteger floatingDockInputGeneration;
+@property(nonatomic, assign) BOOL floatingDockReady;
+@property(nonatomic, assign) BOOL floatingResizeCenterReady;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
 @property(nonatomic, assign) CGSize floatingCenteredReferenceSize;
@@ -677,6 +681,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width;
 - (void)layoutFloatingDockShadow;
 - (void)layoutFloatingResizeHandle;
+- (void)layoutFloatingDockReadyIndicator;
+- (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated;
 - (BOOL)floatingResizeControlContainsPoint:(CGPoint)point;
 - (void)configureFloatingInteractionForDockedState;
 - (void)transitionFloatingWindowToDocked;
@@ -1029,6 +1035,36 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
     [self.floatingContainer addSubview:self.floatingDockInteractionShield];
 
+    self.floatingDockReadyIndicator =
+        [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 30.0, 30.0)];
+    self.floatingDockReadyIndicator.backgroundColor =
+        [UIColor colorWithWhite:1.0 alpha:0.18];
+    self.floatingDockReadyIndicator.layer.cornerRadius = 15.0;
+    self.floatingDockReadyIndicator.layer.borderWidth = 0.8;
+    self.floatingDockReadyIndicator.layer.borderColor =
+        [UIColor colorWithWhite:1.0 alpha:0.20].CGColor;
+    self.floatingDockReadyIndicator.userInteractionEnabled = NO;
+    self.floatingDockReadyIndicator.hidden = YES;
+    self.floatingDockReadyIndicator.alpha = 0.0;
+    self.floatingDockReadyCheckLayer = [CAShapeLayer layer];
+    self.floatingDockReadyCheckLayer.fillColor = [UIColor clearColor].CGColor;
+    self.floatingDockReadyCheckLayer.strokeColor =
+        [UIColor colorWithWhite:1.0 alpha:0.90].CGColor;
+    self.floatingDockReadyCheckLayer.lineWidth = 2.6;
+    self.floatingDockReadyCheckLayer.lineCap = kCALineCapRound;
+    self.floatingDockReadyCheckLayer.lineJoin = kCALineJoinRound;
+    UIBezierPath *readyCheckPath = [UIBezierPath bezierPath];
+    [readyCheckPath moveToPoint:CGPointMake(7.5, 15.5)];
+    [readyCheckPath addLineToPoint:CGPointMake(12.5, 20.0)];
+    [readyCheckPath addLineToPoint:CGPointMake(22.5, 10.0)];
+    self.floatingDockReadyCheckLayer.path = readyCheckPath.CGPath;
+    self.floatingDockReadyCheckLayer.frame =
+        self.floatingDockReadyIndicator.bounds;
+    [self.floatingDockReadyIndicator.layer
+        addSublayer:self.floatingDockReadyCheckLayer];
+    [self.floatingWindow.rootViewController.view
+        addSubview:self.floatingDockReadyIndicator];
+
     self.floatingHandle = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingHandle.backgroundColor = [UIColor clearColor];
     self.floatingHandleBar = [[UIView alloc] initWithFrame:CGRectZero];
@@ -1088,7 +1124,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [[UILongPressGestureRecognizer alloc]
             initWithTarget:self
                     action:@selector(handleFloatingDockDragPress:)];
-    self.floatingDockDragPress.minimumPressDuration = 0.16;
+    self.floatingDockDragPress.minimumPressDuration = 0.10;
     self.floatingDockDragPress.allowableMovement = CGFLOAT_MAX;
     self.floatingDockDragPress.cancelsTouchesInView = YES;
     self.floatingDockDragPress.enabled = NO;
@@ -1680,22 +1716,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 initWithStyle:UIImpactFeedbackStyleMedium];
         [feedback impactOccurred];
     }
-    self.floatingContainer.layer.borderColor =
-        [UIColor colorWithWhite:1.0 alpha:0.24].CGColor;
-    [UIView animateWithDuration:0.16
-                          delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction |
-                                UIViewAnimationOptionCurveEaseOut
-                     animations:^{
-                         self.floatingContainer.transform =
-                             CGAffineTransformMakeScale(1.025, 1.025);
-                         self.floatingDockShadowView.transform =
-                             CGAffineTransformMakeScale(1.025, 1.025);
-                         self.floatingContainer.layer.borderWidth = 1.0;
-                         self.floatingResizeHandle.alpha = 0.45;
-                     }
-                     completion:nil];
 }
 
 - (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture {
@@ -1716,6 +1736,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (self.floatingDockInputTargetsResize) {
             self.floatingResizeStartPoint = point;
             self.floatingResizeInitialFrame = self.floatingContainer.frame;
+            self.floatingResizeCenterReady = NO;
             if (@available(iOS 10.0, *)) {
                 UIImpactFeedbackGenerator *feedback =
                     [[UIImpactFeedbackGenerator alloc]
@@ -1734,7 +1755,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockDragStartPoint = point;
         self.floatingDockDragInitialCenter = self.floatingContainer.center;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.16 * NSEC_PER_SEC)),
+                                     (int64_t)(0.10 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self activateFloatingDockDragForGeneration:generation];
         });
@@ -1749,10 +1770,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     : point.x - self.floatingResizeStartPoint.x;
             CGFloat verticalOutward = point.y - self.floatingResizeStartPoint.y;
             CGFloat delta = (horizontalOutward + verticalOutward) * 0.5;
-            CGFloat width =
-                MAX(FLMMinimumDockWidth,
-                    MIN(FLMMaximumDockWidth,
-                        CGRectGetWidth(self.floatingResizeInitialFrame) + delta));
+            CGFloat requestedWidth =
+                CGRectGetWidth(self.floatingResizeInitialFrame) + delta;
+            CGFloat width = requestedWidth;
+            if (requestedWidth > FLMMaximumDockWidth) {
+                width =
+                    FLMMaximumDockWidth +
+                    MIN(16.0,
+                        (requestedWidth - FLMMaximumDockWidth) * 0.60);
+            }
+            width = MAX(FLMMinimumDockWidth, width);
+            if (!self.floatingResizeCenterReady && requestedWidth >= 286.0) {
+                self.floatingResizeCenterReady = YES;
+                if (@available(iOS 10.0, *)) {
+                    UIImpactFeedbackGenerator *feedback =
+                        [[UIImpactFeedbackGenerator alloc]
+                            initWithStyle:UIImpactFeedbackStyleMedium];
+                    [feedback impactOccurred];
+                }
+            } else if (self.floatingResizeCenterReady &&
+                       requestedWidth <= 278.0) {
+                self.floatingResizeCenterReady = NO;
+            }
             CGRect centeredFrame = [self centeredFloatingFrame];
             CGFloat aspectRatio =
                 CGRectGetWidth(centeredFrame) /
@@ -1777,6 +1816,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             return;
         }
 
+        CGFloat movement =
+            hypot(point.x - self.floatingDockDragStartPoint.x,
+                  point.y - self.floatingDockDragStartPoint.y);
+        if (!self.floatingDockGlobalDragActivated && movement >= 5.0) {
+            [self activateFloatingDockDragForGeneration:
+                      self.floatingDockInputGeneration];
+        }
         if (self.floatingDockGlobalDragActivated) {
             CGPoint delta =
                 CGPointMake(point.x - self.floatingDockDragStartPoint.x,
@@ -1808,7 +1854,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         gesture.state == UIGestureRecognizerStateFailed) {
         self.floatingDockInputGeneration += 1;
         if (self.floatingDockInputTargetsResize) {
+            BOOL restoreCentered =
+                gesture.state == UIGestureRecognizerStateEnded &&
+                self.floatingResizeCenterReady;
+            self.floatingResizeCenterReady = NO;
+            if (restoreCentered) {
+                self.floatingDockInputTargetsResize = NO;
+                self.floatingResizeHandle.transform =
+                    CGAffineTransformIdentity;
+                self.floatingResizeShapeLayer.opacity = 0.72;
+                [self transitionFloatingWindowToCentered];
+                return;
+            }
+            self.floatingDockWidth =
+                MAX(FLMMinimumDockWidth,
+                    MIN(FLMMaximumDockWidth, self.floatingDockWidth));
             [self saveFloatingDockWidth];
+            CGRect target =
+                [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
+                                           width:self.floatingDockWidth];
             [UIView animateWithDuration:0.28
                                   delay:0.0
                  usingSpringWithDamping:0.72
@@ -1816,9 +1880,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                 options:UIViewAnimationOptionBeginFromCurrentState |
                                         UIViewAnimationOptionAllowUserInteraction
                              animations:^{
+                                 self.floatingContainer.frame = target;
                                  self.floatingResizeHandle.transform =
                                      CGAffineTransformIdentity;
                                  self.floatingResizeShapeLayer.opacity = 0.72;
+                                 [self layoutFloatingHostView];
+                                 [self layoutFloatingDockShadow];
+                                 [self layoutFloatingResizeHandle];
                              }
                              completion:nil];
             self.floatingDockInputTargetsResize = NO;
@@ -1833,7 +1901,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGFloat movement =
             hypot(point.x - self.floatingDockDragStartPoint.x,
                   point.y - self.floatingDockDragStartPoint.y);
-        if (gesture.state == UIGestureRecognizerStateEnded && movement <= 12.0) {
+        if (gesture.state == UIGestureRecognizerStateEnded && movement < 5.0) {
             if (@available(iOS 10.0, *)) {
                 UIImpactFeedbackGenerator *feedback =
                     [[UIImpactFeedbackGenerator alloc]
@@ -1902,22 +1970,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     initWithStyle:UIImpactFeedbackStyleMedium];
             [feedback impactOccurred];
         }
-        self.floatingContainer.layer.borderColor =
-            [UIColor colorWithWhite:1.0 alpha:0.24].CGColor;
-        [UIView animateWithDuration:0.16
-                              delay:0.0
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction |
-                                    UIViewAnimationOptionCurveEaseOut
-                         animations:^{
-                             self.floatingContainer.transform =
-                                 CGAffineTransformMakeScale(1.025, 1.025);
-                             self.floatingDockShadowView.transform =
-                                 CGAffineTransformMakeScale(1.025, 1.025);
-                             self.floatingContainer.layer.borderWidth = 1.0;
-                             self.floatingResizeHandle.alpha = 0.45;
-                         }
-                         completion:nil];
         return;
     }
 
@@ -2139,12 +2191,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandleMoved = NO;
         self.floatingDockTransitionActive = NO;
         self.floatingInteractiveScenePrepared = NO;
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *feedback =
-                [[UIImpactFeedbackGenerator alloc]
-                    initWithStyle:UIImpactFeedbackStyleLight];
-            [feedback impactOccurred];
-        }
+        [self setFloatingDockReady:NO animated:NO];
         [UIView animateWithDuration:0.12
                          animations:^{
                              self.floatingHandleBar.alpha = 1.0;
@@ -2164,49 +2211,102 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                   : point.x - self.floatingHandleStartPoint.x;
 
     if (gesture.state == UIGestureRecognizerStateChanged) {
-        BOOL directionIsPrimary =
-            fabs(primaryMovement) >= fabs(crossMovement) * 0.55;
-        if (!self.floatingHandleMoved && directionIsPrimary) {
-            if (primaryMovement >= 3.0) {
+        if (landscape) {
+            BOOL directionIsPrimary =
+                fabs(primaryMovement) >= fabs(crossMovement) * 0.55;
+            if (directionIsPrimary && primaryMovement >= 3.0) {
                 self.floatingHandleMoved = YES;
                 self.floatingDockTransitionActive = NO;
-                [self prepareFloatingSceneForInteractiveFullscreen];
-            } else if (!landscape && primaryMovement <= -3.0) {
-                self.floatingHandleMoved = YES;
-                self.floatingDockTransitionActive = YES;
+                if (!self.floatingInteractiveScenePrepared) {
+                    [self prepareFloatingSceneForInteractiveFullscreen];
+                }
+                CGRect start = self.floatingHandleInitialContainerFrame;
+                CGFloat available =
+                    MAX(1.0, CGRectGetWidth(bounds) - CGRectGetMaxX(start));
+                CGFloat progress =
+                    MIN(1.0, MAX(0.0, primaryMovement / available));
+                CGRect target = bounds;
+                self.floatingContainer.frame =
+                    CGRectMake(start.origin.x +
+                                   (target.origin.x - start.origin.x) * progress,
+                               start.origin.y +
+                                   (target.origin.y - start.origin.y) * progress,
+                               start.size.width +
+                                   (target.size.width - start.size.width) * progress,
+                               start.size.height +
+                                   (target.size.height - start.size.height) * progress);
+                self.floatingContainer.layer.cornerRadius =
+                    18.0 * (1.0 - progress);
+                self.floatingDimView.alpha = 1.0 - progress;
+                self.floatingHandle.alpha =
+                    1.0 - MAX(0.0, (progress - 0.88) / 0.12);
+                [self layoutFloatingHostView];
+                [self layoutFloatingHandleForCurrentContainer];
+            } else {
+                CGFloat resistance =
+                    MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
+                self.floatingHandleBar.transform =
+                    CGAffineTransformMakeTranslation(resistance, 0.0);
             }
+            return;
         }
-        if (self.floatingHandleMoved &&
-            self.floatingDockTransitionActive) {
+
+        if (primaryMovement <= -3.0) {
+            if (self.floatingInteractiveScenePrepared) {
+                [self restoreFloatingSceneAfterCancelledTransition];
+            }
+            self.floatingHandleMoved = YES;
+            self.floatingDockTransitionActive = YES;
             CGRect start = self.floatingHandleInitialContainerFrame;
-            CGRect target =
+            CGRect dockTarget =
                 [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
-            CGFloat available =
-                MAX(150.0, CGRectGetHeight(start) * 0.30);
+            CGFloat available = 150.0;
             CGFloat progress =
                 MIN(1.0, MAX(0.0, -primaryMovement / available));
-            CGRect frame = CGRectMake(
-                start.origin.x + (target.origin.x - start.origin.x) * progress,
-                start.origin.y + (target.origin.y - start.origin.y) * progress,
-                start.size.width + (target.size.width - start.size.width) * progress,
-                start.size.height + (target.size.height - start.size.height) * progress);
-            self.floatingContainer.frame = frame;
+            CGFloat width =
+                CGRectGetWidth(start) +
+                (CGRectGetWidth(dockTarget) - CGRectGetWidth(start)) * progress;
+            CGFloat height =
+                CGRectGetHeight(start) +
+                (CGRectGetHeight(dockTarget) - CGRectGetHeight(start)) * progress;
+            self.floatingContainer.frame =
+                CGRectMake(CGRectGetMidX(start) - width * 0.5,
+                           CGRectGetMidY(start) - height * 0.5,
+                           width,
+                           height);
             self.floatingContainer.layer.cornerRadius =
                 18.0 + (16.0 - 18.0) * progress;
             self.floatingDimView.alpha = 1.0 - progress;
             self.floatingDockShadowView.hidden = NO;
             self.floatingDockShadowView.alpha = progress;
             [self layoutFloatingDockShadow];
-            self.floatingHandle.alpha =
-                1.0 - MAX(0.0, (progress - 0.88) / 0.12);
+            self.floatingHandle.alpha = 1.0;
             [self layoutFloatingHostView];
             [self layoutFloatingHandleForCurrentContainer];
-        } else if (self.floatingHandleMoved &&
-                   !self.floatingDockTransitionActive) {
+            [self layoutFloatingDockReadyIndicator];
+            if (!self.floatingDockReady && progress >= 1.0) {
+                if (@available(iOS 10.0, *)) {
+                    UIImpactFeedbackGenerator *feedback =
+                        [[UIImpactFeedbackGenerator alloc]
+                            initWithStyle:UIImpactFeedbackStyleMedium];
+                    [feedback impactOccurred];
+                }
+                [self setFloatingDockReady:YES animated:YES];
+            } else if (self.floatingDockReady && progress <= 0.90) {
+                [self setFloatingDockReady:NO animated:YES];
+            }
+        } else if (primaryMovement >= 3.0) {
+            [self setFloatingDockReady:NO animated:YES];
+            self.floatingHandleMoved = YES;
+            self.floatingDockTransitionActive = NO;
+            self.floatingDockShadowView.alpha = 0.0;
+            self.floatingDockShadowView.hidden = YES;
+            if (!self.floatingInteractiveScenePrepared) {
+                [self prepareFloatingSceneForInteractiveFullscreen];
+            }
             CGRect start = self.floatingHandleInitialContainerFrame;
             CGFloat available =
-                landscape ? MAX(1.0, CGRectGetWidth(bounds) - CGRectGetMaxX(start))
-                          : MAX(1.0, CGRectGetHeight(bounds) - CGRectGetMaxY(start));
+                MAX(1.0, CGRectGetHeight(bounds) - CGRectGetMaxY(start));
             CGFloat progress = MIN(1.0, MAX(0.0, primaryMovement / available));
             CGRect target = bounds;
             CGRect frame = CGRectMake(
@@ -2222,34 +2322,45 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [self layoutFloatingHostView];
             [self layoutFloatingHandleForCurrentContainer];
         } else {
-            CGFloat resistance =
-                landscape
-                    ? MAX(-14.0, MIN(0.0, primaryMovement * 0.18))
-                    : MAX(-14.0, MIN(14.0, primaryMovement * 0.18));
-            self.floatingHandleBar.transform =
-                landscape
-                    ? CGAffineTransformMakeTranslation(resistance, 0.0)
-                    : CGAffineTransformMakeTranslation(0.0, resistance);
+            [self setFloatingDockReady:NO animated:YES];
+            if (self.floatingInteractiveScenePrepared) {
+                [self restoreFloatingSceneAfterCancelledTransition];
+            }
+            self.floatingDockTransitionActive = NO;
+            self.floatingContainer.frame =
+                self.floatingHandleInitialContainerFrame;
+            self.floatingContainer.layer.cornerRadius = 18.0;
+            self.floatingDimView.alpha = 1.0;
+            self.floatingDockShadowView.alpha = 0.0;
+            self.floatingDockShadowView.hidden = YES;
+            self.floatingHandle.alpha = 1.0;
+            [self layoutFloatingHostView];
+            [self layoutFloatingHandleForCurrentContainer];
         }
         return;
     }
 
-    if (gesture.state == UIGestureRecognizerStateEnded &&
-        self.floatingHandleMoved && self.floatingDockTransitionActive &&
-        primaryMovement < 0.0) {
+    if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
+        self.floatingDockReady && primaryMovement < 0.0) {
+        [self setFloatingDockReady:NO animated:YES];
         [self transitionFloatingWindowToDocked];
         return;
     }
     if (gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingHandleMoved && !self.floatingDockTransitionActive &&
-        primaryMovement > 0.0) {
+        primaryMovement > 0.0 &&
+        (landscape ||
+         point.y >= CGRectGetHeight(bounds) - 80.0)) {
+        [self setFloatingDockReady:NO animated:NO];
         [self transitionFloatingWindowToFullscreen];
         return;
     }
+    [self setFloatingDockReady:NO animated:YES];
     [self resetFloatingInteractiveLayoutAnimated:YES];
 }
 
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
+    [self setFloatingDockReady:NO animated:animated];
     [self restoreFloatingSceneAfterCancelledTransition];
     void (^changes)(void) = ^{
         self.floatingContainer.layer.cornerRadius = 18.0;
@@ -2285,6 +2396,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToFullscreen {
+    [self setFloatingDockReady:NO animated:NO];
     if (self.floatingWindow.hidden || self.floatingIdentifier.length == 0) {
         [self resetFloatingInteractiveLayoutAnimated:YES];
         return;
@@ -2508,6 +2620,81 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
          belowSubview:self.floatingContainer];
 }
 
+- (void)layoutFloatingDockReadyIndicator {
+    CGSize size = self.floatingDockReadyIndicator.bounds.size;
+    self.floatingDockReadyIndicator.center =
+        CGPointMake(CGRectGetMidX(self.floatingContainer.frame),
+                    CGRectGetMinY(self.floatingContainer.frame) -
+                        size.height * 0.5 - 10.0);
+}
+
+- (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated {
+    if (self.floatingDockReady == ready) {
+        if (ready) {
+            [self layoutFloatingDockReadyIndicator];
+        } else if (!animated) {
+            [self.floatingDockReadyIndicator.layer removeAllAnimations];
+            self.floatingDockReadyIndicator.hidden = YES;
+            self.floatingDockReadyIndicator.alpha = 0.0;
+            self.floatingDockReadyIndicator.transform =
+                CGAffineTransformIdentity;
+        }
+        return;
+    }
+    self.floatingDockReady = ready;
+    if (ready) {
+        [self layoutFloatingDockReadyIndicator];
+        self.floatingDockReadyIndicator.hidden = NO;
+        self.floatingDockReadyIndicator.alpha = 0.0;
+        self.floatingDockReadyIndicator.transform =
+            CGAffineTransformMakeScale(0.72, 0.72);
+        void (^showChanges)(void) = ^{
+            self.floatingDockReadyIndicator.alpha = 1.0;
+            self.floatingDockReadyIndicator.transform =
+                CGAffineTransformIdentity;
+        };
+        if (!animated) {
+            showChanges();
+            return;
+        }
+        [UIView animateWithDuration:0.28
+                              delay:0.0
+             usingSpringWithDamping:0.64
+              initialSpringVelocity:0.42
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:showChanges
+                         completion:nil];
+        return;
+    }
+
+    void (^hideChanges)(void) = ^{
+        self.floatingDockReadyIndicator.alpha = 0.0;
+        self.floatingDockReadyIndicator.transform =
+            CGAffineTransformMakeScale(0.78, 0.78);
+    };
+    void (^hideCompletion)(BOOL) = ^(BOOL finished) {
+        (void)finished;
+        if (!self.floatingDockReady) {
+            self.floatingDockReadyIndicator.hidden = YES;
+            self.floatingDockReadyIndicator.transform =
+                CGAffineTransformIdentity;
+        }
+    };
+    if (!animated) {
+        hideChanges();
+        hideCompletion(YES);
+        return;
+    }
+    [UIView animateWithDuration:0.16
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction |
+                                UIViewAnimationOptionCurveEaseOut
+                     animations:hideChanges
+                     completion:hideCompletion];
+}
+
 - (void)layoutFloatingResizeHandle {
     if (!self.floatingDocked) {
         self.floatingResizeHandle.hidden = YES;
@@ -2616,6 +2803,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToDocked {
+    [self setFloatingDockReady:NO animated:YES];
     if (self.floatingWindow.hidden || self.floatingDocked) {
         return;
     }
@@ -2661,6 +2849,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToCentered {
+    [self setFloatingDockReady:NO animated:YES];
     if (self.floatingWindow.hidden || !self.floatingDocked) {
         return;
     }
@@ -3241,6 +3430,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDocked = NO;
     self.floatingDockedOnRight = YES;
     self.floatingDockTransitionActive = NO;
+    self.floatingResizeCenterReady = NO;
+    [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
         .passesTouchesOutsideFloatingContent = NO;
     self.floatingDockTap.enabled = NO;
@@ -3407,6 +3598,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingCenteredReferenceSize = CGSizeZero;
     self.floatingDocked = NO;
     self.floatingDockTransitionActive = NO;
+    self.floatingResizeCenterReady = NO;
+    [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
         .passesTouchesOutsideFloatingContent = NO;
     self.floatingBackdropTap.enabled = YES;
