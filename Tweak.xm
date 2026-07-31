@@ -719,12 +719,15 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
 @property(nonatomic, weak) UIView *floatingReusableKeyboardLayerHostView;
 @property(nonatomic, weak) id floatingReusableKeyboardScene;
+@property(nonatomic, copy) NSString *floatingReusableKeyboardSceneIdentifier;
 @property(nonatomic, weak) UIView *floatingKeyboardOriginalSuperview;
 @property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
 @property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
 @property(nonatomic, assign) CGAffineTransform floatingKeyboardOriginalTransform;
 @property(nonatomic, assign) UIViewAutoresizing floatingKeyboardOriginalAutoresizingMask;
 @property(nonatomic, assign) BOOL floatingKeyboardOriginalTranslatesAutoresizingMask;
+@property(nonatomic, assign) BOOL floatingKeyboardDetachPending;
+@property(nonatomic, assign) NSUInteger floatingKeyboardDetachGeneration;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -774,6 +777,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)requestFloatingKeyboardHostPreparation;
 - (void)keyboardLayerHostView:(UIView *)hostView didUpdateForScene:(id)scene;
 - (void)detachFloatingKeyboardLayerHost;
+- (void)scheduleFloatingKeyboardLayerHostDetach;
 - (void)clearFloatingReusableKeyboardHost;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
@@ -2895,6 +2899,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)protectedSceneDidDisappear:(NSNotification *)notification {
     (void)notification;
+    [self clearFloatingReusableKeyboardHost];
     if (self.floatingWindow.hidden) {
         return;
     }
@@ -3571,12 +3576,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 self.floatingKeyboardVisible &&
                 !self.floatingKeyboardLayerHostView &&
                 !self.floatingWindow.hidden && !self.floatingDocked) {
-                NSLog(@"[FlymeKeyboardOverlay] pairing timeout; promoting %@",
+                // Never turn a keyboard pairing miss into an unrelated Scene
+                // transition.  The route remains protected while UIKit either
+                // publishes a fresh host or keeps its in-card fallback alive.
+                NSLog(@"[FlymeKeyboardOverlay] pairing timeout; keeping centered %@",
                       self.floatingIdentifier ?: @"<unknown>");
-                self.floatingKeyboardInteractionGeneration += 1;
-                self.floatingKeyboardInteractionSessionActive = NO;
-                self.floatingKeyboardVisible = NO;
-                [self transitionFloatingWindowToFullscreen];
             }
         });
         return;
@@ -3613,6 +3617,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)requestFloatingKeyboardHostPreparation {
     if (self.floatingWindow.hidden || self.floatingDocked ||
+        self.floatingLaunchState == FLMFloatingLaunchStateClosing ||
         self.floatingIdentifier.length == 0 || !self.floatingScene) {
         return;
     }
@@ -3626,19 +3631,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // points around responder activation instead of adding a lifecycle hook.
     void (^reattachReusableHost)(void) = ^{
         if (generation != self.floatingKeyboardPrepareGeneration ||
-            self.floatingWindow.hidden || self.floatingDocked ||
-            self.floatingKeyboardLayerHostView) {
+            self.floatingWindow.hidden || self.floatingDocked) {
             return;
         }
-        UIView *candidate = self.floatingReusableKeyboardLayerHostView;
+        UIView *candidate = self.floatingKeyboardLayerHostView ?:
+                            self.floatingReusableKeyboardLayerHostView;
         id candidateScene = self.floatingReusableKeyboardScene;
         if (!candidate) {
+            return;
+        }
+        NSString *floatingSceneIdentifier = FLMSceneIdentifier(self.floatingScene);
+        NSString *leasedSceneIdentifier =
+            self.floatingReusableKeyboardSceneIdentifier;
+        if (floatingSceneIdentifier.length > 0 &&
+            leasedSceneIdentifier.length > 0 &&
+            ![floatingSceneIdentifier isEqualToString:leasedSceneIdentifier]) {
+            if (candidate == self.floatingKeyboardLayerHostView) {
+                [self detachFloatingKeyboardLayerHost];
+            }
+            [self clearFloatingReusableKeyboardHost];
             return;
         }
         [self keyboardLayerHostView:candidate didUpdateForScene:candidateScene];
     };
     reattachReusableHost();
-    for (NSNumber *delayValue in @[@0.08, @0.20]) {
+    for (NSNumber *delayValue in @[@0.08, @0.20, @0.45, @0.85]) {
         NSTimeInterval delay = delayValue.doubleValue;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(delay * NSEC_PER_SEC)),
@@ -3647,6 +3664,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)keyboardLayerHostView:(UIView *)hostView didUpdateForScene:(id)scene {
+    if (self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
+        self.keyboardOverlayWindow.hidden = YES;
+        return;
+    }
     if (!hostView || self.floatingWindow.hidden || self.floatingDocked ||
         !self.floatingScene || self.floatingIdentifier.length == 0) {
         if (hostView == self.floatingKeyboardLayerHostView) {
@@ -3680,6 +3701,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.floatingReusableKeyboardLayerHostView = hostView;
     self.floatingReusableKeyboardScene = scene ?: owningScene;
+    self.floatingReusableKeyboardSceneIdentifier =
+        owningSceneIdentifier ?: updatedSceneIdentifier;
+    self.floatingKeyboardDetachPending = NO;
+    self.floatingKeyboardDetachGeneration += 1;
 
     [self prepareFloatingKeyboardHostIfNeeded];
     UIView *overlayRoot = self.keyboardOverlayWindow.rootViewController.view;
@@ -3729,25 +3754,36 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)detachFloatingKeyboardLayerHost {
+    self.floatingKeyboardDetachPending = NO;
+    self.floatingKeyboardDetachGeneration += 1;
     UIView *hostView = self.floatingKeyboardLayerHostView;
     if (!hostView) {
         self.keyboardOverlayWindow.hidden = YES;
         return;
     }
     UIView *originalSuperview = self.floatingKeyboardOriginalSuperview;
-    [hostView removeFromSuperview];
-    hostView.transform = self.floatingKeyboardOriginalTransform;
-    hostView.frame = self.floatingKeyboardOriginalFrame;
-    hostView.autoresizingMask = self.floatingKeyboardOriginalAutoresizingMask;
-    hostView.translatesAutoresizingMaskIntoConstraints =
-        self.floatingKeyboardOriginalTranslatesAutoresizingMask;
-    if (originalSuperview) {
-        NSInteger index = self.floatingKeyboardOriginalSubviewIndex;
-        if (index >= 0 && index <= (NSInteger)originalSuperview.subviews.count) {
-            [originalSuperview insertSubview:hostView atIndex:(NSUInteger)index];
-        } else {
-            [originalSuperview addSubview:hostView];
+    @try {
+        [hostView removeFromSuperview];
+        hostView.transform = self.floatingKeyboardOriginalTransform;
+        hostView.frame = self.floatingKeyboardOriginalFrame;
+        hostView.autoresizingMask = self.floatingKeyboardOriginalAutoresizingMask;
+        hostView.translatesAutoresizingMaskIntoConstraints =
+            self.floatingKeyboardOriginalTranslatesAutoresizingMask;
+        if (originalSuperview) {
+            NSInteger index = self.floatingKeyboardOriginalSubviewIndex;
+            if (index >= 0 && index <= (NSInteger)originalSuperview.subviews.count) {
+                [originalSuperview insertSubview:hostView atIndex:(NSUInteger)index];
+            } else {
+                [originalSuperview addSubview:hostView];
+            }
         }
+    } @catch (NSException *exception) {
+        // UIKit may tear down the original keyboard hierarchy while the app
+        // Scene is being backgrounded.  Dropping the weak lease is safer than
+        // letting that private hierarchy exception take SpringBoard down.
+        NSLog(@"[FlymeKeyboardOverlay] safe detach skipped restore: %@",
+              exception.reason ?: @"<unknown>");
+        [self clearFloatingReusableKeyboardHost];
     }
     self.floatingKeyboardLayerHostView = nil;
     self.floatingKeyboardOriginalSuperview = nil;
@@ -3756,10 +3792,34 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSLog(@"[FlymeKeyboardOverlay] detached");
 }
 
+- (void)scheduleFloatingKeyboardLayerHostDetach {
+    // Cancel delayed preparation blocks from the input session that is closing
+    // without discarding the Scene-bound weak host lease itself.
+    self.floatingKeyboardPrepareGeneration += 1;
+    if (!self.floatingKeyboardLayerHostView) {
+        self.keyboardOverlayWindow.hidden = YES;
+        return;
+    }
+    self.floatingKeyboardDetachPending = YES;
+    self.floatingKeyboardDetachGeneration += 1;
+    NSUInteger generation = self.floatingKeyboardDetachGeneration;
+    self.keyboardOverlayWindow.hidden = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.55 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!self.floatingKeyboardDetachPending ||
+            generation != self.floatingKeyboardDetachGeneration) {
+            return;
+        }
+        [self detachFloatingKeyboardLayerHost];
+    });
+}
+
 - (void)clearFloatingReusableKeyboardHost {
     self.floatingKeyboardPrepareGeneration += 1;
     self.floatingReusableKeyboardLayerHostView = nil;
     self.floatingReusableKeyboardScene = nil;
+    self.floatingReusableKeyboardSceneIdentifier = nil;
 }
 
 - (CGRect)floatingKeyboardInteractionFrame {
@@ -4211,8 +4271,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotBackground = nil;
     self.floatingInteractiveSnapshotContent = nil;
     self.floatingFullscreenProgress = 0.0;
-    [self detachFloatingKeyboardLayerHost];
-    [self clearFloatingReusableKeyboardHost];
     self.floatingKeyboardInteractionGeneration += 1;
     self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingKeyboardVisible = NO;
@@ -4404,6 +4462,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
+    [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardState(nil, nil);
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
@@ -4414,8 +4473,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotBackground = nil;
     self.floatingInteractiveSnapshotContent = nil;
     self.floatingFullscreenProgress = 0.0;
-    [self detachFloatingKeyboardLayerHost];
-    [self clearFloatingReusableKeyboardHost];
+    [self scheduleFloatingKeyboardLayerHostDetach];
     self.floatingKeyboardInteractionGeneration += 1;
     self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingInteractiveScenePrepared = NO;
