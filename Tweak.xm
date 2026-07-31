@@ -59,6 +59,7 @@ static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 
 @interface UIApplication (FLMRuntimePrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier suspended:(BOOL)suspended;
+- (void)_simulateHomeButtonPress;
 - (void)_simulateLockButtonPress;
 @end
 
@@ -580,6 +581,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) FLMOverlayWindow *systemHomeGestureWindow;
 @property(nonatomic, strong) UIView *systemHomeGestureIndicator;
 @property(nonatomic, strong) CAShapeLayer *systemHomeGestureCheckLayer;
+@property(nonatomic, strong) UIView *systemHomeGestureTransitionCover;
+@property(nonatomic, assign) BOOL systemHomeGestureTransitionActive;
 @property(nonatomic, strong) FLMOverlayWindow *floatingWindow;
 @property(nonatomic, strong) UIView *floatingDimView;
 @property(nonatomic, strong) UIView *floatingDockShadowView;
@@ -675,11 +678,18 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
 - (void)observeSystemHomeGesture:(UIGestureRecognizer *)gesture;
+- (void)finishSystemHomeGesture:(UIGestureRecognizer *)gesture
+                      cancelled:(BOOL)cancelled;
 - (void)setSystemHomeGestureReady:(BOOL)ready animated:(BOOL)animated;
 - (CGRect)systemHomeHandoffFrameForLocation:(CGPoint)location
                                       bounds:(CGRect)bounds;
 - (void)layoutSystemHomeGestureIndicator;
 - (void)resetSystemHomeGestureAnimated:(BOOL)animated;
+- (void)beginSystemHomeGestureTransition:(UIGestureRecognizer *)gesture
+                              startFrame:(CGRect)startFrame;
+- (void)finishSystemHomeGestureTransition;
+- (void)cancelSystemHomeGestureTransition;
+- (void)forceSystemHomeForHandoff;
 - (void)commitSystemHomeGestureIdentifier:(NSString *)identifier
                                startFrame:(CGRect)startFrame;
 - (void)openSystemHomeGestureIdentifier:(NSString *)identifier
@@ -906,33 +916,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                  object:nil];
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
-        NSNumber *dockWidthSchema = FLMCopyPreference(@"DockWidthSchema");
-        BOOL usesMinimumDockDefault =
-            [dockWidthSchema respondsToSelector:@selector(integerValue)] &&
-            dockWidthSchema.integerValue >= 2;
-        NSNumber *savedDockWidth =
-            usesMinimumDockDefault ? FLMCopyPreference(@"DockWidth") : nil;
-        CGFloat requestedDockWidth =
-            [savedDockWidth respondsToSelector:@selector(doubleValue)]
-                ? savedDockWidth.doubleValue
-                : FLMDefaultDockWidth;
-        self.floatingDockWidth =
-            MAX(FLMMinimumDockWidth, MIN(FLMMaximumDockWidth, requestedDockWidth));
-        if (!usesMinimumDockDefault) {
-            CFPreferencesSetValue(CFSTR("DockWidth"),
-                                  (__bridge CFNumberRef)@(self.floatingDockWidth),
-                                  FLYME_PREFERENCES_DOMAIN,
-                                  kCFPreferencesCurrentUser,
-                                  kCFPreferencesAnyHost);
-            CFPreferencesSetValue(CFSTR("DockWidthSchema"),
-                                  CFSTR("2"),
-                                  FLYME_PREFERENCES_DOMAIN,
-                                  kCFPreferencesCurrentUser,
-                                  kCFPreferencesAnyHost);
-            CFPreferencesSynchronize(FLYME_PREFERENCES_DOMAIN,
-                                     kCFPreferencesCurrentUser,
-                                     kCFPreferencesAnyHost);
-        }
+        // Dock resizing is deliberately session-local. Every new dock transition
+        // starts from the fixed minimum size instead of restoring a prior resize.
+        self.floatingDockWidth = FLMDefaultDockWidth;
         self.floatingDockedOnRight = YES;
         self.keyboardOriginalFrames = [NSMapTable weakToStrongObjectsMapTable];
         self.keyboardOriginalLevels = [NSMapTable weakToStrongObjectsMapTable];
@@ -1554,7 +1540,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     };
     void (^completion)(BOOL) = ^(BOOL finished) {
         (void)finished;
-        if (!self.systemHomeGestureReady) {
+        if (!self.systemHomeGestureReady &&
+            !self.systemHomeGestureTransitionActive) {
             self.systemHomeGestureWindow.hidden = YES;
             self.systemHomeGestureIndicator.transform = CGAffineTransformIdentity;
         }
@@ -1610,6 +1597,131 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self setSystemHomeGestureReady:NO animated:animated];
 }
 
+- (void)beginSystemHomeGestureTransition:(UIGestureRecognizer *)gesture
+                              startFrame:(CGRect)startFrame {
+    [self cancelSystemHomeGestureTransition];
+    self.systemHomeGestureTransitionActive = YES;
+
+    UIView *rootView = self.systemHomeGestureWindow.rootViewController.view;
+    CGRect bounds = rootView.bounds;
+    if (CGRectIsNull(startFrame) || CGRectIsEmpty(startFrame)) {
+        startFrame = bounds;
+    }
+    CGRect target = [self centeredFloatingFrame];
+    UIView *sourceView = gesture.view.window ?: gesture.view;
+    UIView *cover = [sourceView snapshotViewAfterScreenUpdates:NO];
+    if (cover) {
+        cover.frame = startFrame;
+        cover.userInteractionEnabled = NO;
+        cover.layer.cornerRadius = 10.0;
+        cover.layer.masksToBounds = YES;
+        [rootView insertSubview:cover belowSubview:self.systemHomeGestureIndicator];
+        self.systemHomeGestureTransitionCover = cover;
+    }
+    rootView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.12];
+    self.systemHomeGestureWindow.hidden = NO;
+
+    [UIView animateWithDuration:0.38
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionCurveEaseOut |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+                         cover.frame = target;
+                         cover.layer.cornerRadius = 18.0;
+                         self.systemHomeGestureIndicator.alpha = 0.0;
+                     }
+                     completion:nil];
+}
+
+- (void)finishSystemHomeGestureTransition {
+    UIView *cover = self.systemHomeGestureTransitionCover;
+    UIView *rootView = self.systemHomeGestureWindow.rootViewController.view;
+    [UIView animateWithDuration:0.12
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionCurveEaseOut |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+                         cover.alpha = 0.0;
+                         rootView.backgroundColor = [UIColor clearColor];
+                     }
+                     completion:^(BOOL finished) {
+                         (void)finished;
+                         [cover removeFromSuperview];
+                         if (self.systemHomeGestureTransitionCover == cover) {
+                             self.systemHomeGestureTransitionCover = nil;
+                         }
+                         self.systemHomeGestureTransitionActive = NO;
+                         if (!self.systemHomeGestureReady) {
+                             self.systemHomeGestureWindow.hidden = YES;
+                         }
+                     }];
+}
+
+- (void)cancelSystemHomeGestureTransition {
+    [self.systemHomeGestureTransitionCover.layer removeAllAnimations];
+    [self.systemHomeGestureTransitionCover removeFromSuperview];
+    self.systemHomeGestureTransitionCover = nil;
+    self.systemHomeGestureTransitionActive = NO;
+    self.systemHomeGestureWindow.rootViewController.view.backgroundColor =
+        [UIColor clearColor];
+    if (!self.systemHomeGestureReady) {
+        self.systemHomeGestureWindow.hidden = YES;
+    }
+}
+
+- (void)forceSystemHomeForHandoff {
+    NSArray *targets = @[
+        [UIApplication sharedApplication],
+        [NSClassFromString(@"SBUIController") sharedInstance] ?: [NSNull null]
+    ];
+    NSArray<NSString *> *selectorNames = @[
+        @"_simulateHomeButtonPress",
+        @"clickedMenuButton",
+        @"handleHomeButtonSinglePressUp"
+    ];
+    for (id target in targets) {
+        if (target == [NSNull null]) {
+            continue;
+        }
+        for (NSString *selectorName in selectorNames) {
+            SEL selector = NSSelectorFromString(selectorName);
+            if (![target respondsToSelector:selector]) {
+                continue;
+            }
+            void (*invoke)(id, SEL) =
+                (void (*)(id, SEL))[target methodForSelector:selector];
+            if (invoke) {
+                invoke(target, selector);
+                return;
+            }
+        }
+    }
+}
+
+- (void)finishSystemHomeGesture:(UIGestureRecognizer *)gesture
+                      cancelled:(BOOL)cancelled {
+    if (!self.systemHomeGestureTracking) {
+        return;
+    }
+    NSString *identifier =
+        !cancelled && self.systemHomeGestureReady
+            ? [self.systemHomeGestureIdentifier copy]
+            : nil;
+    CGRect startFrame = self.systemHomeGestureHandoffFrame;
+    if (identifier.length > 0) {
+        [self beginSystemHomeGestureTransition:gesture startFrame:startFrame];
+    }
+    [self resetSystemHomeGestureAnimated:YES];
+    if (identifier.length > 0) {
+        [self commitSystemHomeGestureIdentifier:identifier startFrame:startFrame];
+    } else {
+        self.systemHomeGestureHandoffFrame = CGRectNull;
+        [self cancelSystemHomeGestureTransition];
+    }
+}
+
 - (void)observeSystemHomeGesture:(UIGestureRecognizer *)gesture {
     Class homeGestureClass = NSClassFromString(@"SBHomeGesturePanGestureRecognizer");
     if (!homeGestureClass || ![gesture isKindOfClass:homeGestureClass]) {
@@ -1640,45 +1752,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     if (state == UIGestureRecognizerStateChanged) {
-        UIView *gestureView = gesture.view;
-        CGRect bounds = gestureView ? gestureView.bounds : FLMVisualScreenBounds();
+        CGRect bounds = FLMVisualScreenBounds();
         CGFloat height = CGRectGetHeight(bounds);
         if (height < 1.0) {
             return;
         }
-        CGPoint location = [gesture locationInView:gestureView];
+        CGPoint rawLocation = [gesture locationInView:nil];
+        CGPoint location = FLMVisualPointFromRawPoint(rawLocation);
         self.systemHomeGestureHandoffFrame =
             [self systemHomeHandoffFrameForLocation:location bounds:bounds];
         [self layoutSystemHomeGestureIndicator];
-        CGFloat armY = MIN(height - 1.0, height * 0.50 + 100.0);
-        CGFloat disarmY = MIN(height - 1.0, armY + height * 0.05);
-        BOOL ready = self.systemHomeGestureReady
-                         ? location.y <= disarmY
-                         : location.y <= armY;
+        CGFloat armY = MAX(0.0, height - 110.0);
+        BOOL ready = self.systemHomeGestureReady || location.y <= armY;
         [self setSystemHomeGestureReady:ready animated:YES];
         return;
     }
 
     if (state == UIGestureRecognizerStateEnded) {
-        NSString *identifier =
-            self.systemHomeGestureReady
-                ? [self.systemHomeGestureIdentifier copy]
-                : nil;
-        CGRect startFrame = self.systemHomeGestureHandoffFrame;
-        [self resetSystemHomeGestureAnimated:YES];
-        if (identifier.length > 0) {
-            [self commitSystemHomeGestureIdentifier:identifier
-                                         startFrame:startFrame];
-        } else {
-            self.systemHomeGestureHandoffFrame = CGRectNull;
-        }
+        [self finishSystemHomeGesture:gesture cancelled:NO];
         return;
     }
 
     if (state == UIGestureRecognizerStateCancelled ||
         state == UIGestureRecognizerStateFailed) {
-        [self resetSystemHomeGestureAnimated:YES];
-        self.systemHomeGestureHandoffFrame = CGRectNull;
+        [self finishSystemHomeGesture:gesture cancelled:YES];
     }
 }
 
@@ -1706,10 +1803,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (generation != self.systemHomeGestureGeneration ||
         identifier.length == 0 || !self.enabled || FLMDeviceIsLocked() ||
         !self.floatingWindow.hidden || self.wheelPinned) {
+        [self cancelSystemHomeGestureTransition];
         return;
     }
     if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
-        if (attempt < 24) {
+        if (attempt == 4) {
+            [self forceSystemHomeForHandoff];
+        }
+        if (attempt < 40) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
                               (int64_t)(0.025 * NSEC_PER_SEC)),
@@ -1719,6 +1820,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                generation:generation
                                                   attempt:attempt + 1];
                 });
+        } else {
+            [self cancelSystemHomeGestureTransition];
         }
         return;
     }
@@ -2528,6 +2631,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL landscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        // A centered card always starts a new dock gesture at the fixed
+        // minimum size. Resizing a prior dock is intentionally not remembered.
+        self.floatingDockWidth = FLMMinimumDockWidth;
         self.floatingHandleStartPoint = point;
         self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
         self.floatingHandleMoved = NO;
@@ -3156,6 +3262,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self restoreKeyboardWindowFrames];
     self.floatingDockTransitionActive = YES;
     self.floatingDockedOnRight = YES;
+    self.floatingDockWidth = FLMMinimumDockWidth;
     CGRect target =
         [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
     self.floatingDockShadowView.hidden = NO;
@@ -3280,19 +3387,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat width =
         MAX(FLMMinimumDockWidth, MIN(FLMMaximumDockWidth, self.floatingDockWidth));
     self.floatingDockWidth = width;
-    CFPreferencesSetValue(CFSTR("DockWidth"),
-                          (__bridge CFNumberRef)@(width),
-                          FLYME_PREFERENCES_DOMAIN,
-                          kCFPreferencesCurrentUser,
-                          kCFPreferencesAnyHost);
-    CFPreferencesSetValue(CFSTR("DockWidthSchema"),
-                          CFSTR("2"),
-                          FLYME_PREFERENCES_DOMAIN,
-                          kCFPreferencesCurrentUser,
-                          kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(FLYME_PREFERENCES_DOMAIN,
-                             kCFPreferencesCurrentUser,
-                             kCFPreferencesAnyHost);
 }
 
 - (void)layoutFloatingWindow {
@@ -3789,6 +3883,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.floatingLaunchUsesSystemHomeHandoff = systemHomeHandoff;
     self.floatingSystemHomeHandoffStartFrame = startFrame;
+    self.floatingDockWidth = FLMMinimumDockWidth;
     self.floatingReconnectSuppressed = NO;
     self.floatingDocked = NO;
     self.floatingDockedOnRight = YES;
@@ -3965,32 +4060,40 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         self.floatingLaunchUsesSystemHomeHandoff = NO;
         self.floatingSystemHomeHandoffStartFrame = CGRectNull;
+        BOOL transitionAlreadyVisible =
+            self.systemHomeGestureTransitionActive &&
+            self.systemHomeGestureTransitionCover != nil;
         [UIView performWithoutAnimation:^{
-            self.floatingContainer.frame = start;
+            self.floatingContainer.frame = transitionAlreadyVisible ? target : start;
             self.floatingContainer.alpha = 1.0;
             self.floatingContainer.transform = CGAffineTransformIdentity;
-            self.floatingHandle.alpha = 0.0;
-            self.floatingDimView.alpha = 0.0;
+            self.floatingHandle.alpha = transitionAlreadyVisible ? 1.0 : 0.0;
+            self.floatingDimView.alpha = transitionAlreadyVisible ? 1.0 : 0.0;
             [self layoutFloatingHostView];
             [self layoutFloatingHandleForCurrentContainer];
         }];
-        [UIView animateWithDuration:0.34
-                              delay:0.0
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionCurveEaseOut |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:^{
-                             self.floatingContainer.frame = target;
-                             self.floatingDimView.alpha = 1.0;
-                             self.floatingHandle.alpha = 1.0;
-                             [self layoutFloatingHostView];
-                             [self layoutFloatingHandleForCurrentContainer];
-                         }
-                         completion:nil];
+        if (transitionAlreadyVisible) {
+            [self finishSystemHomeGestureTransition];
+        } else {
+            [UIView animateWithDuration:0.34
+                                  delay:0.0
+                                options:UIViewAnimationOptionBeginFromCurrentState |
+                                        UIViewAnimationOptionCurveEaseOut |
+                                        UIViewAnimationOptionAllowUserInteraction
+                             animations:^{
+                                 self.floatingContainer.frame = target;
+                                 self.floatingDimView.alpha = 1.0;
+                                 self.floatingHandle.alpha = 1.0;
+                                 [self layoutFloatingHostView];
+                                 [self layoutFloatingHandleForCurrentContainer];
+                             }
+                             completion:nil];
+        }
     }
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
+    [self cancelSystemHomeGestureTransition];
     self.floatingLaunchGeneration += 1;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
@@ -4219,17 +4322,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    // Capture the latched Flyme decision before SpringBoard resets/cancels the
+    // recognizer while finishing its own home gesture.
+    [[FLMWheelController sharedController]
+        finishSystemHomeGesture:self
+                      cancelled:NO];
     %orig;
     (void)touches;
     (void)event;
-    [[FLMWheelController sharedController] observeSystemHomeGesture:self];
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [[FLMWheelController sharedController]
+        finishSystemHomeGesture:self
+                      cancelled:YES];
     %orig;
     (void)touches;
     (void)event;
-    [[FLMWheelController sharedController] observeSystemHomeGesture:self];
 }
 
 %end

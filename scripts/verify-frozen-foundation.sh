@@ -23,6 +23,9 @@ required_lines=(
     "floor((height - containerHeight) * 0.5 - 44.0);"
     "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
     "CGRectGetHeight(bounds) - CGRectGetMaxY(start)"
+    "CGFloat armY = MAX(0.0, height - 110.0);"
+    "finishSystemHomeGesture:self"
+    "self.floatingDockWidth = FLMMinimumDockWidth;"
 )
 
 for required_line in "${required_lines[@]}"; do
@@ -34,6 +37,11 @@ done
 
 if grep -Fq "locationInView:self.overlayWindow.rootViewController.view" "$source_file"; then
     echo "global wheel touch was incorrectly converted through the overlay window" >&2
+    exit 1
+fi
+
+if grep -Fq 'CFPreferencesSetValue(CFSTR("DockWidth")' "$source_file"; then
+    echo "docked card size persistence was reintroduced" >&2
     exit 1
 fi
 
