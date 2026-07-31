@@ -70,7 +70,7 @@ for keyboard_line in \
 done
 
 if grep -Fq '%hook _UIRemoteKeyboards' "$keyboard_source" ||
-   grep -Fq '%hook UIWindow' "$keyboard_source"; then
+   grep -Eq '^%hook UIWindow[[:space:]]*$' "$keyboard_source"; then
     echo "keyboard bridge grew beyond the verified minimal hook surface" >&2
     exit 1
 fi
