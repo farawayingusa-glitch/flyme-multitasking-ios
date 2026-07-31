@@ -354,6 +354,18 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    // A remote scene can retain an oversized hit-test view for one layout
+    // transaction after it is reattached.  Always give the centered handle
+    // first refusal: it owns the only gestures that leave centered mode.
+    UIView *primaryControl = self.floatingPrimaryControlView;
+    if (primaryControl && !primaryControl.hidden &&
+        primaryControl.userInteractionEnabled && primaryControl.alpha > 0.01) {
+        CGPoint primaryPoint = [self convertPoint:point toView:primaryControl];
+        UIView *primaryHit = [primaryControl hitTest:primaryPoint withEvent:event];
+        if (primaryHit) {
+            return primaryHit;
+        }
+    }
     if (!CGRectIsNull(self.keyboardPassThroughFrame) &&
         CGRectContainsPoint(self.keyboardPassThroughFrame, point)) {
         return nil;
@@ -726,6 +738,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated;
 - (BOOL)floatingResizeControlContainsPoint:(CGPoint)point;
 - (void)configureFloatingInteractionForDockedState;
+- (void)restoreFloatingHandleInteraction;
 - (void)transitionFloatingWindowToDocked;
 - (void)transitionFloatingWindowToCentered;
 - (void)snapDockedFloatingWindowUsingTouchPoint:(CGPoint)point;
@@ -2905,6 +2918,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
+- (void)restoreFloatingHandleInteraction {
+    // configureFloatingInteractionForDockedState deliberately disables the
+    // handle for a docked card.  The old close/open path only unhid it, so a
+    // subsequently centered card could display a white bar whose recognizers
+    // never received touches.  Keep this reset independent of Scene startup.
+    self.floatingHandle.hidden = NO;
+    self.floatingHandle.alpha = 1.0;
+    self.floatingHandle.userInteractionEnabled = YES;
+    self.floatingHandlePress.enabled = YES;
+    self.floatingHandleTap.enabled = YES;
+}
+
 - (void)transitionFloatingWindowToDocked {
     [self setFloatingDockReady:NO animated:YES];
     if (self.floatingWindow.hidden || self.floatingDocked) {
@@ -2973,6 +2998,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.hidden = YES;
     self.floatingDockShadowView.hidden = NO;
     self.floatingDocked = NO;
+    [self restoreFloatingHandleInteraction];
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     FLMPublishKeyboardState(self.floatingIdentifier);
@@ -3542,7 +3568,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.transform = CGAffineTransformIdentity;
     self.floatingDockInteractionShield.hidden = YES;
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
-    self.floatingHandle.hidden = NO;
+    [self restoreFloatingHandleInteraction];
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
