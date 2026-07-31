@@ -3659,11 +3659,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
-    BOOL landscape =
-        CGRectGetWidth(self.floatingWindow.bounds) >
-        CGRectGetHeight(self.floatingWindow.bounds);
     NSMutableOrderedSet<UIWindow *> *windows = [NSMutableOrderedSet orderedSet];
-    [windows addObjectsFromArray:[UIApplication sharedApplication].windows];
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:[UIWindowScene class]]) {
