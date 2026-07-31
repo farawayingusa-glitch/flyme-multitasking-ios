@@ -1242,9 +1242,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIEdgeInsets safeInsets =
         self.floatingWindow.rootViewController.view.safeAreaInsets;
-    CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
     CGFloat containerWidth = width * 0.77;
     CGFloat containerHeight = 520.0;
+    CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
+    if (height > width) {
+        CGFloat centeredUpperTop =
+            floor((height - containerHeight) * 0.5 - 44.0);
+        top = MAX(safeInsets.top + 8.0, centeredUpperTop);
+    }
     CGFloat maximumHeight = MAX(180.0, height - top - 72.0);
     if (containerHeight > maximumHeight) {
         CGFloat scale = maximumHeight / containerHeight;
