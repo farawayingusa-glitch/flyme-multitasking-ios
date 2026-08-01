@@ -118,13 +118,13 @@ for keyboard_handoff_line in \
     'FLMKeyboardTargetApplication' \
     'FLMKeyboardExtensionProcess' \
     '@"keyboard-service"' \
-    'FLMApplyApplicationKeyboardSafeArea' \
-    'keyboardTouchObserver' \
-    'floatingKeyboardTouchProtectionUntil' \
-    'applyFloatingKeyboardContainerOffsetForFrame:' \
-    'centeredFloatingFrameWithKeyboardOffset' \
-    'UIKeyboardAnimationDurationUserInfoKey' \
-    'UIKeyboardAnimationCurveUserInfoKey' \
+    'FLMPublishKeyboardCardGeometry' \
+    'FLMReloadKeyboardCardGeometry' \
+    'FLMCorrectKeyboardNotificationUserInfo' \
+    '%hook NSNotificationCenter' \
+    'FLMKeyboardCardVisualScale' \
+    'outsideCloseAuthorized' \
+    'flmOutsideCloseAuthorized' \
     '[self.keyboardForwardingWindow makeKeyAndVisible];' \
     'floatingKeyboardAvoidanceHeightForFrame:' \
     'initWithWindowScene:targetWindowScene' \
@@ -153,6 +153,20 @@ if grep -Fq 'consumeOutsideTapForKeyboardDismissal' "$source_file"; then
     echo "legacy first outside tap keyboard-only dismissal was reintroduced" >&2
     exit 1
 fi
+
+for wrong_keyboard_layout in \
+    'FLMApplyApplicationKeyboardSafeArea' \
+    'additionalSafeAreaInsets' \
+    'applyFloatingKeyboardContainerOffsetForFrame:' \
+    'centeredFloatingFrameWithKeyboardOffset' \
+    'floatingKeyboardContainerOffsetY' \
+    'keyboardTouchObserver'; do
+    if grep -Fq "$wrong_keyboard_layout" "$keyboard_source" ||
+       grep -Fq "$wrong_keyboard_layout" "$source_file"; then
+        echo "wrong whole-card or safe-area keyboard layout detected: $wrong_keyboard_layout" >&2
+        exit 1
+    fi
+done
 
 for removed_keyboard_patch in \
     'FLMRemoteKeyboardAvoidance' \

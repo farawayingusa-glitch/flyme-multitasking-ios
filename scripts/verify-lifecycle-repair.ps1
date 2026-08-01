@@ -75,7 +75,13 @@ Require-Text $KeyboardSource 'Never touch UIScreen/UIApplication from a dyld ini
 Require-Text $KeyboardSource 'FLMKeyboardTargetApplication'
 Require-Text $KeyboardSource 'FLMKeyboardExtensionProcess'
 Require-Text $KeyboardSource '@"keyboard-service"'
-Require-Text $KeyboardSource 'FLMApplyApplicationKeyboardSafeArea'
+Require-Text $Source 'FLMPublishKeyboardCardGeometry'
+Require-Text $KeyboardSource 'FLMReloadKeyboardCardGeometry'
+Require-Text $KeyboardSource 'FLMCorrectKeyboardNotificationUserInfo'
+Require-Text $KeyboardSource '%hook NSNotificationCenter'
+Require-Text $KeyboardSource 'FLMKeyboardCardVisualScale'
+Require-Text $Source 'outsideCloseAuthorized'
+Require-Text $Source 'flmOutsideCloseAuthorized'
 Require-Text $Source '[self.keyboardForwardingWindow makeKeyAndVisible];'
 Require-Text $Source 'floatingKeyboardAvoidanceHeightForFrame:'
 Require-Text $Source 'initWithWindowScene:targetWindowScene'
@@ -93,6 +99,20 @@ if ($KeyboardContents -match 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvo
 }
 if ((Select-String -LiteralPath $Source -SimpleMatch 'consumeOutsideTapForKeyboardDismissal' -Quiet)) {
     throw 'Legacy first outside tap keyboard-only dismissal was reintroduced'
+}
+
+foreach ($WrongKeyboardLayout in @(
+    'FLMApplyApplicationKeyboardSafeArea',
+    'additionalSafeAreaInsets',
+    'applyFloatingKeyboardContainerOffsetForFrame:',
+    'centeredFloatingFrameWithKeyboardOffset',
+    'floatingKeyboardContainerOffsetY',
+    'keyboardTouchObserver'
+)) {
+    if ((Select-String -LiteralPath $KeyboardSource -SimpleMatch $WrongKeyboardLayout -Quiet) -or
+        (Select-String -LiteralPath $Source -SimpleMatch $WrongKeyboardLayout -Quiet)) {
+        throw "Wrong whole-card or safe-area keyboard layout detected: $WrongKeyboardLayout"
+    }
 }
 
 foreach ($RemovedKeyboardPatch in @(
