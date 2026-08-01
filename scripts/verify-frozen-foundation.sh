@@ -32,7 +32,7 @@ required_lines=(
     "self.floatingDockWidth = FLMMinimumDockWidth;"
     "updateFloatingDockAccessoryPositions"
     "keyboardPassThroughFrame"
-    "FLMPublishKeyboardState(identifier, nil);"
+    "floatingKeyboardSessionGeneration"
 )
 
 for required_line in "${required_lines[@]}"; do
@@ -69,6 +69,7 @@ for keyboard_line in \
     'FLMIdentifierHash' \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
+    'FLYME_KEYBOARD_SESSION_NOTIFICATION' \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
     'FLMKeyboardPrepareDebounce = 0.15' \
     'UIKeyboardWillHideNotification' \
@@ -87,7 +88,7 @@ for overlay_line in \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
     'requestFloatingKeyboardHostPreparation' \
-    'floatingReusableKeyboardLayerHostView' \
+    'sessionGeneration != self.floatingKeyboardSessionGeneration' \
     'const CGFloat widthCompletion = 0.82;' \
     'const CGFloat verticalRevealStart = 0.22;' \
     'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;' \
@@ -106,7 +107,10 @@ fi
 for unsafe_keyboard_line in \
     '%hook _UIRemoteKeyboards' \
     '- (void)didMoveToWindow' \
-    'FLMKeyboardPreparePosted'; do
+    'FLMKeyboardPreparePosted' \
+    'floatingReusableKeyboardLayerHostView' \
+    'scheduleFloatingKeyboardLayerHostDetach' \
+    'FLMKeyboardDiagnosticLog'; do
     if grep -Fq -- "$unsafe_keyboard_line" "$source_file" ||
        grep -Fq -- "$unsafe_keyboard_line" "$keyboard_source"; then
         echo "unsafe or one-shot keyboard path detected: $unsafe_keyboard_line" >&2

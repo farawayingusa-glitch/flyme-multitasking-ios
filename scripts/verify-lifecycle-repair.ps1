@@ -31,11 +31,13 @@ Require-Text $Source 'CGFloat handleWidth = visibleHandleWidth + 40.0;'
 Require-Text $Source 'pointIsInsideFloatingInteractionDomain:'
 Require-Text $Source 'self.floatingExclusiveTapEligible &&'
 Require-Text $Source 'UIKeyboardDidHideNotification'
-Require-Text $Source 'FLMPublishKeyboardState(self.floatingIdentifier, scene);'
+Require-Text $Source 'FLYME_KEYBOARD_SESSION_NOTIFICATION'
+Require-Text $Source 'floatingKeyboardSessionGeneration'
 Require-Text $KeyboardSource '%hook UITextEffectsWindow'
 Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
 Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
+Require-Text $KeyboardSource 'FLYME_KEYBOARD_SESSION_NOTIFICATION'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
 Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
@@ -45,14 +47,10 @@ Require-Text $KeyboardSource '- (BOOL)resignFirstResponder'
 Require-Text $Source '@interface FLMKeyboardOverlayWindow'
 Require-Text $Source 'keyboardLayerHostView:'
 Require-Text $Source 'valueForKey:@"_owningScene"'
-Require-Text $Source 'valueForKey:@"_keyboardScene"'
 Require-Text $Source 'floatingKeyboardOriginalSuperview'
-Require-Text $Source 'pairing timeout; keeping centered'
-Require-Text $Source 'floatingReusableKeyboardSceneIdentifier'
-Require-Text $Source 'scheduleFloatingKeyboardLayerHostDetach'
 Require-Text $Source 'floatingLaunchState == FLMFloatingLaunchStateClosing'
 Require-Text $Source 'requestFloatingKeyboardHostPreparation'
-Require-Text $Source 'floatingReusableKeyboardLayerHostView'
+Require-Text $Source 'sessionGeneration != self.floatingKeyboardSessionGeneration'
 Require-Text $Source 'const CGFloat widthCompletion = 0.82;'
 Require-Text $Source 'const CGFloat verticalRevealStart = 0.22;'
 Require-Text $Source 'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;'
@@ -80,7 +78,10 @@ if (Select-String -LiteralPath $Source -SimpleMatch 'setFloatingSceneUsesFullscr
 foreach ($unsafeKeyboardLine in @(
     '%hook _UIRemoteKeyboards',
     '- (void)didMoveToWindow',
-    'FLMKeyboardPreparePosted'
+    'FLMKeyboardPreparePosted',
+    'floatingReusableKeyboardLayerHostView',
+    'scheduleFloatingKeyboardLayerHostDetach',
+    'FLMKeyboardDiagnosticLog'
 )) {
     if ((Select-String -LiteralPath $Source -SimpleMatch $unsafeKeyboardLine -Quiet) -or
         (Select-String -LiteralPath $KeyboardSource -SimpleMatch $unsafeKeyboardLine -Quiet)) {

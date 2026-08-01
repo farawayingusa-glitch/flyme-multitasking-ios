@@ -4,14 +4,17 @@
 
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
+#define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
+static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
+static uint64_t FLMKeyboardSessionGeneration = 0;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
@@ -105,6 +108,20 @@ static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
+static void FLMEndApplicationKeyboardSession(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *connectedScene in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+                [window endEditing:YES];
+            }
+        }
+    }
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     if (FLMKeyboardRouteToken >= 0) {
@@ -112,21 +129,34 @@ static void FLMReloadKeyboardRoute(void) {
     }
     NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
     uint64_t currentHash = FLMIdentifierHash(currentIdentifier);
-    FLMKeyboardRouteActive =
-        targetHash != 0 && currentHash != 0 && targetHash == currentHash;
+    BOOL previousRouteActive = FLMKeyboardRouteActive;
+    uint64_t sessionGeneration = 0;
+    if (FLMKeyboardSessionToken >= 0) {
+        notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
+    }
+    uint64_t previousSessionGeneration = FLMKeyboardSessionGeneration;
+    BOOL sessionChanged =
+        sessionGeneration != previousSessionGeneration;
+    FLMKeyboardSessionGeneration = sessionGeneration;
+    FLMKeyboardRouteActive = sessionGeneration != 0 && targetHash != 0 &&
+                             currentHash != 0 && targetHash == currentHash;
     FLMKeyboardTargetSceneHash = 0;
     if (FLMKeyboardSceneToken >= 0) {
         notify_get_state(FLMKeyboardSceneToken,
                          &FLMKeyboardTargetSceneHash);
     }
-    // A route or Scene publication starts a fresh input session. UIKit can
-    // reuse its keyboard host without emitting a new Scene-settings callback,
-    // so never carry the previous session's preparation gate forward.
-    FLMKeyboardLastPrepareTime = 0.0;
-    NSLog(@"[FlymeKeyboard] route=%@ bundle=%@ targetSceneHash=%llu",
-          FLMKeyboardRouteActive ? @"active" : @"inactive",
-          currentIdentifier ?: @"<unknown>",
-          (unsigned long long)FLMKeyboardTargetSceneHash);
+    if (sessionChanged) {
+        // Close any responder and keyboard Scene retained by the previous
+        // centered card before the new generation is allowed to prepare a
+        // physical-screen host. This does not depend on delivery of the
+        // short-lived route-off notification between two openings.
+        if (previousSessionGeneration != 0 && previousRouteActive) {
+            FLMEndApplicationKeyboardSession();
+        }
+        FLMKeyboardLastPrepareTime = 0.0;
+    } else if (!FLMKeyboardRouteActive) {
+        FLMKeyboardLastPrepareTime = 0.0;
+    }
 }
 
 static void FLMPrepareFullscreenKeyboardHost(void) {
@@ -140,7 +170,6 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
     }
     FLMKeyboardLastPrepareTime = now;
     notify_post(FLYME_KEYBOARD_PREPARE_NOTIFICATION);
-    NSLog(@"[FlymeKeyboard] requested fresh physical-screen keyboard session");
 }
 
 %hook UIResponder
@@ -225,6 +254,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         });
         notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
                                  &FLMKeyboardSceneToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                                 &FLMKeyboardSessionToken,
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
             FLMReloadKeyboardRoute();
