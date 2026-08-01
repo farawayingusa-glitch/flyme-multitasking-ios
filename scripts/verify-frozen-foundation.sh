@@ -113,6 +113,8 @@ for keyboard_handoff_line in \
     'keyboardInteractionFrame' \
     'FLMPublishKeyboardAvoidance' \
     'return FLMExternalKeyboardAvoidanceHeight;' \
+    'if (!currentSession)' \
+    'Never touch UIScreen/UIApplication from a dyld initializer' \
     'initWithWindowScene:targetWindowScene' \
     'setAutorotates:forceUpdateInterfaceOrientation:' \
     'hitView == self || hitView == rootView' \
@@ -129,6 +131,11 @@ for keyboard_handoff_line in \
         exit 1
     fi
 done
+
+if grep -Pzoq 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);' "$keyboard_source"; then
+    echo "keyboard avoidance reintroduced into a route or dyld initializer path" >&2
+    exit 1
+fi
 
 for removed_keyboard_patch in \
     'FLMRemoteKeyboardAvoidance' \
