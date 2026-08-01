@@ -73,7 +73,7 @@ for keyboard_line in \
     'UIKeyboardWillHideNotification' \
     '%group FLMRemoteKeyboardGeometry' \
     'intersectionHeightForWindowScene:' \
-    'originalHeight + physicalHeight - sceneHeight' \
+    'FLMExternalKeyboardAvoidanceGeneration' \
     '_referenceBounds must remain UIKit-owned' \
     'FLMEndingApplicationKeyboardSession' \
     '- (BOOL)resignFirstResponder' \
@@ -109,7 +109,10 @@ for keyboard_handoff_line in \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
     '@interface FLMKeyboardForwardingWindow : UIWindow' \
-    'window.windowLevel = 45.0;' \
+    'window.windowLevel = self.floatingWindow.windowLevel + 1.0;' \
+    'keyboardInteractionFrame' \
+    'FLMPublishKeyboardAvoidance' \
+    'return FLMExternalKeyboardAvoidanceHeight;' \
     'initWithWindowScene:targetWindowScene' \
     'setAutorotates:forceUpdateInterfaceOrientation:' \
     'hitView == self || hitView == rootView' \

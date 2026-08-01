@@ -15,6 +15,7 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
+#define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
@@ -350,11 +351,16 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 // nil for the empty root surface makes the window transparent to touches while
 // preserving the keyboard host's own private hit-testing and responder path.
 @interface FLMKeyboardForwardingWindow : UIWindow
+@property(nonatomic, assign) CGRect keyboardInteractionFrame;
 @end
 
 @implementation FLMKeyboardForwardingWindow
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (CGRectIsNull(self.keyboardInteractionFrame) ||
+        !CGRectContainsPoint(self.keyboardInteractionFrame, point)) {
+        return nil;
+    }
     UIView *hitView = [super hitTest:point withEvent:event];
     UIView *rootView = self.rootViewController.view;
     if (hitView == self || hitView == rootView) {
@@ -850,6 +856,7 @@ static int FlymeRuntimeToken = -1;
 static int FlymeKeyboardRouteToken = -1;
 static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
+static int FlymeKeyboardAvoidanceToken = -1;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -938,6 +945,28 @@ static void FLMPublishKeyboardState(NSString *identifier,
     }
     notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
     notify_post(FLYME_KEYBOARD_NOTIFICATION);
+}
+
+static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
+                                        CGFloat keyboardHeight,
+                                        BOOL visible) {
+    if (sessionGeneration == 0) {
+        return;
+    }
+    if (FlymeKeyboardAvoidanceToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
+                              &FlymeKeyboardAvoidanceToken) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    CGFloat height = visible ? MAX(0.0, keyboardHeight) : 0.0;
+    uint64_t encodedHeight =
+        MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
+    uint64_t encodedGeneration =
+        (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
+    uint64_t state = (visible ? (1ULL << 63) : 0) |
+                     encodedGeneration | encodedHeight;
+    notify_set_state(FlymeKeyboardAvoidanceToken, state);
+    notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
 }
 
 static void FLMRequestKeyboardDismissal(void) {
@@ -3681,6 +3710,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRect bounds = FLMVisualScreenBounds();
         existingWindow.frame = bounds;
         existingWindow.rootViewController.view.frame = existingWindow.bounds;
+        existingWindow.windowLevel = self.floatingWindow.windowLevel + 1.0;
         return;
     }
 
@@ -3689,13 +3719,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [[FLMKeyboardForwardingWindow alloc]
             initWithWindowScene:targetWindowScene];
     window.frame = bounds;
-    // TrollOpen's iOS 16 forwarding path uses a modest level (45), not an
-    // alert-level overlay.  A very high level bypasses private keyboard action
-    // routing even when the pixels happen to appear in the right place.
-    window.windowLevel = 45.0;
+    // TrollOpen's level 45 sits above its own content hierarchy. Flyme's card
+    // is itself an alert-level SpringBoard window, so the same absolute level
+    // incorrectly places the native keyboard underneath it. Keep the keyboard
+    // one level above the card while preserving the same Scene and responder.
+    window.windowLevel = self.floatingWindow.windowLevel + 1.0;
     window.backgroundColor = [UIColor clearColor];
     window.opaque = NO;
     window.userInteractionEnabled = YES;
+    window.keyboardInteractionFrame = CGRectNull;
     FLMOverlayViewController *rootController =
         [[FLMOverlayViewController alloc] init];
     rootController.view.backgroundColor = [UIColor clearColor];
@@ -3822,6 +3854,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
+    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
     self.keyboardForwardingWindow.hidden = YES;
 }
 
@@ -3835,6 +3868,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
+    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
     self.keyboardForwardingWindow.hidden = YES;
 }
 
@@ -3863,6 +3897,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardFrame = frame;
         self.floatingBackdropTap.additionalProtectedFrame = frame;
         ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = frame;
+        self.keyboardForwardingWindow.windowLevel =
+            self.floatingWindow.windowLevel + 1.0;
+        self.keyboardForwardingWindow.keyboardInteractionFrame = frame;
+        FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
+                                    CGRectGetHeight(frame),
+                                    YES);
         if (self.floatingKeyboardLayerHostView) {
             self.keyboardForwardingWindow.hidden = NO;
         }
@@ -3877,7 +3917,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
     self.keyboardForwardingWindow.hidden = YES;
+    FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration, 0.0, NO);
     if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
         !self.floatingWindow.hidden && !self.floatingDocked) {
         // UIKeyboardDidHide can arrive before the touch that pressed the
@@ -3917,6 +3959,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSUInteger endingSession = self.floatingKeyboardSessionGeneration;
     __weak UIView *endingHost = self.floatingKeyboardLayerHostView;
     [self.floatingHostView endEditing:YES];
+    FLMPublishKeyboardAvoidance(endingSession, 0.0, NO);
     self.floatingKeyboardSessionGeneration = 0;
     FLMPublishKeyboardState(nil, nil, 0);
 
@@ -3927,6 +3970,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
+    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
     self.keyboardForwardingWindow.hidden = YES;
     [self endFloatingKeyboardInteractionSession];
 
