@@ -15,6 +15,7 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
+#define FLYME_KEYBOARD_OCCLUSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-occlusion-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
@@ -405,7 +406,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @end
 
 @interface FLMKeyboardHostBridgeView : UIView
-@property(nonatomic, weak) UIResponder *forwardingNextResponder;
+@property(nonatomic, strong) UIResponder *forwardingNextResponder;
 @end
 
 @implementation FLMKeyboardHostBridgeView
@@ -413,6 +414,30 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (UIResponder *)nextResponder {
     UIResponder *forwardingResponder = self.forwardingNextResponder;
     return forwardingResponder ?: [super nextResponder];
+}
+
+- (id)targetForAction:(SEL)action withSender:(id)sender {
+    UIResponder *forwardingResponder = self.forwardingNextResponder;
+    if (forwardingResponder && forwardingResponder != self) {
+        id target = [forwardingResponder targetForAction:action
+                                               withSender:sender];
+        if (target) {
+            return target;
+        }
+        if ([forwardingResponder canPerformAction:action withSender:sender]) {
+            return forwardingResponder;
+        }
+    }
+    return [super targetForAction:action withSender:sender];
+}
+
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
+    UIResponder *forwardingResponder = self.forwardingNextResponder;
+    if (forwardingResponder && forwardingResponder != self &&
+        [forwardingResponder canPerformAction:action withSender:sender]) {
+        return YES;
+    }
+    return [super canPerformAction:action withSender:sender];
 }
 
 @end
@@ -741,7 +766,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) FLMKeyboardOverlayWindow *keyboardOverlayWindow;
 @property(nonatomic, strong) FLMKeyboardHostBridgeView *floatingKeyboardHostBridgeView;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
-@property(nonatomic, weak) UIView *floatingKeyboardOriginalSuperview;
+@property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
 @property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
 @property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
 @property(nonatomic, assign) CGAffineTransform floatingKeyboardOriginalTransform;
@@ -862,6 +887,7 @@ static int FlymeRuntimeToken = -1;
 static int FlymeKeyboardRouteToken = -1;
 static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
+static int FlymeKeyboardOcclusionToken = -1;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -923,6 +949,25 @@ static NSString *FLMSceneIdentifier(id scene) {
     return nil;
 }
 
+static void FLMPublishKeyboardOcclusion(uint64_t sessionGeneration,
+                                        CGFloat occlusionHeight,
+                                        BOOL visible) {
+    if (FlymeKeyboardOcclusionToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_OCCLUSION_NOTIFICATION,
+                              &FlymeKeyboardOcclusionToken) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    uint64_t encodedHeight =
+        MIN(0xFFFFFFULL,
+            (uint64_t)llround(MAX(0.0, occlusionHeight) * 100.0));
+    uint64_t encodedGeneration =
+        (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
+    uint64_t state = (visible ? (1ULL << 63) : 0) |
+                     encodedGeneration | encodedHeight;
+    notify_set_state(FlymeKeyboardOcclusionToken, state);
+    notify_post(FLYME_KEYBOARD_OCCLUSION_NOTIFICATION);
+}
+
 static void FLMPublishKeyboardState(NSString *identifier,
                                     id scene,
                                     uint64_t sessionGeneration) {
@@ -948,6 +993,7 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_set_state(FlymeKeyboardSessionToken, sessionGeneration);
         notify_post(FLYME_KEYBOARD_SESSION_NOTIFICATION);
     }
+    FLMPublishKeyboardOcclusion(sessionGeneration, 0.0, NO);
     notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
     notify_post(FLYME_KEYBOARD_NOTIFICATION);
 }
@@ -3734,6 +3780,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingBackdropTap.additionalProtectedFrame = frame;
         ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = frame;
         self.keyboardOverlayWindow.keyboardInteractionFrame = frame;
+        CGRect cardFrame = self.floatingContainer.frame;
+        CGFloat overlap =
+            MAX(0.0,
+                MIN(CGRectGetMaxY(cardFrame), CGRectGetMaxY(frame)) -
+                    MAX(CGRectGetMinY(cardFrame), CGRectGetMinY(frame)));
+        if (!CGRectIntersectsRect(cardFrame, frame)) {
+            overlap = 0.0;
+        }
+        CGAffineTransform hostTransform = self.floatingHostView.transform;
+        CGFloat hostScale = hypot(hostTransform.a, hostTransform.c);
+        if (hostScale < 0.05) {
+            hostScale = CGRectGetWidth(cardFrame) /
+                        MAX(1.0, self.floatingHostReferenceSize.width);
+        }
+        CGFloat referenceHeight =
+            self.floatingHostReferenceSize.height > 1.0
+                ? self.floatingHostReferenceSize.height
+                : CGRectGetHeight(bounds);
+        CGFloat applicationOcclusion =
+            MIN(referenceHeight, overlap / MAX(0.05, hostScale));
+        FLMPublishKeyboardOcclusion(self.floatingKeyboardSessionGeneration,
+                                    applicationOcclusion,
+                                    applicationOcclusion > 1.0);
         if (self.floatingKeyboardLayerHostView) {
             self.keyboardOverlayWindow.hidden = NO;
         }
@@ -3748,6 +3817,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    FLMPublishKeyboardOcclusion(self.floatingKeyboardSessionGeneration,
+                                0.0,
+                                NO);
     self.keyboardOverlayWindow.keyboardInteractionFrame = CGRectNull;
     // Keep the current generation's host paired while the centered card stays
     // open. UIKit commonly reuses it for the next focus without publishing a
@@ -3920,6 +3992,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)detachFloatingKeyboardLayerHost {
     UIView *hostView = self.floatingKeyboardLayerHostView;
     if (!hostView) {
+        self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
+        self.floatingKeyboardOriginalSuperview = nil;
         self.keyboardOverlayWindow.hidden = YES;
         self.floatingKeyboardHostSessionGeneration = 0;
         return;

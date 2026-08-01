@@ -6,6 +6,7 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
+#define FLYME_KEYBOARD_OCCLUSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-occlusion-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
@@ -15,6 +16,7 @@ static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardFrameToken = -1;
+static int FLMKeyboardOcclusionToken = -1;
 static int FLMKeyboardDismissToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
@@ -25,13 +27,12 @@ static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 static CFAbsoluteTime FLMKeyboardLastPrepareTime = 0.0;
 static const CFTimeInterval FLMKeyboardPrepareDebounce = 0.15;
-static BOOL FLMRemoteKeyboardAvoidanceInstalled = NO;
-static NSUInteger FLMRemoteKeyboardAvoidanceInstallGeneration = 0;
 static BOOL FLMEndingApplicationKeyboardSession = NO;
-static CGFloat FLMRoutedKeyboardHeight = 0.0;
+static BOOL FLMPostingCorrectedKeyboardFrame = NO;
+static CGFloat FLMKeyboardOcclusionHeight = 0.0;
+static CGRect FLMLastCorrectedKeyboardFrame = {{0.0, 0.0}, {0.0, 0.0}};
+static NSDictionary *FLMLastSystemKeyboardUserInfo = nil;
 
-static void FLMInstallRemoteKeyboardAvoidanceIfAvailable(void);
-static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void);
 static void FLMRefreshApplicationKeyboardLayout(void);
 
 static CGSize FLMFullPhysicalScreenSize(void) {
@@ -250,7 +251,9 @@ static void FLMReloadKeyboardRoute(void) {
                          &FLMKeyboardTargetSceneHash);
     }
     if (sessionChanged) {
-        FLMRoutedKeyboardHeight = 0.0;
+        FLMKeyboardOcclusionHeight = 0.0;
+        FLMLastSystemKeyboardUserInfo = nil;
+        FLMLastCorrectedKeyboardFrame = CGRectNull;
         // Close any responder and keyboard Scene retained by the previous
         // centered card before the new generation is allowed to prepare a
         // physical-screen host. This does not depend on delivery of the
@@ -264,11 +267,10 @@ static void FLMReloadKeyboardRoute(void) {
         }
         FLMKeyboardLastPrepareTime = 0.0;
     } else if (!FLMKeyboardRouteActive) {
-        FLMRoutedKeyboardHeight = 0.0;
+        FLMKeyboardOcclusionHeight = 0.0;
+        FLMLastSystemKeyboardUserInfo = nil;
+        FLMLastCorrectedKeyboardFrame = CGRectNull;
         FLMKeyboardLastPrepareTime = 0.0;
-    }
-    if (FLMKeyboardRouteActive) {
-        FLMScheduleRemoteKeyboardAvoidanceInstallation();
     }
 }
 
@@ -291,7 +293,6 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
     BOOL routedTextInput =
         FLMKeyboardRouteActive && [self conformsToProtocol:@protocol(UITextInput)];
     if (routedTextInput) {
-        FLMScheduleRemoteKeyboardAvoidanceInstallation();
         // Request the physical display host before UIKit creates or pairs the
         // remote keyboard scene. The SpringBoard-side notification is handled
         // on its main queue while this responder transaction is still being
@@ -306,9 +307,6 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
         // forward again; window-wide endEditing alone does not reliably clear
         // that retained responder between centered-card generations.
         FLMKeyboardActiveTextResponder = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            FLMScheduleRemoteKeyboardAvoidanceInstallation();
-        });
     }
     return result;
 }
@@ -344,8 +342,6 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return;
     }
     CGFloat height = visible ? MAX(0.0, CGRectGetHeight(frame)) : 0.0;
-    FLMRoutedKeyboardHeight = height;
-    FLMRefreshApplicationKeyboardLayout();
     uint64_t encodedHeight =
         MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
     uint64_t encodedGeneration =
@@ -385,112 +381,98 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 %end
 
-// TrollOpen's keyboard helper statically shows that iOS 16 asks this object
-// for the overlap of a remote keyboard and its client WindowScene. Once the
-// keyboard surface is hosted at the physical screen bottom, the reduced app
-// Scene can report no overlap at all. Compensate only the routed app process;
-// SpringBoard never installs this hook, which keeps the proven 0.8.15 host
-// capture path out of the system process.
-%group FLMRemoteKeyboardAvoidance
-
-%hook _UIRemoteKeyboards
-
-- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
-                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
-                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
-    CGFloat originalHeight = %orig(windowScene,
-                                   isLocalMinimumHeightOut,
-                                   ignoreHorizontalOffset);
-    if (!FLMSceneMatchesKeyboardRoute(windowScene) ||
-        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
-        return originalHeight;
-    }
-
-    CGFloat sceneHeight = 0.0;
-    UIWindow *keyWindow = windowScene.keyWindow;
-    if (keyWindow && !keyWindow.hidden) {
-        sceneHeight = CGRectGetHeight(keyWindow.frame);
-    }
-    if (sceneHeight < 1.0) {
-        for (UIWindow *window in windowScene.windows) {
-            if (window.hidden || window.alpha <= 0.01 ||
-                window.windowLevel > UIWindowLevelNormal + 1.0) {
-                continue;
-            }
-            sceneHeight = MAX(sceneHeight, CGRectGetHeight(window.bounds));
-        }
-    }
-    CGFloat physicalHeight =
-        CGRectGetHeight(FLMPhysicalReferenceBoundsForScene(windowScene));
-    CGFloat routedHeight = MIN(sceneHeight > 1.0 ? sceneHeight : physicalHeight,
-                               MAX(0.0, FLMRoutedKeyboardHeight));
-    if (routedHeight > 1.0) {
-        // The application Scene stays in full-screen coordinates while only
-        // its SpringBoard presentation layer is scaled into the card. A
-        // Scene-height delta is therefore commonly zero. Use the actual
-        // routed keyboard frame so UIKit moves the input accessory by the
-        // same amount as a normal full-screen keyboard.
-        return MAX(originalHeight, routedHeight);
-    }
-    if (sceneHeight < 1.0 || physicalHeight <= sceneHeight + 1.0) {
-        return originalHeight;
-    }
-
-    // UIKit's original result is the part already intersecting the reduced
-    // Scene. The original implementation's iOS 16 strategy adds the missing
-    // physical-screen segment; taking MAX here left WeChat's input bar behind
-    // the externally hosted keyboard whenever both segments were non-zero.
-    CGFloat missingBottomIntersection = physicalHeight - sceneHeight;
-    return MIN(sceneHeight, MAX(0.0, originalHeight + missingBottomIntersection));
-}
-
-%end
-
-%end
-
-static void FLMInstallRemoteKeyboardAvoidanceIfAvailable(void) {
-    NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
-    BOOL eligibleApplication = currentIdentifier.length > 0 &&
-        ![currentIdentifier isEqualToString:@"com.apple.springboard"];
-    if (!eligibleApplication ||
-        FLMRemoteKeyboardAvoidanceInstalled ||
-        !FLMKeyboardRouteActive ||
-        !NSClassFromString(@"_UIRemoteKeyboards")) {
-        return;
-    }
-    %init(FLMRemoteKeyboardAvoidance);
-    FLMRemoteKeyboardAvoidanceInstalled = YES;
-    // If installation happened during the first focus transaction, ask the
-    // application windows to perform another layout pass while the keyboard
-    // frame change is still being delivered.
+static CGRect FLMKeyboardReferenceBounds(void) {
     for (UIScene *connectedScene in
          [UIApplication sharedApplication].connectedScenes) {
-        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
-            continue;
-        }
-        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
-            [window setNeedsLayout];
+        if ([connectedScene isKindOfClass:[UIWindowScene class]] &&
+            FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            return FLMPhysicalReferenceBoundsForScene(
+                (UIWindowScene *)connectedScene);
         }
     }
+    CGSize size = FLMFullPhysicalScreenSize();
+    return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
-static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
-    FLMRemoteKeyboardAvoidanceInstallGeneration += 1;
-    NSUInteger generation = FLMRemoteKeyboardAvoidanceInstallGeneration;
-    FLMInstallRemoteKeyboardAvoidanceIfAvailable();
-    for (NSNumber *delayValue in @[@0.05, @0.20, @0.60]) {
-        NSTimeInterval delay = delayValue.doubleValue;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (generation != FLMRemoteKeyboardAvoidanceInstallGeneration ||
-                !FLMKeyboardRouteActive ||
-                FLMRemoteKeyboardAvoidanceInstalled) {
-                return;
-            }
-            FLMInstallRemoteKeyboardAvoidanceIfAvailable();
-        });
+static void FLMApplyCorrectedKeyboardOcclusion(CGFloat occlusionHeight,
+                                                BOOL visible) {
+    if (!FLMKeyboardRouteActive || !visible || occlusionHeight <= 1.0 ||
+        !FLMLastSystemKeyboardUserInfo) {
+        if (!visible) {
+            FLMKeyboardOcclusionHeight = 0.0;
+        }
+        return;
     }
+    CGRect referenceBounds = FLMKeyboardReferenceBounds();
+    occlusionHeight = MIN(CGRectGetHeight(referenceBounds),
+                          MAX(0.0, occlusionHeight));
+    CGRect correctedFrame =
+        CGRectMake(CGRectGetMinX(referenceBounds),
+                   CGRectGetMaxY(referenceBounds) - occlusionHeight,
+                   CGRectGetWidth(referenceBounds),
+                   occlusionHeight);
+    NSMutableDictionary *correctedUserInfo =
+        [FLMLastSystemKeyboardUserInfo mutableCopy];
+    BOOL firstCorrectedTransaction =
+        CGRectIsNull(FLMLastCorrectedKeyboardFrame);
+    CGRect beginFrame =
+        !firstCorrectedTransaction
+            ? FLMLastCorrectedKeyboardFrame
+            : CGRectMake(CGRectGetMinX(referenceBounds),
+                         CGRectGetMaxY(referenceBounds),
+                         CGRectGetWidth(referenceBounds),
+                         occlusionHeight);
+    correctedUserInfo[UIKeyboardFrameBeginUserInfoKey] =
+        [NSValue valueWithCGRect:beginFrame];
+    correctedUserInfo[UIKeyboardFrameEndUserInfoKey] =
+        [NSValue valueWithCGRect:correctedFrame];
+    if (!correctedUserInfo[UIKeyboardAnimationDurationUserInfoKey]) {
+        correctedUserInfo[UIKeyboardAnimationDurationUserInfoKey] = @0.22;
+    }
+    if (!correctedUserInfo[UIKeyboardAnimationCurveUserInfoKey]) {
+        correctedUserInfo[UIKeyboardAnimationCurveUserInfoKey] = @7;
+    }
+
+    // The application owns its layout contract. Feed it a corrected keyboard
+    // frame transaction instead of changing its Scene or root view geometry
+    // behind UIKit's back. Apps such as WeChat consume this notification to
+    // move their input accessory in the same animation transaction.
+    FLMPostingCorrectedKeyboardFrame = YES;
+    if (firstCorrectedTransaction) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UIKeyboardWillShowNotification
+                          object:nil
+                        userInfo:correctedUserInfo];
+    }
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:UIKeyboardWillChangeFrameNotification
+                      object:nil
+                    userInfo:correctedUserInfo];
+    FLMPostingCorrectedKeyboardFrame = NO;
+    FLMLastCorrectedKeyboardFrame = correctedFrame;
+    FLMRefreshApplicationKeyboardLayout();
+
+    NSDictionary *didUserInfo = [correctedUserInfo copy];
+    uint64_t sessionGeneration = FLMKeyboardSessionGeneration;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!FLMKeyboardRouteActive ||
+            sessionGeneration != FLMKeyboardSessionGeneration ||
+            FLMKeyboardOcclusionHeight <= 1.0) {
+            return;
+        }
+        FLMPostingCorrectedKeyboardFrame = YES;
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:UIKeyboardDidChangeFrameNotification
+                          object:nil
+                        userInfo:didUserInfo];
+        if (firstCorrectedTransaction) {
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UIKeyboardDidShowNotification
+                              object:nil
+                            userInfo:didUserInfo];
+        }
+        FLMPostingCorrectedKeyboardFrame = NO;
+    });
 }
 
 %ctor {
@@ -513,6 +495,27 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
             FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_OCCLUSION_NOTIFICATION,
+                                 &FLMKeyboardOcclusionToken,
+                                 dispatch_get_main_queue(),
+                                 ^(int token) {
+            uint64_t state = 0;
+            if (notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+                return;
+            }
+            BOOL visible = (state & (1ULL << 63)) != 0;
+            uint64_t sessionGeneration =
+                (state >> 24) & 0x7FFFFFFFFFULL;
+            if (!FLMKeyboardRouteActive || sessionGeneration == 0 ||
+                sessionGeneration != FLMKeyboardSessionGeneration) {
+                return;
+            }
+            CGFloat occlusionHeight =
+                (CGFloat)(state & 0xFFFFFFULL) / 100.0;
+            FLMKeyboardOcclusionHeight = visible ? occlusionHeight : 0.0;
+            FLMApplyCorrectedKeyboardOcclusion(FLMKeyboardOcclusionHeight,
+                                                visible);
         });
         notify_register_dispatch(FLYME_KEYBOARD_DISMISS_NOTIFICATION,
                                  &FLMKeyboardDismissToken,
@@ -548,7 +551,7 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(NSNotification *notification) {
-            if (!FLMKeyboardRouteActive) {
+            if (!FLMKeyboardRouteActive || FLMPostingCorrectedKeyboardFrame) {
                 return;
             }
             NSValue *value = notification.userInfo[UIKeyboardFrameEndUserInfoKey];
@@ -556,6 +559,7 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
                 return;
             }
             CGRect frame = value.CGRectValue;
+            FLMLastSystemKeyboardUserInfo = [notification.userInfo copy];
             CGSize screenSize = FLMFullPhysicalScreenSize();
             BOOL visible = CGRectGetHeight(frame) > 0.0 &&
                            CGRectGetMinY(frame) < screenSize.height;
@@ -564,6 +568,8 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
             }
             if (visible) {
                 FLMPublishKeyboardFrame(frame, YES);
+                FLMApplyCorrectedKeyboardOcclusion(FLMKeyboardOcclusionHeight,
+                                                    YES);
             }
         }];
         FLMKeyboardWillHideObserver =
@@ -586,6 +592,9 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
                                  queue:[NSOperationQueue mainQueue]
                              usingBlock:^(__unused NSNotification *notification) {
             FLMKeyboardLastPrepareTime = 0.0;
+            FLMKeyboardOcclusionHeight = 0.0;
+            FLMLastSystemKeyboardUserInfo = nil;
+            FLMLastCorrectedKeyboardFrame = CGRectNull;
             FLMPublishKeyboardFrame(CGRectZero, NO);
             if (FLMKeyboardRouteActive) {
                 notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);

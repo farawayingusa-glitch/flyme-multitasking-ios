@@ -73,7 +73,9 @@ for keyboard_line in \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
     'FLMKeyboardPrepareDebounce = 0.15' \
     'UIKeyboardWillHideNotification' \
-    'FLMRoutedKeyboardHeight' \
+    'FLYME_KEYBOARD_OCCLUSION_NOTIFICATION' \
+    'FLMApplyCorrectedKeyboardOcclusion' \
+    'FLMPostingCorrectedKeyboardFrame' \
     'FLMEndingApplicationKeyboardSession' \
     '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
@@ -103,9 +105,8 @@ for overlay_line in \
 done
 
 for keyboard_handoff_line in \
-    '%group FLMRemoteKeyboardAvoidance' \
-    '![currentIdentifier isEqualToString:@"com.apple.springboard"]' \
-    'originalHeight + missingBottomIntersection' \
+    'FLMPublishKeyboardOcclusion' \
+    'targetForAction:' \
     'FLMKeyboardActiveTextResponder' \
     'resolvedScene != self.floatingScene' \
     'needsInitialSceneSettle' \
@@ -113,7 +114,6 @@ for keyboard_handoff_line in \
     'FLYME_KEYBOARD_DISMISS_NOTIFICATION' \
     'consumeOutsideTapForKeyboardDismissal' \
     'connectedScenes.count <= 1' \
-    'FLMInstallRemoteKeyboardAvoidanceIfAvailable' \
     'FLMResignFirstResponderInView' \
     'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
     'FLMKeyboardEndedSessionGeneration' \
@@ -127,6 +127,11 @@ for keyboard_handoff_line in \
         exit 1
     fi
 done
+
+if grep -Fq 'FLMRemoteKeyboardAvoidance' "$keyboard_source"; then
+    echo "ineffective Scene-height keyboard avoidance path was reintroduced" >&2
+    exit 1
+fi
 
 if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
