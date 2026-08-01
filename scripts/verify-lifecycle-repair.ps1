@@ -38,33 +38,22 @@ Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
 Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SESSION_NOTIFICATION'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_PREPARE_NOTIFICATION'
 Require-Text $KeyboardSource '%hook UIResponder'
 Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
 Require-Text $KeyboardSource 'UIKeyboardWillHideNotification'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_OCCLUSION_NOTIFICATION'
-Require-Text $KeyboardSource 'FLMApplyCorrectedKeyboardOcclusion'
-Require-Text $KeyboardSource 'FLMPostingCorrectedKeyboardFrame'
+Require-Text $KeyboardSource '%group FLMRemoteKeyboardGeometry'
+Require-Text $KeyboardSource 'intersectionHeightForWindowScene:'
+Require-Text $KeyboardSource 'originalHeight + physicalHeight - sceneHeight'
+Require-Text $KeyboardSource '_referenceBounds must remain UIKit-owned'
 Require-Text $KeyboardSource 'FLMEndingApplicationKeyboardSession'
-Require-Text $KeyboardSource 'FLMKeyboardPrepareDebounce = 0.15'
 Require-Text $KeyboardSource '- (BOOL)resignFirstResponder'
-Require-Text $Source '@interface FLMKeyboardOverlayWindow'
-Require-Text $Source '@interface FLMKeyboardHostBridgeView'
-Require-Text $Source 'keyboardLayerHostView:'
-Require-Text $Source 'valueForKey:@"_owningScene"'
-Require-Text $Source 'floatingKeyboardOriginalSuperview'
-Require-Text $Source 'floatingLaunchState == FLMFloatingLaunchStateClosing'
-Require-Text $Source 'requestFloatingKeyboardHostPreparation'
-Require-Text $Source 'sessionGeneration != self.floatingKeyboardSessionGeneration'
 Require-Text $Source 'const CGFloat widthCompletion = 0.82;'
 Require-Text $Source 'const CGFloat verticalRevealStart = 0.22;'
 Require-Text $Source 'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;'
 Require-Text $Source '[UIView performWithoutAnimation:^{'
-Require-Text $Source 'endFloatingKeyboardHostSession'
+Require-Text $Source 'endFloatingKeyboardSession'
 Require-Text $Source 'floatingLaunchCoverView'
 Require-Text $Source 'revealFloatingContentForGeneration'
-Require-Text $Source 'FLMPublishKeyboardOcclusion'
-Require-Text $Source 'targetForAction:'
 Require-Text $KeyboardSource 'FLMKeyboardActiveTextResponder'
 Require-Text $Source 'resolvedScene != self.floatingScene'
 Require-Text $Source 'needsInitialSceneSettle'
@@ -78,8 +67,20 @@ Require-Text $KeyboardSource 'FLMKeyboardEndedSessionGeneration'
 Require-Text $KeyboardSource 'sendAction:@selector(resignFirstResponder)'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 
-if (Select-String -LiteralPath $KeyboardSource -SimpleMatch 'FLMRemoteKeyboardAvoidance' -Quiet) {
-    throw 'The ineffective Scene-height keyboard avoidance path was reintroduced.'
+foreach ($RemovedKeyboardPatch in @(
+    'FLMRemoteKeyboardAvoidance',
+    'FLMApplyCorrectedKeyboardOcclusion',
+    'postNotificationName:UIKeyboardWillChangeFrameNotification',
+    '@interface FLMKeyboardOverlayWindow',
+    '@interface FLMKeyboardHostBridgeView',
+    '%hook _UIKeyboardLayerHostView',
+    'floatingKeyboardLayerHostView',
+    'FLMPublishKeyboardOcclusion'
+)) {
+    if ((Select-String -LiteralPath $KeyboardSource -SimpleMatch $RemovedKeyboardPatch -Quiet) -or
+        (Select-String -LiteralPath $Source -SimpleMatch $RemovedKeyboardPatch -Quiet)) {
+        throw "Removed keyboard patch architecture was reintroduced: $RemovedKeyboardPatch"
+    }
 }
 
 if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {

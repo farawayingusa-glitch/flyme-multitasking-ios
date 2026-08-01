@@ -15,8 +15,6 @@
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
-#define FLYME_KEYBOARD_OCCLUSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-occlusion-changed"
-#define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
@@ -405,59 +403,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 @end
 
-@interface FLMKeyboardHostBridgeView : UIView
-@property(nonatomic, strong) UIResponder *forwardingNextResponder;
-@end
-
-@implementation FLMKeyboardHostBridgeView
-
-- (UIResponder *)nextResponder {
-    UIResponder *forwardingResponder = self.forwardingNextResponder;
-    return forwardingResponder ?: [super nextResponder];
-}
-
-- (id)targetForAction:(SEL)action withSender:(id)sender {
-    UIResponder *forwardingResponder = self.forwardingNextResponder;
-    if (forwardingResponder && forwardingResponder != self) {
-        id target = [forwardingResponder targetForAction:action
-                                               withSender:sender];
-        if (target) {
-            return target;
-        }
-        if ([forwardingResponder canPerformAction:action withSender:sender]) {
-            return forwardingResponder;
-        }
-    }
-    return [super targetForAction:action withSender:sender];
-}
-
-- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-    UIResponder *forwardingResponder = self.forwardingNextResponder;
-    if (forwardingResponder && forwardingResponder != self &&
-        [forwardingResponder canPerformAction:action withSender:sender]) {
-        return YES;
-    }
-    return [super canPerformAction:action withSender:sender];
-}
-
-@end
-
-@interface FLMKeyboardOverlayWindow : FLMOverlayWindow
-@property(nonatomic, assign) CGRect keyboardInteractionFrame;
-@end
-
-@implementation FLMKeyboardOverlayWindow
-
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (CGRectIsNull(self.keyboardInteractionFrame) ||
-        !CGRectContainsPoint(self.keyboardInteractionFrame, point)) {
-        return nil;
-    }
-    return [super hitTest:point withEvent:event];
-}
-
-@end
-
 @interface FLMHotspotWindow : UIWindow
 @property(nonatomic, assign) BOOL hotspotsEnabled;
 @end
@@ -753,7 +698,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) CGRect floatingKeyboardFrame;
 @property(nonatomic, assign) CGFloat lastPortraitKeyboardHeight;
 @property(nonatomic, assign) int keyboardFrameNotifyToken;
-@property(nonatomic, assign) int keyboardPrepareNotifyToken;
 @property(nonatomic, assign) int keyboardDismissAckNotifyToken;
 @property(nonatomic, assign) BOOL floatingKeyboardInteractionSessionActive;
 @property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
@@ -762,16 +706,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSTimeInterval floatingKeyboardDismissedAt;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
-@property(nonatomic, assign) NSUInteger floatingKeyboardHostSessionGeneration;
-@property(nonatomic, strong) FLMKeyboardOverlayWindow *keyboardOverlayWindow;
-@property(nonatomic, strong) FLMKeyboardHostBridgeView *floatingKeyboardHostBridgeView;
-@property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
-@property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
-@property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
-@property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
-@property(nonatomic, assign) CGAffineTransform floatingKeyboardOriginalTransform;
-@property(nonatomic, assign) UIViewAutoresizing floatingKeyboardOriginalAutoresizingMask;
-@property(nonatomic, assign) BOOL floatingKeyboardOriginalTranslatesAutoresizingMask;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -817,14 +751,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
 - (void)keyboardDidHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
-- (void)prepareFloatingKeyboardHostIfNeeded;
-- (void)requestFloatingKeyboardHostPreparation;
-- (void)keyboardLayerHostView:(UIView *)hostView
-            didUpdateForScene:(id)scene
-            sessionGeneration:(NSUInteger)sessionGeneration;
-- (void)detachFloatingKeyboardLayerHost;
-- (void)discardFloatingKeyboardLayerHost;
-- (void)endFloatingKeyboardHostSession;
+- (void)endFloatingKeyboardSession;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
 - (BOOL)consumeOutsideTapForKeyboardDismissal;
@@ -887,7 +814,6 @@ static int FlymeRuntimeToken = -1;
 static int FlymeKeyboardRouteToken = -1;
 static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
-static int FlymeKeyboardOcclusionToken = -1;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -949,25 +875,6 @@ static NSString *FLMSceneIdentifier(id scene) {
     return nil;
 }
 
-static void FLMPublishKeyboardOcclusion(uint64_t sessionGeneration,
-                                        CGFloat occlusionHeight,
-                                        BOOL visible) {
-    if (FlymeKeyboardOcclusionToken < 0 &&
-        notify_register_check(FLYME_KEYBOARD_OCCLUSION_NOTIFICATION,
-                              &FlymeKeyboardOcclusionToken) != NOTIFY_STATUS_OK) {
-        return;
-    }
-    uint64_t encodedHeight =
-        MIN(0xFFFFFFULL,
-            (uint64_t)llround(MAX(0.0, occlusionHeight) * 100.0));
-    uint64_t encodedGeneration =
-        (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
-    uint64_t state = (visible ? (1ULL << 63) : 0) |
-                     encodedGeneration | encodedHeight;
-    notify_set_state(FlymeKeyboardOcclusionToken, state);
-    notify_post(FLYME_KEYBOARD_OCCLUSION_NOTIFICATION);
-}
-
 static void FLMPublishKeyboardState(NSString *identifier,
                                     id scene,
                                     uint64_t sessionGeneration) {
@@ -993,7 +900,6 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_set_state(FlymeKeyboardSessionToken, sessionGeneration);
         notify_post(FLYME_KEYBOARD_SESSION_NOTIFICATION);
     }
-    FLMPublishKeyboardOcclusion(sessionGeneration, 0.0, NO);
     notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
     notify_post(FLYME_KEYBOARD_NOTIFICATION);
 }
@@ -1049,19 +955,6 @@ static FLMFloatingWindow *FLMCreateFloatingWindow(CGRect frame) {
         }
     }
     return [[FLMFloatingWindow alloc] initWithFrame:frame];
-}
-
-static FLMKeyboardOverlayWindow *FLMCreateKeyboardOverlayWindow(CGRect frame) {
-    UIWindowScene *scene = FLMForegroundWindowScene();
-    if (@available(iOS 13.0, *)) {
-        if (scene) {
-            FLMKeyboardOverlayWindow *window =
-                [[FLMKeyboardOverlayWindow alloc] initWithWindowScene:scene];
-            window.frame = frame;
-            return window;
-        }
-    }
-    return [[FLMKeyboardOverlayWindow alloc] initWithFrame:frame];
 }
 
 static FLMHotspotWindow *FLMCreateHotspotWindow(CGRect frame) {
@@ -1181,9 +1074,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 sessionGeneration == controller.floatingKeyboardSessionGeneration;
             BOOL endingSession =
                 !visible && controller.floatingKeyboardSessionGeneration == 0 &&
-                sessionGeneration != 0 &&
-                sessionGeneration ==
-                    controller.floatingKeyboardHostSessionGeneration;
+                sessionGeneration != 0;
             if (!currentSession && !endingSession) {
                 return;
             }
@@ -1198,16 +1089,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [controller applyKeyboardFrame:frame visible:visible];
         }) == NOTIFY_STATUS_OK) {
             self.keyboardFrameNotifyToken = keyboardToken;
-        }
-        int keyboardPrepareToken = -1;
-        if (notify_register_dispatch(FLYME_KEYBOARD_PREPARE_NOTIFICATION,
-                                     &keyboardPrepareToken,
-                                      dispatch_get_main_queue(),
-                                      ^(__unused int token) {
-            [[FLMWheelController sharedController]
-                requestFloatingKeyboardHostPreparation];
-        }) == NOTIFY_STATUS_OK) {
-            self.keyboardPrepareNotifyToken = keyboardPrepareToken;
         }
         int keyboardDismissAckToken = -1;
         if (notify_register_dispatch(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION,
@@ -1607,16 +1488,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingWindow.frame = bounds;
     self.floatingWindow.rootViewController.view.frame = bounds;
     self.floatingDimView.frame = bounds;
-    if (self.keyboardOverlayWindow) {
-        self.keyboardOverlayWindow.frame = bounds;
-        self.keyboardOverlayWindow.rootViewController.view.frame = bounds;
-        self.floatingKeyboardHostBridgeView.frame =
-            self.keyboardOverlayWindow.rootViewController.view.bounds;
-        if (self.floatingKeyboardLayerHostView) {
-            self.floatingKeyboardLayerHostView.frame =
-                self.floatingKeyboardHostBridgeView.bounds;
-        }
-    }
     [self layoutFloatingWindow];
 }
 
@@ -2921,7 +2792,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     UIView *rootView = self.floatingWindow.rootViewController.view;
-    [self endFloatingKeyboardHostSession];
+    [self endFloatingKeyboardSession];
     CGRect targetFrame = rootView.bounds;
     if (!self.floatingInteractiveScenePrepared) {
         self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
@@ -3007,7 +2878,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = nil;
     self.floatingIdentifier = nil;
     self.floatingFullscreenProgress = 0.0;
-    [self detachFloatingKeyboardLayerHost];
     [self applyKeyboardFrame:CGRectNull visible:NO];
     FLMClearProtectedScene(scene);
     @try {
@@ -3035,9 +2905,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)protectedSceneDidDisappear:(NSNotification *)notification {
     (void)notification;
     if (self.floatingKeyboardSessionGeneration != 0) {
-        [self endFloatingKeyboardHostSession];
-    } else {
-        self.keyboardOverlayWindow.hidden = YES;
+        [self endFloatingKeyboardSession];
     }
     if (self.floatingWindow.hidden) {
         return;
@@ -3417,7 +3285,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     [self setFloatingApplicationInputBlocked:YES];
-    [self endFloatingKeyboardHostSession];
+    [self endFloatingKeyboardSession];
     self.floatingDockTransitionActive = YES;
     self.floatingDockedOnRight = YES;
     self.floatingDockWidth = FLMMinimumDockWidth;
@@ -3779,33 +3647,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardFrame = frame;
         self.floatingBackdropTap.additionalProtectedFrame = frame;
         ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = frame;
-        self.keyboardOverlayWindow.keyboardInteractionFrame = frame;
-        CGRect cardFrame = self.floatingContainer.frame;
-        CGFloat overlap =
-            MAX(0.0,
-                MIN(CGRectGetMaxY(cardFrame), CGRectGetMaxY(frame)) -
-                    MAX(CGRectGetMinY(cardFrame), CGRectGetMinY(frame)));
-        if (!CGRectIntersectsRect(cardFrame, frame)) {
-            overlap = 0.0;
-        }
-        CGAffineTransform hostTransform = self.floatingHostView.transform;
-        CGFloat hostScale = hypot(hostTransform.a, hostTransform.c);
-        if (hostScale < 0.05) {
-            hostScale = CGRectGetWidth(cardFrame) /
-                        MAX(1.0, self.floatingHostReferenceSize.width);
-        }
-        CGFloat referenceHeight =
-            self.floatingHostReferenceSize.height > 1.0
-                ? self.floatingHostReferenceSize.height
-                : CGRectGetHeight(bounds);
-        CGFloat applicationOcclusion =
-            MIN(referenceHeight, overlap / MAX(0.05, hostScale));
-        FLMPublishKeyboardOcclusion(self.floatingKeyboardSessionGeneration,
-                                    applicationOcclusion,
-                                    applicationOcclusion > 1.0);
-        if (self.floatingKeyboardLayerHostView) {
-            self.keyboardOverlayWindow.hidden = NO;
-        }
         return;
     }
     BOOL protectKeyboardDismissal =
@@ -3817,15 +3658,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
-    FLMPublishKeyboardOcclusion(self.floatingKeyboardSessionGeneration,
-                                0.0,
-                                NO);
-    self.keyboardOverlayWindow.keyboardInteractionFrame = CGRectNull;
-    // Keep the current generation's host paired while the centered card stays
-    // open. UIKit commonly reuses it for the next focus without publishing a
-    // second client-settings diff. The host is detached synchronously only
-    // when this centered-card generation actually ends.
-    self.keyboardOverlayWindow.hidden = YES;
     if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
         !self.floatingWindow.hidden && !self.floatingDocked) {
         // UIKeyboardDidHide can arrive before the touch that pressed the
@@ -3859,191 +3691,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGRectNull;
         [self endFloatingKeyboardInteractionSession];
     }
-    if (self.floatingKeyboardSessionGeneration == 0 || self.floatingDocked ||
-        self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
-        [self detachFloatingKeyboardLayerHost];
-    }
 }
 
-- (void)prepareFloatingKeyboardHostIfNeeded {
-    if (self.floatingWindow.hidden || self.floatingDocked ||
-        self.floatingIdentifier.length == 0 || !self.floatingScene ||
-        self.floatingKeyboardSessionGeneration == 0) {
-        return;
-    }
-    [self beginFloatingKeyboardInteractionSession];
-    if (!self.keyboardOverlayWindow) {
-        CGRect bounds = FLMVisualScreenBounds();
-        FLMKeyboardOverlayWindow *window =
-            FLMCreateKeyboardOverlayWindow(bounds);
-        window.windowLevel = UIWindowLevelAlert + 94.0;
-        window.backgroundColor = [UIColor clearColor];
-        window.rootViewController = [[FLMOverlayViewController alloc] init];
-        window.rootViewController.view.backgroundColor = [UIColor clearColor];
-        window.keyboardInteractionFrame = [self floatingKeyboardInteractionFrame];
-        FLMKeyboardHostBridgeView *bridge =
-            [[FLMKeyboardHostBridgeView alloc]
-                initWithFrame:window.rootViewController.view.bounds];
-        bridge.backgroundColor = [UIColor clearColor];
-        bridge.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                  UIViewAutoresizingFlexibleHeight;
-        [window.rootViewController.view addSubview:bridge];
-        self.floatingKeyboardHostBridgeView = bridge;
-        window.hidden = YES;
-        self.keyboardOverlayWindow = window;
-    }
-}
-
-- (void)requestFloatingKeyboardHostPreparation {
-    if (self.floatingWindow.hidden || self.floatingDocked ||
-        self.floatingLaunchState == FLMFloatingLaunchStateClosing ||
-        self.floatingIdentifier.length == 0 || !self.floatingScene ||
-        self.floatingKeyboardSessionGeneration == 0) {
-        return;
-    }
-    [self beginFloatingKeyboardInteractionSession];
-    [self prepareFloatingKeyboardHostIfNeeded];
-}
-
-- (void)keyboardLayerHostView:(UIView *)hostView
-            didUpdateForScene:(id)scene
-            sessionGeneration:(NSUInteger)sessionGeneration {
-    if (self.floatingLaunchState == FLMFloatingLaunchStateClosing ||
-        sessionGeneration == 0 ||
-        sessionGeneration != self.floatingKeyboardSessionGeneration) {
-        self.keyboardOverlayWindow.hidden = YES;
-        return;
-    }
-    if (!hostView || self.floatingWindow.hidden || self.floatingDocked ||
-        !self.floatingScene || self.floatingIdentifier.length == 0) {
-        if (hostView == self.floatingKeyboardLayerHostView) {
-            [self detachFloatingKeyboardLayerHost];
-        }
-        return;
-    }
-
-    id owningScene = nil;
-    @try {
-        owningScene = [hostView valueForKey:@"_owningScene"];
-    } @catch (__unused NSException *exception) {
-    }
-    NSString *floatingSceneIdentifier = FLMSceneIdentifier(self.floatingScene);
-    NSString *owningSceneIdentifier = FLMSceneIdentifier(owningScene);
-    NSString *updatedSceneIdentifier = FLMSceneIdentifier(scene);
-    BOOL matches = owningScene == self.floatingScene || scene == self.floatingScene;
-    if (!matches && floatingSceneIdentifier.length > 0) {
-        matches = [floatingSceneIdentifier isEqualToString:owningSceneIdentifier] ||
-                  [floatingSceneIdentifier isEqualToString:updatedSceneIdentifier];
-    }
-    if (!matches) {
-        if (hostView == self.floatingKeyboardLayerHostView) {
-            [self detachFloatingKeyboardLayerHost];
-        }
-        return;
-    }
-
-    [self prepareFloatingKeyboardHostIfNeeded];
-    UIView *overlayRoot = self.keyboardOverlayWindow.rootViewController.view;
-    FLMKeyboardHostBridgeView *bridge = self.floatingKeyboardHostBridgeView;
-    if (!overlayRoot || !bridge) {
-        return;
-    }
-    if (hostView != self.floatingKeyboardLayerHostView ||
-        self.floatingKeyboardHostSessionGeneration != sessionGeneration) {
-        [self detachFloatingKeyboardLayerHost];
-        if (sessionGeneration != self.floatingKeyboardSessionGeneration ||
-            self.floatingWindow.hidden || self.floatingDocked) {
-            return;
-        }
-        UIView *originalSuperview = hostView.superview;
-        bridge.forwardingNextResponder = hostView.nextResponder;
-        self.floatingKeyboardOriginalSuperview = originalSuperview;
-        self.floatingKeyboardOriginalSubviewIndex =
-            originalSuperview ? [originalSuperview.subviews indexOfObject:hostView]
-                              : NSNotFound;
-        self.floatingKeyboardOriginalFrame = hostView.frame;
-        self.floatingKeyboardOriginalTransform = hostView.transform;
-        self.floatingKeyboardOriginalAutoresizingMask = hostView.autoresizingMask;
-        self.floatingKeyboardOriginalTranslatesAutoresizingMask =
-            hostView.translatesAutoresizingMaskIntoConstraints;
-        self.floatingKeyboardLayerHostView = hostView;
-        self.floatingKeyboardHostSessionGeneration = sessionGeneration;
-    }
-
-    if (hostView.superview != bridge) {
-        [hostView removeFromSuperview];
-        hostView.translatesAutoresizingMaskIntoConstraints = YES;
-        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                    UIViewAutoresizingFlexibleHeight;
-        hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = bridge.bounds;
-        [bridge addSubview:hostView];
-    } else {
-        hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = bridge.bounds;
-    }
-    [hostView setNeedsLayout];
-    [hostView layoutIfNeeded];
-    self.keyboardOverlayWindow.keyboardInteractionFrame =
-        [self floatingKeyboardInteractionFrame];
-    self.keyboardOverlayWindow.hidden = NO;
-}
-
-- (void)detachFloatingKeyboardLayerHost {
-    UIView *hostView = self.floatingKeyboardLayerHostView;
-    if (!hostView) {
-        self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
-        self.floatingKeyboardOriginalSuperview = nil;
-        self.keyboardOverlayWindow.hidden = YES;
-        self.floatingKeyboardHostSessionGeneration = 0;
-        return;
-    }
-    UIView *originalSuperview = self.floatingKeyboardOriginalSuperview;
-    @try {
-        [hostView removeFromSuperview];
-        hostView.transform = self.floatingKeyboardOriginalTransform;
-        hostView.frame = self.floatingKeyboardOriginalFrame;
-        hostView.autoresizingMask = self.floatingKeyboardOriginalAutoresizingMask;
-        hostView.translatesAutoresizingMaskIntoConstraints =
-            self.floatingKeyboardOriginalTranslatesAutoresizingMask;
-        if (originalSuperview) {
-            NSInteger index = self.floatingKeyboardOriginalSubviewIndex;
-            if (index >= 0 && index <= (NSInteger)originalSuperview.subviews.count) {
-                [originalSuperview insertSubview:hostView atIndex:(NSUInteger)index];
-            } else {
-                [originalSuperview addSubview:hostView];
-            }
-        }
-    } @catch (__unused NSException *exception) {
-        // UIKit may tear down the original keyboard hierarchy while the app
-        // Scene is being backgrounded. Clearing this session is safer than
-        // touching a private hierarchy whose owner has already disappeared.
-    }
-    self.floatingKeyboardLayerHostView = nil;
-    self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
-    self.floatingKeyboardOriginalSuperview = nil;
-    self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
-    self.floatingKeyboardHostSessionGeneration = 0;
-    self.keyboardOverlayWindow.hidden = YES;
-}
-
-- (void)discardFloatingKeyboardLayerHost {
-    UIView *hostView = self.floatingKeyboardLayerHostView;
-    @try {
-        [hostView removeFromSuperview];
-    } @catch (__unused NSException *exception) {
-    }
-    self.floatingKeyboardLayerHostView = nil;
-    self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
-    self.floatingKeyboardOriginalSuperview = nil;
-    self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
-    self.floatingKeyboardHostSessionGeneration = 0;
-    self.keyboardOverlayWindow.hidden = YES;
-}
-
-- (void)endFloatingKeyboardHostSession {
-    NSUInteger endingSession = self.floatingKeyboardSessionGeneration;
-    __weak UIView *endingHost = self.floatingKeyboardLayerHostView;
+- (void)endFloatingKeyboardSession {
     [self.floatingHostView endEditing:YES];
     self.floatingKeyboardSessionGeneration = 0;
     FLMPublishKeyboardState(nil, nil, 0);
@@ -4055,28 +3705,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
-    self.keyboardOverlayWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardOverlayWindow.hidden = YES;
     [self endFloatingKeyboardInteractionSession];
-
-    // UIKit ends the responder asynchronously. Keep the host outside the card
-    // until UIKeyboardDidHide confirms teardown; restoring it immediately is
-    // what made the old keyboard reappear inside the second centered session.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.24 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIView *host = endingHost;
-        if (endingSession != 0 && host &&
-            self.floatingKeyboardSessionGeneration == 0 &&
-            self.floatingKeyboardHostSessionGeneration == endingSession &&
-            self.floatingKeyboardLayerHostView == host) {
-            // No hide acknowledgement arrived before the Scene handoff. Never
-            // restore a possibly visible private host into the card; remove it
-            // and let UIKit either retire it or pair it again in the next
-            // session's normal client-settings callback.
-            [self discardFloatingKeyboardLayerHost];
-        }
-    });
 }
 
 - (CGRect)floatingKeyboardInteractionFrame {
@@ -4605,7 +4234,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
-    [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
     if (self.floatingKeyboardSessionCounter == 0) {
         self.floatingKeyboardSessionCounter = 1;
@@ -4615,8 +4243,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Keep the per-application route disabled until the exact Scene has been
     // resolved. On a warm second opening UIKit may restore the previous text
     // responder immediately; publishing a bundle-only route here allowed that
-    // first keyboard transaction to be paired inside the card before
-    // SpringBoard knew which Scene host it had to move.
+    // first keyboard transaction to be paired before SpringBoard published
+    // the exact target Scene identity.
     FLMPublishKeyboardState(nil, nil, 0);
     [self configureFloatingLaunchCoverForIdentifier:identifier];
     [self layoutFloatingWindow];
@@ -4809,7 +4437,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
-    [self endFloatingKeyboardHostSession];
+    [self endFloatingKeyboardSession];
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
     self.floatingLaunchStartedAt = 0.0;
@@ -5055,35 +4683,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 @end
-
-%hook _UIKeyboardLayerHostView
-
-- (void)scene:(id)scene
-    didUpdateClientSettingsWithDiff:(id)diff
-                  oldClientSettings:(id)oldClientSettings
-                  transitionContext:(id)transitionContext {
-    // Let UIKit finish pairing first, then move only the paired keyboard host
-    // into a physical-screen overlay. The application Scene remains at the
-    // stable card size and is never expanded or rescaled for keyboard layout.
-    %orig;
-    FLMWheelController *controller = [FLMWheelController sharedController];
-    NSUInteger sessionGeneration =
-        controller.floatingKeyboardSessionGeneration;
-    __weak UIView *weakHostView = (UIView *)self;
-    __weak id weakUpdatedScene = scene;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *hostView = weakHostView;
-        id updatedScene = weakUpdatedScene;
-        if (!hostView) {
-            return;
-        }
-        [controller keyboardLayerHostView:hostView
-                        didUpdateForScene:updatedScene
-                        sessionGeneration:sessionGeneration];
-    });
-}
-
-%end
 
 %hook SpringBoard
 

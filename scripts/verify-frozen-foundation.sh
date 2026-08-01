@@ -70,12 +70,11 @@ for keyboard_line in \
     'FLMSceneMatchesKeyboardRoute' \
     'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
     'FLYME_KEYBOARD_SESSION_NOTIFICATION' \
-    'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
-    'FLMKeyboardPrepareDebounce = 0.15' \
     'UIKeyboardWillHideNotification' \
-    'FLYME_KEYBOARD_OCCLUSION_NOTIFICATION' \
-    'FLMApplyCorrectedKeyboardOcclusion' \
-    'FLMPostingCorrectedKeyboardFrame' \
+    '%group FLMRemoteKeyboardGeometry' \
+    'intersectionHeightForWindowScene:' \
+    'originalHeight + physicalHeight - sceneHeight' \
+    '_referenceBounds must remain UIKit-owned' \
     'FLMEndingApplicationKeyboardSession' \
     '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
@@ -87,13 +86,6 @@ for keyboard_line in \
 done
 
 for overlay_line in \
-    '@interface FLMKeyboardOverlayWindow' \
-    '@interface FLMKeyboardHostBridgeView' \
-    'keyboardLayerHostView:' \
-    'valueForKey:@"_owningScene"' \
-    'floatingKeyboardOriginalSuperview' \
-    'requestFloatingKeyboardHostPreparation' \
-    'sessionGeneration != self.floatingKeyboardSessionGeneration' \
     'const CGFloat widthCompletion = 0.82;' \
     'const CGFloat verticalRevealStart = 0.22;' \
     'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;' \
@@ -105,8 +97,6 @@ for overlay_line in \
 done
 
 for keyboard_handoff_line in \
-    'FLMPublishKeyboardOcclusion' \
-    'targetForAction:' \
     'FLMKeyboardActiveTextResponder' \
     'resolvedScene != self.floatingScene' \
     'needsInitialSceneSettle' \
@@ -118,7 +108,7 @@ for keyboard_handoff_line in \
     'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
-    'endFloatingKeyboardHostSession' \
+    'endFloatingKeyboardSession' \
     'floatingLaunchCoverView' \
     'revealFloatingContentForGeneration'; do
     if ! grep -Fq -- "$keyboard_handoff_line" "$source_file" &&
@@ -128,10 +118,21 @@ for keyboard_handoff_line in \
     fi
 done
 
-if grep -Fq 'FLMRemoteKeyboardAvoidance' "$keyboard_source"; then
-    echo "ineffective Scene-height keyboard avoidance path was reintroduced" >&2
-    exit 1
-fi
+for removed_keyboard_patch in \
+    'FLMRemoteKeyboardAvoidance' \
+    'FLMApplyCorrectedKeyboardOcclusion' \
+    'postNotificationName:UIKeyboardWillChangeFrameNotification' \
+    '@interface FLMKeyboardOverlayWindow' \
+    '@interface FLMKeyboardHostBridgeView' \
+    '%hook _UIKeyboardLayerHostView' \
+    'floatingKeyboardLayerHostView' \
+    'FLMPublishKeyboardOcclusion'; do
+    if grep -Fq "$removed_keyboard_patch" "$keyboard_source" ||
+       grep -Fq "$removed_keyboard_patch" "$source_file"; then
+        echo "removed keyboard patch architecture was reintroduced: $removed_keyboard_patch" >&2
+        exit 1
+    fi
+done
 
 if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
