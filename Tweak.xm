@@ -3,6 +3,7 @@
 #import <math.h>
 #import <notify.h>
 #import <objc/message.h>
+#import <stdarg.h>
 #import <stdint.h>
 #import <unistd.h>
 
@@ -33,6 +34,9 @@ static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
+static NSString *const FLMKeyboardDiagnosticLogPath =
+    @"/var/mobile/Library/Logs/FlymeKeyboardDiagnostic.log";
+static const unsigned long long FLMKeyboardDiagnosticLogLimit = 512ULL * 1024ULL;
 
 typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
     FLMFloatingLaunchStateIdle,
@@ -43,6 +47,68 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
     FLMFloatingLaunchStateFailing,
     FLMFloatingLaunchStateClosing,
 };
+
+static void FLMKeyboardDiagnosticLog(NSString *format, ...)
+    NS_FORMAT_FUNCTION(1, 2);
+
+static void FLMKeyboardDiagnosticLog(NSString *format, ...) {
+    if (format.length == 0) {
+        return;
+    }
+    va_list arguments;
+    va_start(arguments, format);
+    NSString *message = [[NSString alloc] initWithFormat:format
+                                               arguments:arguments];
+    va_end(arguments);
+    if (message.length == 0) {
+        return;
+    }
+    NSLog(@"[FlymeKeyboardDiagnostic] %@", message);
+
+    @autoreleasepool {
+        NSString *line =
+            [NSString stringWithFormat:@"%.3f pid=%d %@\n",
+                                       [NSDate date].timeIntervalSince1970,
+                                       getpid(), message];
+        NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+        if (!data) {
+            return;
+        }
+        @synchronized([NSFileManager class]) {
+            @try {
+                NSFileManager *manager = [NSFileManager defaultManager];
+                NSString *directory =
+                    [FLMKeyboardDiagnosticLogPath stringByDeletingLastPathComponent];
+                [manager createDirectoryAtPath:directory
+                   withIntermediateDirectories:YES
+                                    attributes:nil
+                                         error:nil];
+                NSDictionary *attributes =
+                    [manager attributesOfItemAtPath:FLMKeyboardDiagnosticLogPath
+                                              error:nil];
+                unsigned long long size =
+                    [attributes[NSFileSize] unsignedLongLongValue];
+                if (size > FLMKeyboardDiagnosticLogLimit) {
+                    [data writeToFile:FLMKeyboardDiagnosticLogPath atomically:YES];
+                    return;
+                }
+                if (![manager fileExistsAtPath:FLMKeyboardDiagnosticLogPath]) {
+                    [data writeToFile:FLMKeyboardDiagnosticLogPath atomically:YES];
+                    return;
+                }
+                NSFileHandle *handle =
+                    [NSFileHandle fileHandleForWritingAtPath:FLMKeyboardDiagnosticLogPath];
+                [handle seekToEndOfFile];
+                [handle writeData:data];
+                [handle synchronizeFile];
+                [handle closeFile];
+            } @catch (NSException *exception) {
+                NSLog(@"[FlymeKeyboardDiagnostic] file-write-failed %@",
+                      exception.reason ?: @"<unknown>");
+            }
+        }
+    }
+}
 
 @interface NSObject (FLMRuntimePrivate)
 + (id)defaultWorkspace;
@@ -1043,6 +1109,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)start {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        FLMKeyboardDiagnosticLog(@"process-start build=0.8.12-diagnostic home=%@",
+                                 NSHomeDirectory() ?: @"<unknown>");
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         FLMPreferencesChanged,
@@ -1095,6 +1163,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                             CGRectGetWidth(bounds),
                                             height)
                                : CGRectNull;
+            FLMKeyboardDiagnosticLog(
+                @"frame-notify visible=%d height=%.1f frame=%@",
+                visible, height, NSStringFromCGRect(frame));
             [[FLMWheelController sharedController] applyKeyboardFrame:frame
                                                                visible:visible];
         }) == NOTIFY_STATUS_OK) {
@@ -1103,8 +1174,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         int keyboardPrepareToken = -1;
         if (notify_register_dispatch(FLYME_KEYBOARD_PREPARE_NOTIFICATION,
                                      &keyboardPrepareToken,
-                                     dispatch_get_main_queue(),
-                                     ^(__unused int token) {
+                                      dispatch_get_main_queue(),
+                                      ^(__unused int token) {
+            FLMKeyboardDiagnosticLog(@"prepare-notify received");
             [[FLMWheelController sharedController]
                 requestFloatingKeyboardHostPreparation];
         }) == NOTIFY_STATUS_OK) {
@@ -3542,6 +3614,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible {
+    FLMKeyboardDiagnosticLog(
+        @"apply-frame input-visible=%d frame=%@ windowHidden=%d docked=%d "
+         "launch=%lu launchGen=%lu interactionGen=%lu activeHost=%p reusableHost=%p",
+        visible, NSStringFromCGRect(frame), self.floatingWindow.hidden,
+        self.floatingDocked, (unsigned long)self.floatingLaunchState,
+        (unsigned long)self.floatingLaunchGeneration,
+        (unsigned long)self.floatingKeyboardInteractionGeneration,
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView);
     if (self.floatingWindow.hidden || self.floatingDocked) {
         visible = NO;
     }
@@ -3581,6 +3662,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 // publishes a fresh host or keeps its in-card fallback alive.
                 NSLog(@"[FlymeKeyboardOverlay] pairing timeout; keeping centered %@",
                       self.floatingIdentifier ?: @"<unknown>");
+                FLMKeyboardDiagnosticLog(
+                    @"pair-timeout app=%@ scene=%@ launchGen=%lu prepareGen=%lu",
+                    self.floatingIdentifier ?: @"<unknown>",
+                    FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+                    (unsigned long)self.floatingLaunchGeneration,
+                    (unsigned long)self.floatingKeyboardPrepareGeneration);
             }
         });
         return;
@@ -3598,8 +3685,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)prepareFloatingKeyboardHostIfNeeded {
     if (self.floatingWindow.hidden || self.floatingDocked ||
         self.floatingIdentifier.length == 0 || !self.floatingScene) {
+        FLMKeyboardDiagnosticLog(
+            @"prepare-rejected hidden=%d docked=%d app=%@ scene=%@ launch=%lu",
+            self.floatingWindow.hidden, self.floatingDocked,
+            self.floatingIdentifier ?: @"<none>",
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+            (unsigned long)self.floatingLaunchState);
         return;
     }
+    FLMKeyboardDiagnosticLog(
+        @"prepare-accepted app=%@ scene=%@ activeHost=%p reusableHost=%p",
+        self.floatingIdentifier, FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView);
     [self beginFloatingKeyboardInteractionSession];
     if (!self.keyboardOverlayWindow) {
         CGRect bounds = FLMVisualScreenBounds();
@@ -3619,12 +3717,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.floatingWindow.hidden || self.floatingDocked ||
         self.floatingLaunchState == FLMFloatingLaunchStateClosing ||
         self.floatingIdentifier.length == 0 || !self.floatingScene) {
+        FLMKeyboardDiagnosticLog(
+            @"request-rejected hidden=%d docked=%d app=%@ scene=%@ launch=%lu",
+            self.floatingWindow.hidden, self.floatingDocked,
+            self.floatingIdentifier ?: @"<none>",
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+            (unsigned long)self.floatingLaunchState);
         return;
     }
     [self beginFloatingKeyboardInteractionSession];
     [self prepareFloatingKeyboardHostIfNeeded];
     self.floatingKeyboardPrepareGeneration += 1;
     NSUInteger generation = self.floatingKeyboardPrepareGeneration;
+    FLMKeyboardDiagnosticLog(
+        @"request-accepted app=%@ scene=%@ launchGen=%lu prepareGen=%lu "
+         "activeHost=%p reusableHost=%p leaseScene=%@",
+        self.floatingIdentifier, FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+        (unsigned long)self.floatingLaunchGeneration, (unsigned long)generation,
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+        self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
 
     // A reused iOS 16 keyboard host does not necessarily receive another
     // client-settings diff. Revalidate the last matched host at a few bounded
@@ -3638,6 +3750,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                             self.floatingReusableKeyboardLayerHostView;
         id candidateScene = self.floatingReusableKeyboardScene;
         if (!candidate) {
+            FLMKeyboardDiagnosticLog(
+                @"reattach-no-candidate prepareGen=%lu scene=%@ leaseScene=%@",
+                (unsigned long)generation,
+                FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+                self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
             return;
         }
         NSString *floatingSceneIdentifier = FLMSceneIdentifier(self.floatingScene);
@@ -3650,8 +3767,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [self detachFloatingKeyboardLayerHost];
             }
             [self clearFloatingReusableKeyboardHost];
+            FLMKeyboardDiagnosticLog(
+                @"reattach-scene-rejected host=%p current=%@ lease=%@ prepareGen=%lu",
+                (__bridge void *)candidate, floatingSceneIdentifier,
+                leasedSceneIdentifier, (unsigned long)generation);
             return;
         }
+        FLMKeyboardDiagnosticLog(
+            @"reattach-dispatch host=%p scene=%@ current=%@ prepareGen=%lu",
+            (__bridge void *)candidate,
+            FLMSceneIdentifier(candidateScene) ?: @"<none>",
+            floatingSceneIdentifier ?: @"<none>", (unsigned long)generation);
         [self keyboardLayerHostView:candidate didUpdateForScene:candidateScene];
     };
     reattachReusableHost();
@@ -3664,8 +3790,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)keyboardLayerHostView:(UIView *)hostView didUpdateForScene:(id)scene {
+    FLMKeyboardDiagnosticLog(
+        @"host-update-enter host=%p updatedScene=%@ currentScene=%@ launch=%lu "
+         "launchGen=%lu hidden=%d docked=%d",
+        (__bridge void *)hostView, FLMSceneIdentifier(scene) ?: @"<none>",
+        FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+        (unsigned long)self.floatingLaunchState,
+        (unsigned long)self.floatingLaunchGeneration, self.floatingWindow.hidden,
+        self.floatingDocked);
     if (self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
         self.keyboardOverlayWindow.hidden = YES;
+        FLMKeyboardDiagnosticLog(@"host-update-rejected reason=closing host=%p",
+                                 (__bridge void *)hostView);
         return;
     }
     if (!hostView || self.floatingWindow.hidden || self.floatingDocked ||
@@ -3673,6 +3809,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (hostView == self.floatingKeyboardLayerHostView) {
             [self detachFloatingKeyboardLayerHost];
         }
+        FLMKeyboardDiagnosticLog(
+            @"host-update-rejected reason=inactive host=%p hidden=%d docked=%d app=%@ "
+             "scene=%@",
+            (__bridge void *)hostView, self.floatingWindow.hidden,
+            self.floatingDocked, self.floatingIdentifier ?: @"<none>",
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
         return;
     }
 
@@ -3690,6 +3832,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                   [floatingSceneIdentifier isEqualToString:updatedSceneIdentifier];
     }
     if (!matches) {
+        FLMKeyboardDiagnosticLog(
+            @"host-update-rejected reason=scene-mismatch host=%p current=%@ owner=%@ "
+             "updated=%@ activeHost=%d reusableHost=%d",
+            (__bridge void *)hostView, floatingSceneIdentifier ?: @"<none>",
+            owningSceneIdentifier ?: @"<none>",
+            updatedSceneIdentifier ?: @"<none>",
+            hostView == self.floatingKeyboardLayerHostView,
+            hostView == self.floatingReusableKeyboardLayerHostView);
         if (hostView == self.floatingKeyboardLayerHostView) {
             [self detachFloatingKeyboardLayerHost];
         }
@@ -3705,6 +3855,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         owningSceneIdentifier ?: updatedSceneIdentifier;
     self.floatingKeyboardDetachPending = NO;
     self.floatingKeyboardDetachGeneration += 1;
+    FLMKeyboardDiagnosticLog(
+        @"host-lease-accepted host=%p current=%@ owner=%@ updated=%@ detachGen=%lu",
+        (__bridge void *)hostView, floatingSceneIdentifier ?: @"<none>",
+        owningSceneIdentifier ?: @"<none>",
+        updatedSceneIdentifier ?: @"<none>",
+        (unsigned long)self.floatingKeyboardDetachGeneration);
 
     [self prepareFloatingKeyboardHostIfNeeded];
     UIView *overlayRoot = self.keyboardOverlayWindow.rootViewController.view;
@@ -3751,6 +3907,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSLog(@"[FlymeKeyboardOverlay] paired owner=%@ keyboard=%@",
           owningSceneIdentifier ?: updatedSceneIdentifier ?: @"<unknown>",
           FLMSceneIdentifier(keyboardScene) ?: @"<unknown>");
+    FLMKeyboardDiagnosticLog(
+        @"host-paired host=%p overlay=%p owner=%@ keyboard=%@ frame=%@",
+        (__bridge void *)hostView, (__bridge void *)self.keyboardOverlayWindow,
+        owningSceneIdentifier ?: updatedSceneIdentifier ?: @"<unknown>",
+        FLMSceneIdentifier(keyboardScene) ?: @"<unknown>",
+        NSStringFromCGRect(hostView.frame));
 }
 
 - (void)detachFloatingKeyboardLayerHost {
@@ -3759,8 +3921,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *hostView = self.floatingKeyboardLayerHostView;
     if (!hostView) {
         self.keyboardOverlayWindow.hidden = YES;
+        FLMKeyboardDiagnosticLog(
+            @"detach-no-active-host detachGen=%lu reusableHost=%p leaseScene=%@",
+            (unsigned long)self.floatingKeyboardDetachGeneration,
+            (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+            self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
         return;
     }
+    FLMKeyboardDiagnosticLog(
+        @"detach-begin host=%p originalSuperview=%p detachGen=%lu",
+        (__bridge void *)hostView,
+        (__bridge void *)self.floatingKeyboardOriginalSuperview,
+        (unsigned long)self.floatingKeyboardDetachGeneration);
     UIView *originalSuperview = self.floatingKeyboardOriginalSuperview;
     @try {
         [hostView removeFromSuperview];
@@ -3783,6 +3955,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // letting that private hierarchy exception take SpringBoard down.
         NSLog(@"[FlymeKeyboardOverlay] safe detach skipped restore: %@",
               exception.reason ?: @"<unknown>");
+        FLMKeyboardDiagnosticLog(@"detach-restore-exception host=%p reason=%@",
+                                 (__bridge void *)hostView,
+                                 exception.reason ?: @"<unknown>");
         [self clearFloatingReusableKeyboardHost];
     }
     self.floatingKeyboardLayerHostView = nil;
@@ -3790,6 +3965,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.keyboardOverlayWindow.hidden = YES;
     NSLog(@"[FlymeKeyboardOverlay] detached");
+    FLMKeyboardDiagnosticLog(@"detach-complete host=%p reusableHost=%p leaseScene=%@",
+                             (__bridge void *)hostView,
+                             (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+                             self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
 }
 
 - (void)scheduleFloatingKeyboardLayerHostDetach {
@@ -3798,24 +3977,47 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardPrepareGeneration += 1;
     if (!self.floatingKeyboardLayerHostView) {
         self.keyboardOverlayWindow.hidden = YES;
+        FLMKeyboardDiagnosticLog(
+            @"detach-schedule-skipped reason=no-active-host reusableHost=%p leaseScene=%@",
+            (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+            self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
         return;
     }
     self.floatingKeyboardDetachPending = YES;
     self.floatingKeyboardDetachGeneration += 1;
     NSUInteger generation = self.floatingKeyboardDetachGeneration;
     self.keyboardOverlayWindow.hidden = YES;
+    FLMKeyboardDiagnosticLog(
+        @"detach-scheduled host=%p detachGen=%lu prepareGen=%lu scene=%@",
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (unsigned long)generation,
+        (unsigned long)self.floatingKeyboardPrepareGeneration,
+        FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(0.55 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (!self.floatingKeyboardDetachPending ||
             generation != self.floatingKeyboardDetachGeneration) {
+            FLMKeyboardDiagnosticLog(
+                @"detach-cancelled scheduled=%lu current=%lu pending=%d",
+                (unsigned long)generation,
+                (unsigned long)self.floatingKeyboardDetachGeneration,
+                self.floatingKeyboardDetachPending);
             return;
         }
+        FLMKeyboardDiagnosticLog(@"detach-timer-fired detachGen=%lu",
+                                 (unsigned long)generation);
         [self detachFloatingKeyboardLayerHost];
     });
 }
 
 - (void)clearFloatingReusableKeyboardHost {
+    FLMKeyboardDiagnosticLog(
+        @"lease-clear activeHost=%p reusableHost=%p leaseScene=%@ prepareGen=%lu",
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+        self.floatingReusableKeyboardSceneIdentifier ?: @"<none>",
+        (unsigned long)self.floatingKeyboardPrepareGeneration);
     self.floatingKeyboardPrepareGeneration += 1;
     self.floatingReusableKeyboardLayerHostView = nil;
     self.floatingReusableKeyboardScene = nil;
@@ -4136,11 +4338,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     id scene = [self sceneForHandle:sceneHandle];
     BOOL sceneChanged = scene && scene != self.floatingScene;
+    if (sceneChanged) {
+        FLMKeyboardDiagnosticLog(
+            @"floating-scene-changed app=%@ old=%@ new=%@ launchGen=%lu",
+            self.floatingIdentifier ?: @"<none>",
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+            FLMSceneIdentifier(scene) ?: @"<none>",
+            (unsigned long)self.floatingLaunchGeneration);
+    }
     if (![self prepareFloatingScene:scene handle:sceneHandle]) {
         return nil;
     }
     self.floatingScene = scene;
     FLMPublishKeyboardState(self.floatingIdentifier, scene);
+    FLMKeyboardDiagnosticLog(
+        @"floating-scene-published app=%@ scene=%@ changed=%d launchGen=%lu",
+        self.floatingIdentifier ?: @"<none>",
+        FLMSceneIdentifier(scene) ?: @"<none>", sceneChanged,
+        (unsigned long)self.floatingLaunchGeneration);
     self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
 
     // Let the foreground/frame settings reach the application process before
@@ -4203,6 +4418,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.userInteractionEnabled = YES;
     host.clipsToBounds = YES;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
+    FLMKeyboardDiagnosticLog(
+        @"floating-host-attached app=%@ scene=%@ host=%p launchGen=%lu",
+        self.floatingIdentifier ?: @"<none>",
+        FLMSceneIdentifier(scene) ?: @"<none>", (__bridge void *)host,
+        (unsigned long)self.floatingLaunchGeneration);
     return host;
 }
 
@@ -4292,6 +4512,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
+    FLMKeyboardDiagnosticLog(
+        @"floating-open app=%@ launchGen=%lu previousActiveHost=%p reusableHost=%p "
+         "leaseScene=%@",
+        identifier, (unsigned long)generation,
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+        self.floatingReusableKeyboardSceneIdentifier ?: @"<none>");
     FLMPublishKeyboardState(identifier, nil);
     self.floatingStatusLabel.hidden = NO;
     self.floatingStatusLabel.text = @"正在打开…";
@@ -4462,6 +4689,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
+    FLMKeyboardDiagnosticLog(
+        @"floating-close-begin app=%@ scene=%@ launchGen=%lu keep=%d activeHost=%p "
+         "reusableHost=%p leaseScene=%@ keyboardVisible=%d",
+        self.floatingIdentifier ?: @"<none>",
+        FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+        (unsigned long)self.floatingLaunchGeneration, keepApplication,
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (__bridge void *)self.floatingReusableKeyboardLayerHostView,
+        self.floatingReusableKeyboardSceneIdentifier ?: @"<none>",
+        self.floatingKeyboardVisible);
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardState(nil, nil);
     self.floatingLaunchGeneration += 1;
@@ -4708,11 +4945,34 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // into a physical-screen overlay. The application Scene remains at the
     // stable card size and is never expanded or rescaled for keyboard layout.
     FLMWheelController *controller = [FLMWheelController sharedController];
+    uintptr_t hostAddress = (uintptr_t)(__bridge void *)self;
+    NSString *queuedSceneIdentifier =
+        [FLMSceneIdentifier(scene) copy] ?: @"<none>";
+    __weak UIView *weakHostView = (UIView *)self;
+    __weak id weakUpdatedScene = scene;
+    FLMKeyboardDiagnosticLog(
+        @"hook-callback-enter host=0x%llx updatedScene=%@",
+        (unsigned long long)hostAddress, queuedSceneIdentifier);
     [controller prepareFloatingKeyboardHostIfNeeded];
     %orig;
+    FLMKeyboardDiagnosticLog(
+        @"hook-callback-queued host=0x%llx updatedScene=%@",
+        (unsigned long long)hostAddress, queuedSceneIdentifier);
     dispatch_async(dispatch_get_main_queue(), ^{
-        [controller keyboardLayerHostView:(UIView *)self
-                        didUpdateForScene:scene];
+        UIView *hostView = weakHostView;
+        id updatedScene = weakUpdatedScene;
+        if (!hostView) {
+            FLMKeyboardDiagnosticLog(
+                @"hook-callback-expired host=0x%llx updatedScene=%@",
+                (unsigned long long)hostAddress, queuedSceneIdentifier);
+            return;
+        }
+        FLMKeyboardDiagnosticLog(
+            @"hook-callback-execute host=%p queuedHost=0x%llx updatedScene=%@",
+            (__bridge void *)hostView, (unsigned long long)hostAddress,
+            FLMSceneIdentifier(updatedScene) ?: queuedSceneIdentifier);
+        [controller keyboardLayerHostView:hostView
+                        didUpdateForScene:updatedScene];
     });
 }
 
