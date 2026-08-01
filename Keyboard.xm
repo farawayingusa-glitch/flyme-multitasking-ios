@@ -312,6 +312,7 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 %ctor {
     @autoreleasepool {
+        %init;
         NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
         if (currentIdentifier.length > 0 &&
             ![currentIdentifier isEqualToString:@"com.apple.springboard"] &&
