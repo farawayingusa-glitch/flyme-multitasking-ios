@@ -378,4 +378,551 @@ static void FLMReloadKeyboardAvoidance(void) {
     }
     BOOL visible = (state & (1ULL << 63)) != 0;
     uint64_t sessionGeneration = (state >> 24) & 0x7FFFFFFFFFULL;
-    CGFloat heiÛ­·¶‰ËkºwµçA¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘]¥±±!¥‘•9½Ñ¥™¥…Ñ¥½¹tñğ(€€€€€€€m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘¥‘!¥‘•9½Ñ¥™¥…Ñ¥½¹tì(€€€	==0Á¡åÍ¥…±±åY¥Í¥‰±”€ô(€€€€€€€€…¡¥‘•9½Ñ¥™¥…Ñ¥½¸€˜˜I•Ñ•Ñ!•¥¡Ğ¡É…İ¹‘É…µ”¤€ø€Ä¸À€˜˜(€€€€€€€I•Ñ•Ñ5¥¹d¡É…İ¹‘É…µ”¤€ğÁ¡åÍ¥…±M¥é”¹¡•¥¡Ğ€´€Ä¸Àì((€€€Õ¥¹ĞÄÙ}Ğ¹½Ñ¥™¥…Ñ¥½¹±…Ì€ôÁ¡åÍ¥…±±åY¥Í¥‰±”€ü€ÅT€è€ÁTì(€€€¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘]¥±±M¡½İ9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Äì(€€€ô•±Í”¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘¥‘M¡½İ9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Èì(€€€ô•±Í”¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘]¥±±!¥‘•9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Ìì(€€€ô•±Í”¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘¥‘!¥‘•9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Ğì(€€€ô•±Í”¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘]¥±±¡…¹•É…µ•9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Ôì(€€€ô•±Í”¥˜€¡m¹…µ”¥ÍÅÕ…±Q½MÑÉ¥¹œéU%-•å‰½…É‘¥‘¡…¹•É…µ•9½Ñ¥™¥…Ñ¥½¹t¤ì(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ìğô€ÅT€ğğ€Øì(€€€ô(€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑÉ…µ•=‰Í•ÉÙ•°(€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€¹½Ñ¥™¥…Ñ¥½¹±…Ì°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡I•Ñ•Ñ!•¥¡Ğ¡É…İ¹‘É…µ”¤¤¤ì((€€€€¼¼MÁÉ¥¹	½…ÉÍÑ¥±°½¹ÍÕµ•ÌÑ¡”Õ¹µ½‘¥™¥•Á¡åÍ¥…°™É…µ”Ñ¼¡½ÍĞÑ¡”(€€€€¼¼­•å‰½…É½¸Ñ¡”‘¥ÍÁ±…ä¸=¹±äÑ¡”Ñ…É•Ğ…ÁÁ±¥…Ñ¥½¸É••¥Ù•ÌÑ¡”M•¹”´(€€€€¼¼±½¥…°É•Á±…•µ•¹Ğ‰•±½Ü¸(€€€15AÕ‰±¥Í¡-•å‰½…É‘É…µ”¡É…İ¹‘É…µ”°Á¡åÍ¥…±±åY¥Í¥‰±”¤ì((€€€	==0•½µ•ÑÉåÕÉÉ•¹Ğ€ô(€€€€€€€15-•å‰½…É‘…É‘•½µ•ÑÉåÑ¥Ù”€˜˜(€€€€€€€15-•å‰½…É‘…É‘•½µ•ÑÉå•¹•É…Ñ¥½¸€ôô(€€€€€€€€€€€€¡15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸€˜€ÁàİU10¤€˜˜(€€€€€€€15-•å‰½…É‘…É‘Y¥ÍÕ…±M…±”€ø€À¸ÀÔ€˜˜(€€€€€€€I•Ñ•Ñ]¥‘Ñ ¡±½¥…±	½Õ¹‘Ì¤€ø€Ä¸À€˜˜(€€€€€€€I•Ñ•Ñ!•¥¡Ğ¡±½¥…±	½Õ¹‘Ì¤€ø€Ä¸Àì(€€€¥˜€ …•½µ•ÑÉåÕÉÉ•¹Ğ¤ì(€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑÉ…µ•½ÉÉ•Ñ•°(€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€À°(€€€€€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡I•Ñ•Ñ!•¥¡Ğ¡±½¥…±	½Õ¹‘Ì¤¤¤ì(€€€€€€€É•ÑÕÉ¸ÕÍ•É%¹™¼ì(€€€ô((€€€±½…ĞÁÉ•Ù¥½ÕÍ!•¥¡Ğ€ô(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€ôô15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸(€€€€€€€€€€€€ü15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ(€€€€€€€€€€€€è€À¸Àì(€€€±½…Ğ±½¥…±!•¥¡Ğ€ô€À¸Àì(€€€¥˜€¡Á¡åÍ¥…±±åY¥Í¥‰±”¤ì(€€€€€€€±½¥…±!•¥¡Ğ€ô151½¥…±Ù½¥‘…¹•½ÉA¡åÍ¥…±-•å‰½…É‘Q½À (€€€€€€€€€€€I•Ñ•Ñ5¥¹d¡É…İ¹‘É…µ”¤°±½¥…±	½Õ¹‘Ì¤ì(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€ô15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸ì(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ€ô±½¥…±!•¥¡Ğì(€€€ô•±Í”ì(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€ô€Àì(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ€ô€À¸Àì(€€€ô((€€€±½…Ğİ¥‘Ñ €ôI•Ñ•Ñ]¥‘Ñ ¡±½¥…±	½Õ¹‘Ì¤ì(€€€±½…Ğ¡•¥¡Ğ€ôI•Ñ•Ñ!•¥¡Ğ¡±½¥…±	½Õ¹‘Ì¤ì(€€€±½…Ğ•¹‘!•¥¡Ğ€ôÁ¡åÍ¥…±±åY¥Í¥‰±”€ü±½¥…±!•¥¡Ğ€è5` Ä¸À°ÁÉ•Ù¥½ÕÍ!•¥¡Ğ¤ì(€€€I•Ğ½ÉÉ•Ñ•‘¹€ô(€€€€€€€I•Ñ5…­” À¸À°(€€€€€€€€€€€€€€€€€€Á¡åÍ¥…±±åY¥Í¥‰±”€ü¡•¥¡Ğ€´±½¥…±!•¥¡Ğ€è¡•¥¡Ğ°(€€€€€€€€€€€€€€€€€€İ¥‘Ñ °(€€€€€€€€€€€€€€€€€€•¹‘!•¥¡Ğ¤ì(€€€I•Ğ½ÉÉ•Ñ•‘	•¥¸€ô(€€€€€€€ÁÉ•Ù¥½ÕÍ!•¥¡Ğ€ø€Ä¸À(€€€€€€€€€€€€üI•Ñ5…­” À¸À°(€€€€€€€€€€€€€€€€€€€€€€€€¡•¥¡Ğ€´ÁÉ•Ù¥½ÕÍ!•¥¡Ğ°(€€€€€€€€€€€€€€€€€€€€€€€€İ¥‘Ñ °(€€€€€€€€€€€€€€€€€€€€€€€€ÁÉ•Ù¥½ÕÍ!•¥¡Ğ¤(€€€€€€€€€€€€èI•Ñ5…­” À¸À°¡•¥¡Ğ°İ¥‘Ñ °5` Ä¸À°±½¥…±!•¥¡Ğ¤¤ì(€€€9M5ÕÑ…‰±•¥Ñ¥½¹…Éä€©½ÉÉ•Ñ•€ômÕÍ•É%¹™¼µÕÑ…‰±•½Áåtì(€€€½ÉÉ•Ñ•‘mU%-•å‰½…É‘É…µ•	•¥¹UÍ•É%¹™½-•åt€ô(€€€€€€€m9MY…±Õ”Ù…±Õ•]¥Ñ¡I•Ğé½ÉÉ•Ñ•‘	•¥¹tì(€€€½ÉÉ•Ñ•‘mU%-•å‰½…É‘É…µ•¹‘UÍ•É%¹™½-•åt€ô(€€€€€€€m9MY…±Õ”Ù…±Õ•]¥Ñ¡I•Ğé½ÉÉ•Ñ•‘¹‘tì(€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑÉ…µ•½ÉÉ•Ñ•°(€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡±½¥…±!•¥¡Ğ¤°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡I•Ñ•Ñ!•¥¡Ğ¡±½¥…±	½Õ¹‘Ì¤¤¤ì(€€€É•ÑÕÉ¸½ÉÉ•Ñ•ì)ô((•¡½½¬9M9½Ñ¥™¥…Ñ¥½¹•¹Ñ•È((´€¡Ù½¥¥Á½ÍÑ9½Ñ¥™¥…Ñ¥½¹9…µ”è¡9M9½Ñ¥™¥…Ñ¥½¹9…µ”¥¹…µ”(€€€€€€€€€€€€€€€€€€€€€½‰©•Ğè¡¥¥½‰©•Ğ(€€€€€€€€€€€€€€€€€€€ÕÍ•É%¹™¼è¡9M¥Ñ¥½¹…Éä€¨¥ÕÍ•É%¹™¼ì(€€€¥˜€¡15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸¤ì(€€€€€€€€•½É¥œì(€€€€€€€É•ÑÕÉ¸ì(€€€ô(€€€9M¥Ñ¥½¹…Éä€©½ÉÉ•Ñ•‘UÍ•É%¹™¼€ô(€€€€€€€15½ÉÉ•Ñ-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¹UÍ•É%¹™¼¡¹…µ”°ÕÍ•É%¹™¼¤ì(€€€15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸€ôeLì(€€€€•½É¥œ¡¹…µ”°½‰©•Ğ°½ÉÉ•Ñ•‘UÍ•É%¹™¼¤ì(€€€15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸€ô9<ì)ô((´€¡Ù½¥¥Á½ÍÑ9½Ñ¥™¥…Ñ¥½¸è¡9M9½Ñ¥™¥…Ñ¥½¸€¨¥¹½Ñ¥™¥…Ñ¥½¸ì(€€€¥˜€¡15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸ñğ(€€€€€€€€…15%Í-•å‰½…É‘É…µ•9½Ñ¥™¥…Ñ¥½¸¡¹½Ñ¥™¥…Ñ¥½¸¹¹…µ”¤¤ì(€€€€€€€€•½É¥œì(€€€€€€€É•ÑÕÉ¸ì(€€€ô(€€€9M¥Ñ¥½¹…Éä€©½ÉÉ•Ñ•‘UÍ•É%¹™¼€ô(€€€€€€€15½ÉÉ•Ñ-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¹UÍ•É%¹™¼¡¹½Ñ¥™¥…Ñ¥½¸¹¹…µ”°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹½Ñ¥™¥…Ñ¥½¸¹ÕÍ•É%¹™¼¤ì(€€€9M9½Ñ¥™¥…Ñ¥½¸€©½ÉÉ•Ñ•‘9½Ñ¥™¥…Ñ¥½¸€ô(€€€€€€€½ÉÉ•Ñ•‘UÍ•É%¹™¼€ôô¹½Ñ¥™¥…Ñ¥½¸¹ÕÍ•É%¹™¼(€€€€€€€€€€€€ü¹½Ñ¥™¥…Ñ¥½¸(€€€€€€€€€€€€èm9M9½Ñ¥™¥…Ñ¥½¸¹½Ñ¥™¥…Ñ¥½¹]¥Ñ¡9…µ”é¹½Ñ¥™¥…Ñ¥½¸¹¹…µ”(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€½‰©•Ğé¹½Ñ¥™¥…Ñ¥½¸¹½‰©•Ğ(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÕÍ•É%¹™¼é½ÉÉ•Ñ•‘UÍ•É%¹™½tì(€€€15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸€ôeLì(€€€€•½É¥œ¡½ÉÉ•Ñ•‘9½Ñ¥™¥…Ñ¥½¸¤ì(€€€15•±¥Ù•É¥¹½ÉÉ•Ñ•‘-•å‰½…É‘9½Ñ¥™¥…Ñ¥½¸€ô9<ì)ô((••¹((•¡½½¬U%Q•áÑ™™•ÑÍ]¥¹‘½Ü((´€¡M¥é”¥­•å‰½…É‘MÉ••¹I•™•É•¹•M¥é”ì(€€€U%]¥¹‘½İM•¹”€©Í•¹”€ô€ ¡U%]¥¹‘½Ü€¨¥Í•±˜¤¹İ¥¹‘½İM•¹”ì(€€€	==0µ…Ñ¡•Ì€ô15M•¹•5…Ñ¡•Í-•å‰½…É‘I½ÕÑ”¡Í•¹”¤ì(€€€¥˜€¡15-•å‰½…É‘I½ÕÑ•Ñ¥Ù”¤ì(€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€15-•å‰½…É‘¥…¹½ÍÑ¥I½±” ¤°(€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑM•¹•5…Ñ °(€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€µ…Ñ¡•Ì€ü€Ä€è€À°(€€€€€€€€€€€15-•å‰½…É‘Q…É•ÑM•¹•!…Í €„ô€À€ü€Ä€è€À¤ì(€€€ô(€€€¥˜€ …µ…Ñ¡•Ì¤ì(€€€€€€€É•ÑÕÉ¸€•½É¥œì(€€€ô(€€€M¥é”Í¥é”€ô15A¡åÍ¥…±I•™•É•¹•	½Õ¹‘Í½ÉM•¹”¡Í•¹”¤¹Í¥é”ì(€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€15-•å‰½…É‘¥…¹½ÍÑ¥I½±” ¤°(€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑÉ…µ•½ÉÉ•Ñ•°(€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡Í¥é”¹İ¥‘Ñ ¤°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡Í¥é”¹¡•¥¡Ğ¤¤ì(€€€É•ÑÕÉ¸Í¥é”ì)ô((´€¡I•Ğ¥}É•™•É•¹•	½Õ¹‘Ìì(€€€I•Ğ‰½Õ¹‘Ì€ô€•½É¥œì(€€€€¼¼QÉ½±±=Á•¸Ì¥=L€ÄØÁ…Ñ ±•…Ù•ÌÑ¡¥Ì½¹ÑÉ…ĞÕ¹Ñ½Õ¡•¸=Ù•ÉÉ¥‘¥¹œ¥Ğ(€€€€¼¼¡…¹•ÌÑ¡”­•å‰½…Éİ¥¹‘½ÜÌ½İ¸½½É‘¥¹…Ñ”ÍÁ…”…¹‰É•…­ÌÉ•µ½Ñ”(€€€€¼¼M•¹”Á…¥É¥¹œ¸­•å‰½…É‘MÉ••¹I•™•É•¹•M¥é”¥ÌÑ¡”Á¡åÍ¥…°µ‘¥ÍÁ±…ä(€€€€¼¼½¹ÑÉ½°Á½¥¹Ğì}É•™•É•¹•	½Õ¹‘ÌµÕÍĞÉ•µ…¥¸U%-¥Ğµ½İ¹•¸(€€€É•ÑÕÉ¸‰½Õ¹‘Ìì)ô((••¹((•É½ÕÀ15I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉä((•¡½½¬}U%I•µ½Ñ•-•å‰½…É‘Ì((´€¡±½…Ğ¥¥¹Ñ•ÉÍ•Ñ¥½¹!•¥¡Ñ½É]¥¹‘½İM•¹”è¡U%]¥¹‘½İM•¹”€¨¥İ¥¹‘½İM•¹”(€€€€€€€€€€€€€€€€€€€¥Í1½…±5¥¹¥µÕµ!•¥¡Ñ=ÕĞè¡	==0€¨¥¥Í1½…±5¥¹¥µÕµ!•¥¡Ñ=ÕĞ(€€€€€€€€€€€€€€€€€€€€¥¹½É•!½É¥é½¹Ñ…±=™™Í•Ğè¡	==0¥¥¹½É•!½É¥é½¹Ñ…±=™™Í•Ğì(€€€±½…Ğ½É¥¥¹…±!•¥¡Ğ€ô€•½É¥œ¡İ¥¹‘½İM•¹”°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥Í1½…±5¥¹¥µÕµ!•¥¡Ñ=ÕĞ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥¹½É•!½É¥é½¹Ñ…±=™™Í•Ğ¤ì(€€€¥˜€ …15M•¹•5…Ñ¡•Í-•å‰½…É‘I½ÕÑ”¡İ¥¹‘½İM•¹”¤¤ì(€€€€€€€É•ÑÕÉ¸½É¥¥¹…±!•¥¡Ğì(€€€ô(€€€¥˜€ …15-•å‰½…É‘Q…É•ÑÁÁ±¥…Ñ¥½¸¤ì(€€€€€€€É•ÑÕÉ¸½É¥¥¹…±!•¥¡Ğì(€€€ô(€€€¥˜€¡U%%¹Ñ•É™…•=É¥•¹Ñ…Ñ¥½¹%Í1…¹‘Í…Á”¡İ¥¹‘½İM•¹”¹¥¹Ñ•É™…•=É¥•¹Ñ…Ñ¥½¸¤¤ì(€€€€€€€É•ÑÕÉ¸€À¸Àì(€€€ô((€€€¥˜€¡15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€„ô(€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸ñğ(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ€ğô€Ä¸À¤ì(€€€€€€€I•Ğ±½¥…±	½Õ¹‘Ì€ô15Q…É•ÑÁÁ±¥…Ñ¥½¹1½¥…±	½Õ¹‘Ì ¤ì(€€€€€€€M¥é”Á¡åÍ¥…±M¥é”€ô15Õ±±A¡åÍ¥…±MÉ••¹M¥é” ¤ì(€€€€€€€¥˜€¡I•Ñ•Ñ]¥‘Ñ ¡±½¥…±	½Õ¹‘Ì¤€øI•Ñ•Ñ!•¥¡Ğ¡±½¥…±	½Õ¹‘Ì¤€˜˜(€€€€€€€€€€€Á¡åÍ¥…±M¥é”¹İ¥‘Ñ €ğÁ¡åÍ¥…±M¥é”¹¡•¥¡Ğ¤ì(€€€€€€€€€€€Á¡åÍ¥…±M¥é”€ôM¥é•5…­”¡Á¡åÍ¥…±M¥é”¹¡•¥¡Ğ°Á¡åÍ¥…±M¥é”¹İ¥‘Ñ ¤ì(€€€€€€€ô(€€€€€€€±½…Ğµ…ÁÁ•‘!•¥¡Ğ€ô151½¥…±Ù½¥‘…¹•½ÉA¡åÍ¥…±-•å‰½…É‘Q½À (€€€€€€€€€€€Á¡åÍ¥…±M¥é”¹¡•¥¡Ğ€´½É¥¥¹…±!•¥¡Ğ°±½¥…±	½Õ¹‘Ì¤ì(€€€€€€€¥˜€¡µ…ÁÁ•‘!•¥¡Ğ€ğô€Ä¸À¤ì(€€€€€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹Ñ%¹Ñ•ÉÍ•Ñ¥½¸°(€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡½É¥¥¹…±!•¥¡Ğ¤°(€€€€€€€€€€€€€€€€À¤ì(€€€€€€€€€€€É•ÑÕÉ¸½É¥¥¹…±!•¥¡Ğì(€€€€€€€ô(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€ô15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸ì(€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ€ôµ…ÁÁ•‘!•¥¡Ğì(€€€ô((€€€€¼¼Q¡”­•å‰½…ÉÍÕÉ™…”É•µ…¥¹Ì™Õ±°µÍÉ••¸°İ¡¥±”Ñ¡”…ÁÁ±¥…Ñ¥½¸½¹ÍÕµ•Ì(€€€€¼¼Ñ¡”½Ù•É±…Àµ…ÁÁ•¥¹Ñ¼¥ÑÌ½İ¸M•¹”½½É‘¥¹…Ñ•Ì¸Q¡¥Ì¥ÌÁ½ÁÕ±…Ñ•(€€€€¼¼‰•™½É”Ñ¡”¹…Ñ¥Ù”¹½Ñ¥™¥…Ñ¥½¸¥Ì‘•±¥Ù•É•°Í¼U%-¥Ğ…¹…ÁÁ±¥…Ñ¥½¸(€€€€¼¼½‰Í•ÉÙ•ÉÌÉ•…Ñ¡”Í…µ”Ù…±Õ”¥¸Ñ¡”Í…µ”±…å½ÕĞÑÉ…¹Í…Ñ¥½¸¸(€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥Ù•¹Ñ%¹Ñ•ÉÍ•Ñ¥½¸°(€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡½É¥¥¹…±!•¥¡Ğ¤°(€€€€€€€15¥…¹½ÍÑ¥U¹Í¥¹•‘Y…±Õ”¡15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ¤¤ì(€€€É•ÑÕÉ¸15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğì)ô((••¹((••¹(()ÍÑ…Ñ¥ŒÙ½¥15%¹ÍÑ…±±I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉå%™Ù…¥±…‰±”¡Ù½¥¤ì(€€€¥˜€¡15I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉå%¹ÍÑ…±±•ñğ(€€€€€€€€…9M±…ÍÍÉ½µMÑÉ¥¹œ¡ ‰}U%I•µ½Ñ•-•å‰½…É‘Ìˆ¤¤ì(€€€€€€€É•ÑÕÉ¸ì(€€€ô(€€€€•¥¹¥Ğ¡15I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉä¤ì(€€€15I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉå%¹ÍÑ…±±•€ôeLì)ô((•Ñ½Èì(€€€…ÕÑ½É•±•…Í•Á½½°ì(€€€€€€€€•¥¹¥Ğì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘I½ÕÑ•Q½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€15I•±½…‘-•å‰½…É‘I½ÕÑ” ¤ì(€€€€€€€ô¤ì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}M9}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘M•¹•Q½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€15I•±½…‘-•å‰½…É‘I½ÕÑ” ¤ì(€€€€€€€ô¤ì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}MMM%=9}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘M•ÍÍ¥½¹Q½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€15I•±½…‘-•å‰½…É‘I½ÕÑ” ¤ì(€€€€€€€ô¤ì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}Y=%9}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘Ù½¥‘…¹•Q½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€15I•±½…‘-•å‰½…É‘Ù½¥‘…¹” ¤ì(€€€€€€€ô¤ì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}I}=5QIe}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘…É‘•½µ•ÑÉåQ½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€15I•±½…‘-•å‰½…É‘…É‘•½µ•ÑÉä ¤ì(€€€€€€€ô¤ì(€€€€€€€¹½Ñ¥™å}É•¥ÍÑ•É}‘¥ÍÁ…Ñ ¡1e5}-e	=I}%M5%MM}9=Q%%Q%=8°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™15-•å‰½…É‘¥Íµ¥ÍÍQ½­•¸°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€x¡}}Õ¹ÕÍ•¥¹ĞÑ½­•¸¤ì(€€€€€€€€€€€¥˜€¡15-•å‰½…É‘Q…É•ÑÁÁ±¥…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹Ñ¥Íµ¥ÍÍI•ÅÕ•ÍĞ°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€€Ä°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘Ñ¥Ù•Q•áÑI•ÍÁ½¹‘•È€ü€Ä€è€À¤ì(€€€€€€€€€€€€€€€€¼¼Q¡¥Ì¥Ì„™½ÕÌ¡…¹”¥¹Í¥‘”Ñ¡”ÕÉÉ•¹Ğ•¹Ñ•É•Í•ÍÍ¥½¸°(€€€€€€€€€€€€€€€€¼¼¹½ĞÑ¡”•¹½˜Ñ¡…ĞÍ•ÍÍ¥½¸¸-••ÀÉ½ÕÑ”½•¹•É…Ñ¥½¸¥¹Ñ…ĞÍ¼(€€€€€€€€€€€€€€€€¼¼Ñ¡”¹•áĞ‘•±¥‰•É…Ñ”¥¹ÁÕĞÑ…À…¸É•ÕÍ”Ñ¡”¹…Ñ¥Ù”­•å‰½…É(€€€€€€€€€€€€€€€€¼¼M•¹”Á…¥É¥¹œ¸(€€€€€€€€€€€€€€€15¹‘ÁÁ±¥…Ñ¥½¹-•å‰½…É‘M•ÍÍ¥½¸ ¤ì(€€€€€€€€€€€€€€€Õ¥¹ĞØÑ}Ğ‘¥Íµ¥ÍÍM•ÍÍ¥½¹•¹•É…Ñ¥½¸€ô(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸ì(€€€€€€€€€€€€€€€™½È€¡9M9Õµ‰•È€©‘•±…åY…±Õ”¥¸m À¸ÀØ° À¸Äát¤ì(€€€€€€€€€€€€€€€€€€€9MQ¥µ•%¹Ñ•ÉÙ…°‘•±…ä€ô‘•±…åY…±Õ”¹‘½Õ‰±•Y…±Õ”ì(€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}…™Ñ•È (€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}Ñ¥µ”¡%MAQ!}Q%5}9=\°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¡¥¹ĞØÑ}Ğ¤¡‘•±…ä€¨9M}AI}M¤¤°(€€€€€€€€€€€€€€€€€€€€€€€‘¥ÍÁ…Ñ¡}•Ñ}µ…¥¹}ÅÕ•Õ” ¤°yì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡15-•å‰½…É‘I½ÕÑ•Ñ¥Ù”€˜˜(€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥Íµ¥ÍÍM•ÍÍ¥½¹•¹•É…Ñ¥½¸€ôô(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€15¹‘ÁÁ±¥…Ñ¥½¹-•å‰½…É‘M•ÍÍ¥½¸ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô¤ì(€€€€€€€15I•±½…‘-•å‰½…É‘I½ÕÑ” ¤ì(€€€€€€€15I•±½…‘-•å‰½…É‘…É‘•½µ•ÑÉä ¤ì(€€€€€€€15%¹ÍÑ…±±I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉå%™Ù…¥±…‰±” ¤ì(€€€€€€€¥˜€¡15-•å‰½…É‘I½ÕÑ•Ñ¥Ù”¤ì(€€€€€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€€€€€15-•å‰½…É‘¥…¹½ÍÑ¥I½±” ¤°(€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹ÑAÉ½•ÍÍI•…‘ä°(€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€€¡Õ¥¹ĞÄÙ}Ğ¤¡•ÑÁ¥ ¤€˜€Áá¤°(€€€€€€€€€€€€€€€15I•µ½Ñ•-•å‰½…É‘•½µ•ÑÉå%¹ÍÑ…±±•€ü€Ä€è€À¤ì(€€€€€€€ô(€€€€€€€9M9½Ñ¥™¥…Ñ¥½¹•¹Ñ•È€©•¹Ñ•È€ôm9M9½Ñ¥™¥…Ñ¥½¹•¹Ñ•È‘•™…Õ±Ñ•¹Ñ•Étì(€€€€€€€15-•å‰½…É‘]¥±±!¥‘•=‰Í•ÉÙ•È€ô(€€€€€€€€€€€m•¹Ñ•È…‘‘=‰Í•ÉÙ•É½É9…µ”éU%-•å‰½…É‘]¥±±!¥‘•9½Ñ¥™¥…Ñ¥½¸(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€½‰©•Ğé¹¥°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÅÕ•Õ”ém9M=Á•É…Ñ¥½¹EÕ•Õ”µ…¥¹EÕ•Õ•t(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÕÍ¥¹	±½¬éx¡}}Õ¹ÕÍ•9M9½Ñ¥™¥…Ñ¥½¸€©¹½Ñ¥™¥…Ñ¥½¸¤ì(€€€€€€€€€€€€¼¼Q¡”­•å‰½…ÉÌ½İ¸½±±…ÁÍ”½¹ÑÉ½°‰•¥¹Ì„U%-¥Ğ¡¥‘”(€€€€€€€€€€€€¼¼ÑÉ…¹Í…Ñ¥½¸°‰ÕĞ…ÁÁÌÍÕ …Ì]•¡…Ğ…¸É•Ñ…¥¸Ñ¡”É•µ½Ñ”Ñ•áĞ(€€€€€€€€€€€€¼¼É•ÍÁ½¹‘•È…¹¥µµ•‘¥…Ñ•±ä­••À¥Ğ…±¥Ù”¸¹Ñ¡”½¹É•Ñ”(€€€€€€€€€€€€¼¼É•ÍÁ½¹‘•Èİ¥Ñ¡½ÕĞ•¹‘¥¹œÑ¡”•¹Ñ•É•µ…ÉÉ½ÕÑ”¸(€€€€€€€€€€€¥˜€¡15-•å‰½…É‘Q…É•ÑÁÁ±¥…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹Ñ]¥±±!¥‘”°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘Ñ¥Ù•Q•áÑI•ÍÁ½¹‘•È€ü€Ä€è€À°(€€€€€€€€€€€€€€€€€€€15¹‘¥¹ÁÁ±¥…Ñ¥½¹-•å‰½…É‘M•ÍÍ¥½¸€ü€Ä€è€À¤ì(€€€€€€€€€€€€€€€15¹‘ÁÁ±¥…Ñ¥½¹-•å‰½…É‘M•ÍÍ¥½¸ ¤ì(€€€€€€€€€€€ô(€€€€€€€õtì(€€€€€€€15-•å‰½…É‘!¥‘•=‰Í•ÉÙ•È€ô(€€€€€€€€€€€m•¹Ñ•È…‘‘=‰Í•ÉÙ•É½É9…µ”éU%-•å‰½…É‘¥‘!¥‘•9½Ñ¥™¥…Ñ¥½¸(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€½‰©•Ğé¹¥°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÅÕ•Õ”ém9M=Á•É…Ñ¥½¹EÕ•Õ”µ…¥¹EÕ•Õ•t(€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÕÍ¥¹	±½¬éx¡}}Õ¹ÕÍ•9M9½Ñ¥™¥…Ñ¥½¸€©¹½Ñ¥™¥…Ñ¥½¸¤ì(€€€€€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹••¹•É…Ñ¥½¸€ô€Àì(€€€€€€€€€€€15áÑ•É¹…±-•å‰½…É‘Ù½¥‘…¹•!•¥¡Ğ€ô€À¸Àì(€€€€€€€€€€€15AÕ‰±¥Í¡-•å‰½…É‘É…µ”¡I•Ñi•É¼°9<¤ì(€€€€€€€€€€€¥˜€¡15-•å‰½…É‘Q…É•ÑÁÁ±¥…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€15AÕ‰±¥Í¡¥…¹½ÍÑ¥Ù•¹Ğ (€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥I½±•ÁÁ±¥…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€15¥…¹½ÍÑ¥Ù•¹Ñ¥‘!¥‘”°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘M•ÍÍ¥½¹•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€15-•å‰½…É‘Ñ¥Ù•Q•áÑI•ÍÁ½¹‘•È€ü€Ä€è€À°(€€€€€€€€€€€€€€€€€€€€À¤ì(€€€€€€€€€€€€€€€¹½Ñ¥™å}Á½ÍĞ¡1e5}-e	=I}%M5%MM}-}9=Q%%Q%=8¤ì(€€€€€€€€€€€ô(€€€€€€€õtì(€€€ô)ô(
+    CGFloat height = (CGFloat)(state & 0xFFFFFFULL) / 100.0;
+    BOOL currentSession = FLMKeyboardTargetApplication && visible &&
+                          sessionGeneration != 0 &&
+                          sessionGeneration == FLMKeyboardSessionGeneration;
+    if (!currentSession) {
+        // FlymeKeyboard is injected into UIKit clients, including SpringBoard.
+        // Never touch UIScreen/UIApplication from a dyld initializer or an
+        // inactive route: iOS 16 asserts when +[UIScreen mainScreen] is used
+        // before SpringBoard has finished creating its display environment.
+        FLMExternalKeyboardAvoidanceGeneration = 0;
+        FLMExternalKeyboardAvoidanceHeight = 0.0;
+        FLMRefreshApplicationKeyboardLayout();
+        if (FLMKeyboardRouteActive) {
+            FLMPublishDiagnosticEvent(
+                FLMKeyboardDiagnosticRole(),
+                FLMDiagnosticEventAvoidanceReload,
+                FLMKeyboardSessionGeneration,
+                0,
+                0);
+        }
+        return;
+    }
+    FLMExternalKeyboardAvoidanceGeneration = sessionGeneration;
+    // SpringBoard already mapped the physical card/keyboard overlap into the
+    // target Scene's logical coordinate space. Avoid another UIScreen query
+    // here so this Darwin path stays safe during process initialization.
+    FLMExternalKeyboardAvoidanceHeight = MAX(0.0, height);
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventAvoidanceReload,
+        FLMKeyboardSessionGeneration,
+        1,
+        FLMDiagnosticUnsignedValue(FLMExternalKeyboardAvoidanceHeight));
+    FLMRefreshApplicationKeyboardLayout();
+}
+
+%hook UIResponder
+
+- (BOOL)becomeFirstResponder {
+    BOOL routedTextInput =
+        FLMKeyboardTargetApplication &&
+        [self conformsToProtocol:@protocol(UITextInput)];
+    if (routedTextInput) {
+        FLMInstallRemoteKeyboardGeometryIfAvailable();
+    }
+    BOOL result = %orig;
+    if (routedTextInput && result) {
+        // Keep the concrete responder, not just its containing windows. Several
+        // applications restore a text responder while their Scene is brought
+        // forward again; window-wide endEditing alone does not reliably clear
+        // that retained responder between centered-card generations.
+        FLMKeyboardActiveTextResponder = self;
+    }
+    if (routedTextInput) {
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventResponderBecome,
+            FLMKeyboardSessionGeneration,
+            result ? 1 : 0,
+            FLMRemoteKeyboardGeometryInstalled ? 1 : 0);
+    }
+    return result;
+}
+
+- (BOOL)resignFirstResponder {
+    BOOL wasTracked = FLMKeyboardActiveTextResponder == self;
+    BOOL result = %orig;
+    if (result && FLMKeyboardActiveTextResponder == self) {
+        FLMKeyboardActiveTextResponder = nil;
+    }
+    if (FLMKeyboardTargetApplication &&
+        [self conformsToProtocol:@protocol(UITextInput)]) {
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventResponderResign,
+            FLMKeyboardSessionGeneration,
+            result ? 1 : 0,
+            wasTracked ? 1 : 0);
+    }
+    return result;
+}
+
+%end
+
+static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
+    if (visible && !FLMKeyboardRouteActive) {
+        return;
+    }
+    uint64_t sessionGeneration = FLMKeyboardRouteActive
+                                     ? FLMKeyboardSessionGeneration
+                                     : FLMKeyboardEndedSessionGeneration;
+    if (sessionGeneration == 0) {
+        return;
+    }
+    if (FLMKeyboardFrameToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_FRAME_NOTIFICATION,
+                              &FLMKeyboardFrameToken) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    CGFloat height = visible ? MAX(0.0, CGRectGetHeight(frame)) : 0.0;
+    uint64_t encodedHeight =
+        MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
+    uint64_t encodedGeneration =
+        (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
+    uint64_t state = (visible ? (1ULL << 63) : 0) |
+                     encodedGeneration | encodedHeight;
+    notify_set_state(FLMKeyboardFrameToken, state);
+    notify_post(FLYME_KEYBOARD_FRAME_NOTIFICATION);
+    FLMPublishDiagnosticEvent(
+        FLMKeyboardDiagnosticRole(),
+        FLMDiagnosticEventFramePublish,
+        sessionGeneration,
+        visible ? FLMDiagnosticUnsignedValue(CGRectGetMinY(frame)) : 0,
+        visible ? FLMDiagnosticUnsignedValue(CGRectGetHeight(frame)) : 0);
+}
+
+static CGRect FLMTargetApplicationLogicalBounds(void) {
+    if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive) {
+        return CGRectZero;
+    }
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)connectedScene;
+        if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
+            continue;
+        }
+        for (UIWindow *window in windowScene.windows) {
+            if (CGRectGetWidth(window.bounds) > 1.0 &&
+                CGRectGetHeight(window.bounds) > 1.0 &&
+                window.windowLevel <= UIWindowLevelNormal + 1.0) {
+                return window.bounds;
+            }
+        }
+        CGRect coordinateBounds = windowScene.coordinateSpace.bounds;
+        if (CGRectGetWidth(coordinateBounds) > 1.0 &&
+            CGRectGetHeight(coordinateBounds) > 1.0) {
+            return coordinateBounds;
+        }
+    }
+    return CGRectZero;
+}
+
+static BOOL FLMIsKeyboardFrameNotification(NSString *name) {
+    return [name isEqualToString:UIKeyboardWillShowNotification] ||
+           [name isEqualToString:UIKeyboardDidShowNotification] ||
+           [name isEqualToString:UIKeyboardWillHideNotification] ||
+           [name isEqualToString:UIKeyboardDidHideNotification] ||
+           [name isEqualToString:UIKeyboardWillChangeFrameNotification] ||
+           [name isEqualToString:UIKeyboardDidChangeFrameNotification];
+}
+
+static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
+                                                          CGRect logicalBounds) {
+    if (!FLMKeyboardCardGeometryActive ||
+        FLMKeyboardCardGeometryGeneration !=
+            (FLMKeyboardSessionGeneration & 0x7FFFULL) ||
+        FLMKeyboardCardVisualScale <= 0.05 ||
+        CGRectGetHeight(logicalBounds) <= 1.0) {
+        return 0.0;
+    }
+    CGFloat physicalOverlap = MAX(0.0, FLMKeyboardCardBottom - keyboardTop);
+    if (physicalOverlap <= 1.0) {
+        return 0.0;
+    }
+    CGFloat logicalGap = 8.0 / FLMKeyboardCardVisualScale;
+    CGFloat logicalHeight =
+        physicalOverlap / FLMKeyboardCardVisualScale + logicalGap;
+    return MIN(CGRectGetHeight(logicalBounds) * 0.72, logicalHeight);
+}
+
+static NSDictionary *FLMCorrectKeyboardNotificationUserInfo(NSString *name,
+                                                             NSDictionary *userInfo) {
+    if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive ||
+        !FLMIsKeyboardFrameNotification(name) ||
+        ![userInfo isKindOfClass:[NSDictionary class]]) {
+        return userInfo;
+    }
+    NSValue *endValue = userInfo[UIKeyboardFrameEndUserInfoKey];
+    if (![endValue isKindOfClass:[NSValue class]]) {
+        return userInfo;
+    }
+    CGRect rawEndFrame = endValue.CGRectValue;
+    CGRect logicalBounds = FLMTargetApplicationLogicalBounds();
+    CGSize physicalSize = FLMFullPhysicalScreenSize();
+    BOOL landscape = CGRectGetWidth(logicalBounds) > CGRectGetHeight(logicalBounds);
+    if (landscape && physicalSize.width < physicalSize.height) {
+        physicalSize = CGSizeMake(physicalSize.height, physicalSize.width);
+    }
+    BOOL hideNotification =
+        [name isEqualToString:UIKeyboardWillHideNotification] ||
+        [name isEqualToString:UIKeyboardDidHideNotification];
+    BOOL physicallyVisible =
+        !hideNotification && CGRectGetHeight(rawEndFrame) > 1.0 &&
+        CGRectGetMinY(rawEndFrame) < physicalSize.height - 1.0;
+
+    uint16_t notificationFlags = physicallyVisible ? 1U : 0U;
+    if ([name isEqualToString:UIKeyboardWillShowNotification]) {
+        notificationFlags |= 1U << 1;
+    } else if ([name isEqualToString:UIKeyboardDidShowNotification]) {
+        notificationFlags |= 1U << 2;
+    } else if ([name isEqualToString:UIKeyboardWillHideNotification]) {
+        notificationFlags |= 1U << 3;
+    } else if ([name isEqualToString:UIKeyboardDidHideNotification]) {
+        notificationFlags |= 1U << 4;
+    } else if ([name isEqualToString:UIKeyboardWillChangeFrameNotification]) {
+        notificationFlags |= 1U << 5;
+    } else if ([name isEqualToString:UIKeyboardDidChangeFrameNotification]) {
+        notificationFlags |= 1U << 6;
+    }
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventFrameObserved,
+        FLMKeyboardSessionGeneration,
+        notificationFlags,
+        FLMDiagnosticUnsignedValue(CGRectGetHeight(rawEndFrame)));
+
+    // SpringBoard still consumes the unmodified physical frame to host the
+    // keyboard on the display. Only the target application receives the Scene-
+    // logical replacement below.
+    FLMPublishKeyboardFrame(rawEndFrame, physicallyVisible);
+
+    BOOL geometryCurrent =
+        FLMKeyboardCardGeometryActive &&
+        FLMKeyboardCardGeometryGeneration ==
+            (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
+        FLMKeyboardCardVisualScale > 0.05 &&
+        CGRectGetWidth(logicalBounds) > 1.0 &&
+        CGRectGetHeight(logicalBounds) > 1.0;
+    if (!geometryCurrent) {
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventFrameCorrected,
+            FLMKeyboardSessionGeneration,
+            0,
+            FLMDiagnosticUnsignedValue(CGRectGetHeight(logicalBounds)));
+        return userInfo;
+    }
+
+    CGFloat previousHeight =
+        FLMExternalKeyboardAvoidanceGeneration == FLMKeyboardSessionGeneration
+            ? FLMExternalKeyboardAvoidanceHeight
+            : 0.0;
+    CGFloat logicalHeight = 0.0;
+    if (physicallyVisible) {
+        logicalHeight = FLMLogicalAvoidanceForPhysicalKeyboardTop(
+            CGRectGetMinY(rawEndFrame), logicalBounds);
+        FLMExternalKeyboardAvoidanceGeneration = FLMKeyboardSessionGeneration;
+        FLMExternalKeyboardAvoidanceHeight = logicalHeight;
+    } else {
+        FLMExternalKeyboardAvoidanceGeneration = 0;
+        FLMExternalKeyboardAvoidanceHeight = 0.0;
+    }
+
+    CGFloat width = CGRectGetWidth(logicalBounds);
+    CGFloat height = CGRectGetHeight(logicalBounds);
+    CGFloat endHeight = physicallyVisible ? logicalHeight : MAX(1.0, previousHeight);
+    CGRect correctedEnd =
+        CGRectMake(0.0,
+                   physicallyVisible ? height - logicalHeight : height,
+                   width,
+                   endHeight);
+    CGRect correctedBegin =
+        previousHeight > 1.0
+            ? CGRectMake(0.0,
+                         height - previousHeight,
+                         width,
+                         previousHeight)
+            : CGRectMake(0.0, height, width, MAX(1.0, logicalHeight));
+    NSMutableDictionary *corrected = [userInfo mutableCopy];
+    corrected[UIKeyboardFrameBeginUserInfoKey] =
+        [NSValue valueWithCGRect:correctedBegin];
+    corrected[UIKeyboardFrameEndUserInfoKey] =
+        [NSValue valueWithCGRect:correctedEnd];
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventFrameCorrected,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(logicalHeight),
+        FLMDiagnosticUnsignedValue(CGRectGetHeight(logicalBounds)));
+    return corrected;
+}
+
+%hook NSNotificationCenter
+
+- (void)postNotificationName:(NSNotificationName)name
+                      object:(id)object
+                    userInfo:(NSDictionary *)userInfo {
+    if (FLMDeliveringCorrectedKeyboardNotification) {
+        %orig;
+        return;
+    }
+    NSDictionary *correctedUserInfo =
+        FLMCorrectKeyboardNotificationUserInfo(name, userInfo);
+    FLMDeliveringCorrectedKeyboardNotification = YES;
+    %orig(name, object, correctedUserInfo);
+    FLMDeliveringCorrectedKeyboardNotification = NO;
+}
+
+- (void)postNotification:(NSNotification *)notification {
+    if (FLMDeliveringCorrectedKeyboardNotification ||
+        !FLMIsKeyboardFrameNotification(notification.name)) {
+        %orig;
+        return;
+    }
+    NSDictionary *correctedUserInfo =
+        FLMCorrectKeyboardNotificationUserInfo(notification.name,
+                                               notification.userInfo);
+    NSNotification *correctedNotification =
+        correctedUserInfo == notification.userInfo
+            ? notification
+            : [NSNotification notificationWithName:notification.name
+                                            object:notification.object
+                                          userInfo:correctedUserInfo];
+    FLMDeliveringCorrectedKeyboardNotification = YES;
+    %orig(correctedNotification);
+    FLMDeliveringCorrectedKeyboardNotification = NO;
+}
+
+%end
+
+%hook UITextEffectsWindow
+
+- (CGSize)keyboardScreenReferenceSize {
+    UIWindowScene *scene = ((UIWindow *)self).windowScene;
+    BOOL matches = FLMSceneMatchesKeyboardRoute(scene);
+    if (FLMKeyboardRouteActive) {
+        FLMPublishDiagnosticEvent(
+            FLMKeyboardDiagnosticRole(),
+            FLMDiagnosticEventSceneMatch,
+            FLMKeyboardSessionGeneration,
+            matches ? 1 : 0,
+            FLMKeyboardTargetSceneHash != 0 ? 1 : 0);
+    }
+    if (!matches) {
+        return %orig;
+    }
+    CGSize size = FLMPhysicalReferenceBoundsForScene(scene).size;
+    FLMPublishDiagnosticEvent(
+        FLMKeyboardDiagnosticRole(),
+        FLMDiagnosticEventFrameCorrected,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(size.width),
+        FLMDiagnosticUnsignedValue(size.height));
+    return size;
+}
+
+- (CGRect)_referenceBounds {
+    CGRect bounds = %orig;
+    // TrollOpen's iOS 16 path leaves this contract untouched. Overriding it
+    // changes the keyboard window's own coordinate space and breaks remote
+    // Scene pairing. keyboardScreenReferenceSize is the physical-display
+    // control point; _referenceBounds must remain UIKit-owned.
+    return bounds;
+}
+
+%end
+
+%group FLMRemoteKeyboardGeometry
+
+%hook _UIRemoteKeyboards
+
+- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
+                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
+                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
+    CGFloat originalHeight = %orig(windowScene,
+                                   isLocalMinimumHeightOut,
+                                   ignoreHorizontalOffset);
+    if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
+        return originalHeight;
+    }
+    if (!FLMKeyboardTargetApplication) {
+        return originalHeight;
+    }
+    if (UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        return 0.0;
+    }
+
+    if (FLMExternalKeyboardAvoidanceGeneration !=
+            FLMKeyboardSessionGeneration ||
+        FLMExternalKeyboardAvoidanceHeight <= 1.0) {
+        CGRect logicalBounds = FLMTargetApplicationLogicalBounds();
+        CGSize physicalSize = FLMFullPhysicalScreenSize();
+        if (CGRectGetWidth(logicalBounds) > CGRectGetHeight(logicalBounds) &&
+            physicalSize.width < physicalSize.height) {
+            physicalSize = CGSizeMake(physicalSize.height, physicalSize.width);
+        }
+        CGFloat mappedHeight = FLMLogicalAvoidanceForPhysicalKeyboardTop(
+            physicalSize.height - originalHeight, logicalBounds);
+        if (mappedHeight <= 1.0) {
+            FLMPublishDiagnosticEvent(
+                FLMDiagnosticRoleApplication,
+                FLMDiagnosticEventIntersection,
+                FLMKeyboardSessionGeneration,
+                FLMDiagnosticUnsignedValue(originalHeight),
+                0);
+            return originalHeight;
+        }
+        FLMExternalKeyboardAvoidanceGeneration = FLMKeyboardSessionGeneration;
+        FLMExternalKeyboardAvoidanceHeight = mappedHeight;
+    }
+
+    // The keyboard surface remains full-screen, while the application consumes
+    // the overlap mapped into its own Scene coordinates. This is populated
+    // before the native notification is delivered, so UIKit and application
+    // observers read the same value in the same layout transaction.
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventIntersection,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(originalHeight),
+        FLMDiagnosticUnsignedValue(FLMExternalKeyboardAvoidanceHeight));
+    return FLMExternalKeyboardAvoidanceHeight;
+}
+
+%end
+
+%end
+
+
+static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
+    if (FLMRemoteKeyboardGeometryInstalled ||
+        !NSClassFromString(@"_UIRemoteKeyboards")) {
+        return;
+    }
+    %init(FLMRemoteKeyboardGeometry);
+    FLMRemoteKeyboardGeometryInstalled = YES;
+}
+
+%ctor {
+    @autoreleasepool {
+        %init;
+        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
+                                 &FLMKeyboardRouteToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                                 &FLMKeyboardSceneToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                                 &FLMKeyboardSessionToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
+                                 &FLMKeyboardAvoidanceToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardAvoidance();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
+                                 &FLMKeyboardCardGeometryToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardCardGeometry();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_DISMISS_NOTIFICATION,
+                                 &FLMKeyboardDismissToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            if (FLMKeyboardTargetApplication) {
+                FLMPublishDiagnosticEvent(
+                    FLMDiagnosticRoleApplication,
+                    FLMDiagnosticEventDismissRequest,
+                    FLMKeyboardSessionGeneration,
+                    1,
+                    FLMKeyboardActiveTextResponder ? 1 : 0);
+                // This is a focus change inside the current centered session,
+                // not the end of that session. Keep route/generation intact so
+                // the next deliberate input tap can reuse the native keyboard
+                // Scene pairing.
+                FLMEndApplicationKeyboardSession();
+                uint64_t dismissSessionGeneration =
+                    FLMKeyboardSessionGeneration;
+                for (NSNumber *delayValue in @[@0.06, @0.18]) {
+                    NSTimeInterval delay = delayValue.doubleValue;
+                    dispatch_after(
+                        dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(delay * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{
+                        if (FLMKeyboardRouteActive &&
+                            dismissSessionGeneration ==
+                                FLMKeyboardSessionGeneration) {
+                            FLMEndApplicationKeyboardSession();
+                        }
+                    });
+                }
+            }
+        });
+        FLMReloadKeyboardRoute();
+        FLMReloadKeyboardCardGeometry();
+        FLMInstallRemoteKeyboardGeometryIfAvailable();
+        if (FLMKeyboardRouteActive) {
+            FLMPublishDiagnosticEvent(
+                FLMKeyboardDiagnosticRole(),
+                FLMDiagnosticEventProcessReady,
+                FLMKeyboardSessionGeneration,
+                (uint16_t)(getpid() & 0xFFFF),
+                FLMRemoteKeyboardGeometryInstalled ? 1 : 0);
+        }
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        FLMKeyboardWillHideObserver =
+            [center addObserverForName:UIKeyboardWillHideNotification
+                                object:nil
+                                 queue:[NSOperationQueue mainQueue]
+                            usingBlock:^(__unused NSNotification *notification) {
+            // The keyboard's own collapse control begins a UIKit hide
+            // transaction, but apps such as WeChat can retain the remote text
+            // responder and immediately keep it alive. End the concrete
+            // responder without ending the centered-card route.
+            if (FLMKeyboardTargetApplication) {
+                FLMPublishDiagnosticEvent(
+                    FLMDiagnosticRoleApplication,
+                    FLMDiagnosticEventWillHide,
+                    FLMKeyboardSessionGeneration,
+                    FLMKeyboardActiveTextResponder ? 1 : 0,
+                    FLMEndingApplicationKeyboardSession ? 1 : 0);
+                FLMEndApplicationKeyboardSession();
+            }
+        }];
+        FLMKeyboardHideObserver =
+            [center addObserverForName:UIKeyboardDidHideNotification
+                                object:nil
+                                 queue:[NSOperationQueue mainQueue]
+                             usingBlock:^(__unused NSNotification *notification) {
+            FLMExternalKeyboardAvoidanceGeneration = 0;
+            FLMExternalKeyboardAvoidanceHeight = 0.0;
+            FLMPublishKeyboardFrame(CGRectZero, NO);
+            if (FLMKeyboardTargetApplication) {
+                FLMPublishDiagnosticEvent(
+                    FLMDiagnosticRoleApplication,
+                    FLMDiagnosticEventDidHide,
+                    FLMKeyboardSessionGeneration,
+                    FLMKeyboardActiveTextResponder ? 1 : 0,
+                    0);
+                notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);
+            }
+        }];
+    }
+}
