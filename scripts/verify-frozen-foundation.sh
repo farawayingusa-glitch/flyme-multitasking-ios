@@ -2,8 +2,6 @@
 set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
-keyboard_source="${2:-Keyboard.xm}"
-keyboard_filter="${3:-FlymeKeyboard.plist}"
 
 required_source=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -23,6 +21,11 @@ required_source=(
     "sb frame-apply rejected=inactive-session"
     "sb session-end route-cleared"
     "%hook _UIKeyboardLayerHostView"
+    "updateClientSettingsWithBlock:"
+    "setPreferredSceneHostIdentity:"
+    "sb scene-pair apply="
+    "sb scene-pair clear="
+    "sb viewport committed"
 )
 
 for marker in "${required_source[@]}"; do
@@ -32,33 +35,14 @@ for marker in "${required_source[@]}"; do
     }
 done
 
-required_keyboard=(
-    "This module is deliberately a narrow UIKit geometry adapter"
-    "%hook UITextEffectsWindow"
-    "keyboardScreenReferenceSize"
-    "%group FLMRemoteKeyboardGeometry"
-    "intersectionHeightForWindowScene:"
-    "FLMEndPreviousApplicationKeyboardSession"
-    "FLMExternalKeyboardAvoidanceGeneration"
-    "notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION"
-)
-
-for marker in "${required_keyboard[@]}"; do
-    grep -Fq -- "$marker" "$keyboard_source" || {
-        echo "narrow UIKit keyboard adapter changed: $marker" >&2
-        exit 1
-    }
-done
-
-grep -Fq '<key>Bundles</key>' "$keyboard_filter"
-grep -Fq '<string>com.apple.UIKit</string>' "$keyboard_filter"
-! grep -Fq '<key>Classes</key>' "$keyboard_filter"
-
-removed_keyboard=(
+removed_source=(
+    "FLMPublishKeyboardState"
+    "FLMPublishKeyboardAvoidance"
+    "FLMPublishKeyboardCardGeometry"
+    "FLYME_KEYBOARD_NOTIFICATION"
+    "FLYME_KEYBOARD_SESSION_NOTIFICATION"
     "%hook UIResponder"
     "%hook NSNotificationCenter"
-    "UIKeyboardWillHideNotification"
-    "UIKeyboardDidHideNotification"
     "FLYME_KEYBOARD_FRAME_NOTIFICATION"
     "FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION"
     "FLYME_KEYBOARD_DISMISS_NOTIFICATION"
@@ -67,19 +51,6 @@ removed_keyboard=(
     "FLMCorrectKeyboardNotificationUserInfo"
     "%hook UIWindowScene"
     "%hook UIKeyboardWindow"
-    "%hook UIRemoteKeyboardWindow"
-)
-
-for marker in "${removed_keyboard[@]}"; do
-    if grep -Fq -- "$marker" "$keyboard_source"; then
-        echo "obsolete keyboard patch architecture returned: $marker" >&2
-        exit 1
-    fi
-done
-
-removed_source=(
-    "FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION"
-    "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION"
     "FLMRequestApplicationKeyboardDismiss"
     "floatingKeyboardRouteReadyGeneration"
     "route-not-ready"

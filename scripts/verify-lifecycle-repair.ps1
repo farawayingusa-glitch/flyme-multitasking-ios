@@ -1,8 +1,6 @@
 param(
     [string]$Source = 'Tweak.xm',
-    [string]$KeyboardSource = 'Keyboard.xm',
-    [string]$LifecycleSource = 'SceneLifecycle.xm',
-    [string]$KeyboardFilter = 'FlymeKeyboard.plist'
+    [string]$LifecycleSource = 'SceneLifecycle.xm'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,8 +32,6 @@ foreach ($Marker in @(
     'outsideCloseAuthorized',
     'flmOutsideCloseAuthorized',
     'UIKeyboardDidHideNotification',
-    'FLYME_KEYBOARD_SESSION_NOTIFICATION',
-    'FLMPublishKeyboardCardGeometry',
     '@interface FLMKeyboardForwardingWindow : UIWindow',
     'window.windowLevel = self.floatingWindow.windowLevel + 1.0;',
     '[self.keyboardForwardingWindow makeKeyAndVisible];',
@@ -44,44 +40,24 @@ foreach ($Marker in @(
     '[forwardingRoot addSubview:hostView];',
     'sb frame-apply rejected=inactive-session',
     'sb session-end route-cleared',
+    'updateClientSettingsWithBlock:',
+    'setPreferredSceneHostIdentity:',
+    'sb scene-pair apply=',
+    'sb scene-pair clear=',
+    'sb viewport committed',
     '0.24 * NSEC_PER_SEC'
 )) {
     Require-Text $Source $Marker
 }
 
-# NathanLR/ElleKit loads UIKit adapters through the UIKit bundle filter. A
-# Classes=UIApplication filter was the 0.8.30 regression and must not return.
-Require-Text $KeyboardFilter '<key>Bundles</key>'
-Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
-Reject-Text $KeyboardFilter '<key>Classes</key>'
-
-# The app/extension module is a narrow geometry adapter. It may end an old
-# responder only when the centered Scene generation changes; it must not hook
-# keyboard hide notifications, mutate safe areas, or synthesize notifications.
-foreach ($Marker in @(
-    'This module is deliberately a narrow UIKit geometry adapter',
-    '%hook UITextEffectsWindow',
-    'keyboardScreenReferenceSize',
-    '%group FLMRemoteKeyboardGeometry',
-    'intersectionHeightForWindowScene:',
-    'FLMSceneMatchesKeyboardRoute',
-    'FLMKeyboardTargetApplication',
-    'FLMKeyboardExtensionProcess',
-    '@"keyboard-service"',
-    'FLMReloadKeyboardCardGeometry',
-    'FLMExternalKeyboardAvoidanceGeneration',
-    'FLMEndPreviousApplicationKeyboardSession',
-    'sendAction:@selector(resignFirstResponder)',
-    'FLMDiagnosticEventIntersection'
-)) {
-    Require-Text $KeyboardSource $Marker
-}
-
 foreach ($Removed in @(
+    'FLMPublishKeyboardState',
+    'FLMPublishKeyboardAvoidance',
+    'FLMPublishKeyboardCardGeometry',
+    'FLYME_KEYBOARD_NOTIFICATION',
+    'FLYME_KEYBOARD_SESSION_NOTIFICATION',
     '%hook UIResponder',
     '%hook NSNotificationCenter',
-    'UIKeyboardWillHideNotification',
-    'UIKeyboardDidHideNotification',
     'FLYME_KEYBOARD_FRAME_NOTIFICATION',
     'FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION',
     'FLYME_KEYBOARD_DISMISS_NOTIFICATION',
@@ -92,16 +68,6 @@ foreach ($Removed in @(
     'applyFloatingKeyboardContainerOffsetForFrame:',
     '%hook UIWindowScene',
     '%hook UIKeyboardWindow',
-    '%hook UIRemoteKeyboardWindow'
-)) {
-    Reject-Text $KeyboardSource $Removed
-}
-
-foreach ($Removed in @(
-    'FLYME_KEYBOARD_FRAME_NOTIFICATION',
-    'FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION',
-    'FLYME_KEYBOARD_DISMISS_NOTIFICATION',
-    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION',
     'FLMRequestApplicationKeyboardDismiss',
     'floatingKeyboardRouteReadyGeneration',
     'finalizeFloatingKeyboardSessionEnd:',
