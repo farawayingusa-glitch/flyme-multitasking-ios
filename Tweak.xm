@@ -344,6 +344,27 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 @end
 
+// The remote keyboard host must live in a full-display window that belongs to
+// SpringBoard's active UIWindowScene.  Keep this window key-capable (the UIKit
+// default), but never call makeKeyWindow/makeKeyAndVisible on it.  Returning
+// nil for the empty root surface makes the window transparent to touches while
+// preserving the keyboard host's own private hit-testing and responder path.
+@interface FLMKeyboardForwardingWindow : UIWindow
+@end
+
+@implementation FLMKeyboardForwardingWindow
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hitView = [super hitTest:point withEvent:event];
+    UIView *rootView = self.rootViewController.view;
+    if (hitView == self || hitView == rootView) {
+        return nil;
+    }
+    return hitView;
+}
+
+@end
+
 @interface FLMFloatingWindow : FLMOverlayWindow
 @property(nonatomic, assign) BOOL passesTouchesOutsideFloatingContent;
 @property(nonatomic, assign) CGRect keyboardPassThroughFrame;
@@ -706,6 +727,15 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSTimeInterval floatingKeyboardDismissedAt;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
+@property(nonatomic, strong) FLMKeyboardForwardingWindow *keyboardForwardingWindow;
+@property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
+@property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
+@property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
+@property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
+@property(nonatomic, assign) CGAffineTransform floatingKeyboardOriginalTransform;
+@property(nonatomic, assign) UIViewAutoresizing floatingKeyboardOriginalAutoresizingMask;
+@property(nonatomic, assign) BOOL floatingKeyboardOriginalTranslatesAutoresizingMask;
+@property(nonatomic, assign) NSUInteger floatingKeyboardHostSessionGeneration;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -751,6 +781,12 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
 - (void)keyboardDidHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
+- (void)prepareKeyboardForwardingWindowIfNeeded;
+- (void)keyboardLayerHostView:(UIView *)hostView
+            didUpdateForScene:(id)scene
+            sessionGeneration:(NSUInteger)sessionGeneration;
+- (void)restoreFloatingKeyboardLayerHost;
+- (void)discardFloatingKeyboardLayerHost;
 - (void)endFloatingKeyboardSession;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
@@ -3388,6 +3424,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self restoreFloatingHandleInteraction];
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
+    [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
     if (self.floatingKeyboardSessionCounter == 0) {
         self.floatingKeyboardSessionCounter = 1;
@@ -3622,6 +3659,185 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.transform = CGAffineTransformMakeScale(scale, scale);
 }
 
+- (void)prepareKeyboardForwardingWindowIfNeeded {
+    UIWindowScene *targetWindowScene = self.floatingWindow.windowScene;
+    if (!targetWindowScene) {
+        targetWindowScene = FLMForegroundWindowScene();
+    }
+    if (!targetWindowScene) {
+        return;
+    }
+
+    FLMKeyboardForwardingWindow *existingWindow =
+        self.keyboardForwardingWindow;
+    if (existingWindow && existingWindow.windowScene != targetWindowScene) {
+        [self restoreFloatingKeyboardLayerHost];
+        existingWindow.hidden = YES;
+        existingWindow.rootViewController = nil;
+        self.keyboardForwardingWindow = nil;
+        existingWindow = nil;
+    }
+    if (existingWindow) {
+        CGRect bounds = FLMVisualScreenBounds();
+        existingWindow.frame = bounds;
+        existingWindow.rootViewController.view.frame = existingWindow.bounds;
+        return;
+    }
+
+    CGRect bounds = FLMVisualScreenBounds();
+    FLMKeyboardForwardingWindow *window =
+        [[FLMKeyboardForwardingWindow alloc]
+            initWithWindowScene:targetWindowScene];
+    window.frame = bounds;
+    // TrollOpen's iOS 16 forwarding path uses a modest level (45), not an
+    // alert-level overlay.  A very high level bypasses private keyboard action
+    // routing even when the pixels happen to appear in the right place.
+    window.windowLevel = 45.0;
+    window.backgroundColor = [UIColor clearColor];
+    window.opaque = NO;
+    window.userInteractionEnabled = YES;
+    FLMOverlayViewController *rootController =
+        [[FLMOverlayViewController alloc] init];
+    rootController.view.backgroundColor = [UIColor clearColor];
+    rootController.view.frame = window.bounds;
+    rootController.view.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    window.rootViewController = rootController;
+    SEL autorotationSelector =
+        NSSelectorFromString(@"setAutorotates:forceUpdateInterfaceOrientation:");
+    if ([window respondsToSelector:autorotationSelector]) {
+        ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(window,
+                                                     autorotationSelector,
+                                                     NO,
+                                                     NO);
+    }
+    window.hidden = YES;
+    self.keyboardForwardingWindow = window;
+}
+
+- (void)keyboardLayerHostView:(UIView *)hostView
+            didUpdateForScene:(id)scene
+            sessionGeneration:(NSUInteger)sessionGeneration {
+    if (!hostView || sessionGeneration == 0 ||
+        sessionGeneration != self.floatingKeyboardSessionGeneration ||
+        self.floatingWindow.hidden || self.floatingDocked ||
+        !self.floatingScene || self.floatingIdentifier.length == 0 ||
+        self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
+        return;
+    }
+
+    id owningScene = nil;
+    @try {
+        owningScene = [hostView valueForKey:@"_owningScene"];
+    } @catch (__unused NSException *exception) {
+    }
+    NSString *targetIdentifier = FLMSceneIdentifier(self.floatingScene);
+    NSString *owningIdentifier = FLMSceneIdentifier(owningScene);
+    NSString *updatedIdentifier = FLMSceneIdentifier(scene);
+    BOOL matches = owningScene == self.floatingScene || scene == self.floatingScene;
+    if (!matches && targetIdentifier.length > 0) {
+        matches = [targetIdentifier isEqualToString:owningIdentifier] ||
+                  [targetIdentifier isEqualToString:updatedIdentifier];
+    }
+    if (!matches) {
+        return;
+    }
+
+    [self prepareKeyboardForwardingWindowIfNeeded];
+    UIView *forwardingRoot =
+        self.keyboardForwardingWindow.rootViewController.view;
+    if (!forwardingRoot) {
+        return;
+    }
+
+    if (hostView != self.floatingKeyboardLayerHostView ||
+        self.floatingKeyboardHostSessionGeneration != sessionGeneration) {
+        if (self.floatingKeyboardLayerHostView) {
+            if (self.floatingKeyboardHostSessionGeneration == sessionGeneration) {
+                [self restoreFloatingKeyboardLayerHost];
+            } else {
+                [self discardFloatingKeyboardLayerHost];
+            }
+        }
+        UIView *originalSuperview = hostView.superview;
+        self.floatingKeyboardOriginalSuperview = originalSuperview;
+        self.floatingKeyboardOriginalSubviewIndex =
+            originalSuperview ? [originalSuperview.subviews indexOfObject:hostView]
+                              : NSNotFound;
+        self.floatingKeyboardOriginalFrame = hostView.frame;
+        self.floatingKeyboardOriginalTransform = hostView.transform;
+        self.floatingKeyboardOriginalAutoresizingMask = hostView.autoresizingMask;
+        self.floatingKeyboardOriginalTranslatesAutoresizingMask =
+            hostView.translatesAutoresizingMaskIntoConstraints;
+        self.floatingKeyboardLayerHostView = hostView;
+        self.floatingKeyboardHostSessionGeneration = sessionGeneration;
+    }
+
+    if (hostView.superview != forwardingRoot) {
+        [hostView removeFromSuperview];
+        hostView.translatesAutoresizingMaskIntoConstraints = YES;
+        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight;
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+        [forwardingRoot addSubview:hostView];
+    } else {
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+    }
+    [hostView setNeedsLayout];
+    [hostView layoutIfNeeded];
+    // Setting hidden=NO does not make this window key.  The existing Flyme
+    // window keeps focus while the native keyboard host remains key-capable and
+    // attached to the same SpringBoard UIWindowScene.
+    self.keyboardForwardingWindow.hidden = NO;
+}
+
+- (void)restoreFloatingKeyboardLayerHost {
+    UIView *hostView = self.floatingKeyboardLayerHostView;
+    UIView *originalSuperview = self.floatingKeyboardOriginalSuperview;
+    if (hostView) {
+        @try {
+            [hostView removeFromSuperview];
+            hostView.transform = self.floatingKeyboardOriginalTransform;
+            hostView.frame = self.floatingKeyboardOriginalFrame;
+            hostView.autoresizingMask =
+                self.floatingKeyboardOriginalAutoresizingMask;
+            hostView.translatesAutoresizingMaskIntoConstraints =
+                self.floatingKeyboardOriginalTranslatesAutoresizingMask;
+            if (originalSuperview) {
+                NSInteger index = self.floatingKeyboardOriginalSubviewIndex;
+                if (index >= 0 &&
+                    index <= (NSInteger)originalSuperview.subviews.count) {
+                    [originalSuperview insertSubview:hostView
+                                              atIndex:(NSUInteger)index];
+                } else {
+                    [originalSuperview addSubview:hostView];
+                }
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    self.floatingKeyboardLayerHostView = nil;
+    self.floatingKeyboardOriginalSuperview = nil;
+    self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
+    self.floatingKeyboardHostSessionGeneration = 0;
+    self.keyboardForwardingWindow.hidden = YES;
+}
+
+- (void)discardFloatingKeyboardLayerHost {
+    UIView *hostView = self.floatingKeyboardLayerHostView;
+    @try {
+        [hostView removeFromSuperview];
+    } @catch (__unused NSException *exception) {
+    }
+    self.floatingKeyboardLayerHostView = nil;
+    self.floatingKeyboardOriginalSuperview = nil;
+    self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
+    self.floatingKeyboardHostSessionGeneration = 0;
+    self.keyboardForwardingWindow.hidden = YES;
+}
+
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible {
     if (self.floatingWindow.hidden || self.floatingDocked) {
         visible = NO;
@@ -3647,6 +3863,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardFrame = frame;
         self.floatingBackdropTap.additionalProtectedFrame = frame;
         ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = frame;
+        if (self.floatingKeyboardLayerHostView) {
+            self.keyboardForwardingWindow.hidden = NO;
+        }
         return;
     }
     BOOL protectKeyboardDismissal =
@@ -3658,6 +3877,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.keyboardForwardingWindow.hidden = YES;
     if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
         !self.floatingWindow.hidden && !self.floatingDocked) {
         // UIKeyboardDidHide can arrive before the touch that pressed the
@@ -3694,6 +3914,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)endFloatingKeyboardSession {
+    NSUInteger endingSession = self.floatingKeyboardSessionGeneration;
+    __weak UIView *endingHost = self.floatingKeyboardLayerHostView;
     [self.floatingHostView endEditing:YES];
     self.floatingKeyboardSessionGeneration = 0;
     FLMPublishKeyboardState(nil, nil, 0);
@@ -3705,7 +3927,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
+    self.keyboardForwardingWindow.hidden = YES;
     [self endFloatingKeyboardInteractionSession];
+
+    // Do not restore a retained visible keyboard host into the reduced app
+    // Scene.  Give UIKit one hide transaction, then discard the stale host so
+    // the next centered generation must obtain a fresh native pairing.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.24 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIView *hostView = endingHost;
+        if (endingSession != 0 && hostView &&
+            self.floatingKeyboardSessionGeneration == 0 &&
+            self.floatingKeyboardHostSessionGeneration == endingSession &&
+            self.floatingKeyboardLayerHostView == hostView) {
+            [self discardFloatingKeyboardLayerHost];
+        }
+    });
 }
 
 - (CGRect)floatingKeyboardInteractionFrame {
@@ -4234,6 +4472,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
     self.floatingIdentifier = identifier;
+    [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
     if (self.floatingKeyboardSessionCounter == 0) {
         self.floatingKeyboardSessionCounter = 1;
@@ -4683,6 +4922,39 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 @end
+
+%hook _UIKeyboardLayerHostView
+
+- (void)scene:(id)scene
+    didUpdateClientSettingsWithDiff:(id)diff
+                  oldClientSettings:(id)oldClientSettings
+                  transitionContext:(id)transitionContext {
+    %orig;
+    (void)diff;
+    (void)oldClientSettings;
+    (void)transitionContext;
+
+    // UIKit must finish its private keyboard Scene transaction before the host
+    // changes superviews.  Moving it synchronously is what leaves the remote
+    // keyboard half-paired and makes keys or the collapse control stop routing.
+    FLMWheelController *controller = [FLMWheelController sharedController];
+    NSUInteger sessionGeneration =
+        controller.floatingKeyboardSessionGeneration;
+    __weak UIView *weakHostView = (UIView *)self;
+    __weak id weakUpdatedScene = scene;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *hostView = weakHostView;
+        id updatedScene = weakUpdatedScene;
+        if (!hostView) {
+            return;
+        }
+        [controller keyboardLayerHostView:hostView
+                        didUpdateForScene:updatedScene
+                        sessionGeneration:sessionGeneration];
+    });
+}
+
+%end
 
 %hook SpringBoard
 

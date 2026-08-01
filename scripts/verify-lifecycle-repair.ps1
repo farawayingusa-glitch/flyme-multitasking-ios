@@ -65,6 +65,15 @@ Require-Text $KeyboardSource 'FLMResignFirstResponderInView'
 Require-Text $Source 'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION'
 Require-Text $KeyboardSource 'FLMKeyboardEndedSessionGeneration'
 Require-Text $KeyboardSource 'sendAction:@selector(resignFirstResponder)'
+Require-Text $Source '@interface FLMKeyboardForwardingWindow : UIWindow'
+Require-Text $Source 'window.windowLevel = 45.0;'
+Require-Text $Source 'initWithWindowScene:targetWindowScene'
+Require-Text $Source 'setAutorotates:forceUpdateInterfaceOrientation:'
+Require-Text $Source 'hitView == self || hitView == rootView'
+Require-Text $Source '%hook _UIKeyboardLayerHostView'
+Require-Text $Source 'didUpdateClientSettingsWithDiff:'
+Require-Text $Source '[forwardingRoot addSubview:hostView];'
+Require-Text $Source '[self discardFloatingKeyboardLayerHost];'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 
 foreach ($RemovedKeyboardPatch in @(
@@ -73,8 +82,6 @@ foreach ($RemovedKeyboardPatch in @(
     'postNotificationName:UIKeyboardWillChangeFrameNotification',
     '@interface FLMKeyboardOverlayWindow',
     '@interface FLMKeyboardHostBridgeView',
-    '%hook _UIKeyboardLayerHostView',
-    'floatingKeyboardLayerHostView',
     'FLMPublishKeyboardOcclusion'
 )) {
     if ((Select-String -LiteralPath $KeyboardSource -SimpleMatch $RemovedKeyboardPatch -Quiet) -or
@@ -87,8 +94,9 @@ if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapse
     throw 'Fixed fullscreen handoff stall was reintroduced.'
 }
 
-# The repair must retain a bounded escape route and must not add a direct
-# SpringBoard keyboard-window hook (those are unsafe across iOS 16 point releases).
+# The repair must retain a bounded escape route and must not hook keyboard
+# UIWindow classes themselves. The forwarding path observes only the layer
+# host's completed client-settings transaction.
 if (Select-String -LiteralPath $KeyboardSource -Pattern '^%hook UIWindow\s*$|^%hook UIRemoteKeyboardWindow\s*$|^%hook UIKeyboardWindow\s*$' -Quiet) {
     throw 'Unsafe direct keyboard-window hook detected.'
 }

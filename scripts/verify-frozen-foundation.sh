@@ -108,6 +108,15 @@ for keyboard_handoff_line in \
     'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
+    '@interface FLMKeyboardForwardingWindow : UIWindow' \
+    'window.windowLevel = 45.0;' \
+    'initWithWindowScene:targetWindowScene' \
+    'setAutorotates:forceUpdateInterfaceOrientation:' \
+    'hitView == self || hitView == rootView' \
+    '%hook _UIKeyboardLayerHostView' \
+    'didUpdateClientSettingsWithDiff:' \
+    '[forwardingRoot addSubview:hostView];' \
+    '[self discardFloatingKeyboardLayerHost];' \
     'endFloatingKeyboardSession' \
     'floatingLaunchCoverView' \
     'revealFloatingContentForGeneration'; do
@@ -124,8 +133,6 @@ for removed_keyboard_patch in \
     'postNotificationName:UIKeyboardWillChangeFrameNotification' \
     '@interface FLMKeyboardOverlayWindow' \
     '@interface FLMKeyboardHostBridgeView' \
-    '%hook _UIKeyboardLayerHostView' \
-    'floatingKeyboardLayerHostView' \
     'FLMPublishKeyboardOcclusion'; do
     if grep -Fq "$removed_keyboard_patch" "$keyboard_source" ||
        grep -Fq "$removed_keyboard_patch" "$source_file"; then
