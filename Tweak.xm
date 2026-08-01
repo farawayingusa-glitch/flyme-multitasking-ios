@@ -16,7 +16,6 @@
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
-#define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
@@ -967,10 +966,6 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
                      encodedGeneration | encodedHeight;
     notify_set_state(FlymeKeyboardAvoidanceToken, state);
     notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
-}
-
-static void FLMRequestKeyboardDismissal(void) {
-    notify_post(FLYME_KEYBOARD_DISMISS_NOTIFICATION);
 }
 
 static UIWindowScene *FLMForegroundWindowScene(void) {
