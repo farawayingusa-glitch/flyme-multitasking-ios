@@ -404,6 +404,19 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 @end
 
+@interface FLMKeyboardHostBridgeView : UIView
+@property(nonatomic, weak) UIResponder *forwardingNextResponder;
+@end
+
+@implementation FLMKeyboardHostBridgeView
+
+- (UIResponder *)nextResponder {
+    UIResponder *forwardingResponder = self.forwardingNextResponder;
+    return forwardingResponder ?: [super nextResponder];
+}
+
+@end
+
 @interface FLMKeyboardOverlayWindow : FLMOverlayWindow
 @property(nonatomic, assign) CGRect keyboardInteractionFrame;
 @end
@@ -726,6 +739,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
 @property(nonatomic, assign) NSUInteger floatingKeyboardHostSessionGeneration;
 @property(nonatomic, strong) FLMKeyboardOverlayWindow *keyboardOverlayWindow;
+@property(nonatomic, strong) FLMKeyboardHostBridgeView *floatingKeyboardHostBridgeView;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
 @property(nonatomic, weak) UIView *floatingKeyboardOriginalSuperview;
 @property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
@@ -1550,9 +1564,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.keyboardOverlayWindow) {
         self.keyboardOverlayWindow.frame = bounds;
         self.keyboardOverlayWindow.rootViewController.view.frame = bounds;
+        self.floatingKeyboardHostBridgeView.frame =
+            self.keyboardOverlayWindow.rootViewController.view.bounds;
         if (self.floatingKeyboardLayerHostView) {
             self.floatingKeyboardLayerHostView.frame =
-                self.keyboardOverlayWindow.rootViewController.view.bounds;
+                self.floatingKeyboardHostBridgeView.bounds;
         }
     }
     [self layoutFloatingWindow];
@@ -3793,6 +3809,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         window.rootViewController = [[FLMOverlayViewController alloc] init];
         window.rootViewController.view.backgroundColor = [UIColor clearColor];
         window.keyboardInteractionFrame = [self floatingKeyboardInteractionFrame];
+        FLMKeyboardHostBridgeView *bridge =
+            [[FLMKeyboardHostBridgeView alloc]
+                initWithFrame:window.rootViewController.view.bounds];
+        bridge.backgroundColor = [UIColor clearColor];
+        bridge.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                  UIViewAutoresizingFlexibleHeight;
+        [window.rootViewController.view addSubview:bridge];
+        self.floatingKeyboardHostBridgeView = bridge;
         window.hidden = YES;
         self.keyboardOverlayWindow = window;
     }
@@ -3848,7 +3872,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     [self prepareFloatingKeyboardHostIfNeeded];
     UIView *overlayRoot = self.keyboardOverlayWindow.rootViewController.view;
-    if (!overlayRoot) {
+    FLMKeyboardHostBridgeView *bridge = self.floatingKeyboardHostBridgeView;
+    if (!overlayRoot || !bridge) {
         return;
     }
     if (hostView != self.floatingKeyboardLayerHostView ||
@@ -3859,6 +3884,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             return;
         }
         UIView *originalSuperview = hostView.superview;
+        bridge.forwardingNextResponder = hostView.nextResponder;
         self.floatingKeyboardOriginalSuperview = originalSuperview;
         self.floatingKeyboardOriginalSubviewIndex =
             originalSuperview ? [originalSuperview.subviews indexOfObject:hostView]
@@ -3872,17 +3898,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardHostSessionGeneration = sessionGeneration;
     }
 
-    if (hostView.superview != overlayRoot) {
+    if (hostView.superview != bridge) {
         [hostView removeFromSuperview];
         hostView.translatesAutoresizingMaskIntoConstraints = YES;
         hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                     UIViewAutoresizingFlexibleHeight;
         hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = overlayRoot.bounds;
-        [overlayRoot addSubview:hostView];
+        hostView.frame = bridge.bounds;
+        [bridge addSubview:hostView];
     } else {
         hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = overlayRoot.bounds;
+        hostView.frame = bridge.bounds;
     }
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
@@ -3920,6 +3946,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // touching a private hierarchy whose owner has already disappeared.
     }
     self.floatingKeyboardLayerHostView = nil;
+    self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
@@ -3933,6 +3960,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     } @catch (__unused NSException *exception) {
     }
     self.floatingKeyboardLayerHostView = nil;
+    self.floatingKeyboardHostBridgeView.forwardingNextResponder = nil;
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;

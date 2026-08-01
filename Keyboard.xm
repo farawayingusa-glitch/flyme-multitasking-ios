@@ -27,9 +27,12 @@ static CFAbsoluteTime FLMKeyboardLastPrepareTime = 0.0;
 static const CFTimeInterval FLMKeyboardPrepareDebounce = 0.15;
 static BOOL FLMRemoteKeyboardAvoidanceInstalled = NO;
 static NSUInteger FLMRemoteKeyboardAvoidanceInstallGeneration = 0;
+static BOOL FLMEndingApplicationKeyboardSession = NO;
+static CGFloat FLMRoutedKeyboardHeight = 0.0;
 
 static void FLMInstallRemoteKeyboardAvoidanceIfAvailable(void);
 static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void);
+static void FLMRefreshApplicationKeyboardLayout(void);
 
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
@@ -152,6 +155,10 @@ static BOOL FLMResignFirstResponderInView(UIView *view) {
 }
 
 static void FLMEndApplicationKeyboardSession(void) {
+    if (FLMEndingApplicationKeyboardSession) {
+        return;
+    }
+    FLMEndingApplicationKeyboardSession = YES;
     UIResponder *activeResponder = FLMKeyboardActiveTextResponder;
     @try {
         if (activeResponder) {
@@ -177,6 +184,46 @@ static void FLMEndApplicationKeyboardSession(void) {
              from:nil
          forEvent:nil];
     FLMKeyboardActiveTextResponder = nil;
+    FLMEndingApplicationKeyboardSession = NO;
+}
+
+static void FLMRefreshApplicationKeyboardLayout(void) {
+    if (!FLMKeyboardRouteActive) {
+        return;
+    }
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)connectedScene;
+        if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
+            continue;
+        }
+        for (UIWindow *window in windowScene.windows) {
+            [window setNeedsLayout];
+            [window.rootViewController.view setNeedsLayout];
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!FLMKeyboardRouteActive) {
+            return;
+        }
+        for (UIScene *connectedScene in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            UIWindowScene *windowScene = (UIWindowScene *)connectedScene;
+            if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
+                continue;
+            }
+            for (UIWindow *window in windowScene.windows) {
+                [window layoutIfNeeded];
+                [window.rootViewController.view layoutIfNeeded];
+            }
+        }
+    });
 }
 
 static void FLMReloadKeyboardRoute(void) {
@@ -203,6 +250,7 @@ static void FLMReloadKeyboardRoute(void) {
                          &FLMKeyboardTargetSceneHash);
     }
     if (sessionChanged) {
+        FLMRoutedKeyboardHeight = 0.0;
         // Close any responder and keyboard Scene retained by the previous
         // centered card before the new generation is allowed to prepare a
         // physical-screen host. This does not depend on delivery of the
@@ -216,6 +264,7 @@ static void FLMReloadKeyboardRoute(void) {
         }
         FLMKeyboardLastPrepareTime = 0.0;
     } else if (!FLMKeyboardRouteActive) {
+        FLMRoutedKeyboardHeight = 0.0;
         FLMKeyboardLastPrepareTime = 0.0;
     }
     if (FLMKeyboardRouteActive) {
@@ -295,6 +344,8 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return;
     }
     CGFloat height = visible ? MAX(0.0, CGRectGetHeight(frame)) : 0.0;
+    FLMRoutedKeyboardHeight = height;
+    FLMRefreshApplicationKeyboardLayout();
     uint64_t encodedHeight =
         MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
     uint64_t encodedGeneration =
@@ -356,17 +407,9 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     }
 
     CGFloat sceneHeight = 0.0;
-    SEL frameSelector = NSSelectorFromString(@"frame");
-    if ([windowScene respondsToSelector:frameSelector]) {
-        @try {
-            CGRect (*frameGetter)(id, SEL) =
-                (CGRect (*)(id, SEL))[windowScene methodForSelector:frameSelector];
-            if (frameGetter) {
-                sceneHeight = CGRectGetHeight(frameGetter(windowScene, frameSelector));
-            }
-        } @catch (__unused NSException *exception) {
-            sceneHeight = 0.0;
-        }
+    UIWindow *keyWindow = windowScene.keyWindow;
+    if (keyWindow && !keyWindow.hidden) {
+        sceneHeight = CGRectGetHeight(keyWindow.frame);
     }
     if (sceneHeight < 1.0) {
         for (UIWindow *window in windowScene.windows) {
@@ -379,6 +422,16 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     }
     CGFloat physicalHeight =
         CGRectGetHeight(FLMPhysicalReferenceBoundsForScene(windowScene));
+    CGFloat routedHeight = MIN(sceneHeight > 1.0 ? sceneHeight : physicalHeight,
+                               MAX(0.0, FLMRoutedKeyboardHeight));
+    if (routedHeight > 1.0) {
+        // The application Scene stays in full-screen coordinates while only
+        // its SpringBoard presentation layer is scaled into the card. A
+        // Scene-height delta is therefore commonly zero. Use the actual
+        // routed keyboard frame so UIKit moves the input accessory by the
+        // same amount as a normal full-screen keyboard.
+        return MAX(originalHeight, routedHeight);
+    }
     if (sceneHeight < 1.0 || physicalHeight <= sceneHeight + 1.0) {
         return originalHeight;
     }
@@ -519,6 +572,13 @@ static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(__unused NSNotification *notification) {
             FLMKeyboardLastPrepareTime = 0.0;
+            // The keyboard's own collapse control begins a UIKit hide
+            // transaction, but apps such as WeChat can retain the remote text
+            // responder and immediately keep it alive. End the concrete
+            // responder without ending the centered-card route.
+            if (FLMKeyboardRouteActive) {
+                FLMEndApplicationKeyboardSession();
+            }
         }];
         FLMKeyboardHideObserver =
             [center addObserverForName:UIKeyboardDidHideNotification

@@ -73,6 +73,9 @@ for keyboard_line in \
     'FLYME_KEYBOARD_PREPARE_NOTIFICATION' \
     'FLMKeyboardPrepareDebounce = 0.15' \
     'UIKeyboardWillHideNotification' \
+    'FLMRoutedKeyboardHeight' \
+    'FLMEndingApplicationKeyboardSession' \
+    'FLMKeyboardHostBridgeView' \
     '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
