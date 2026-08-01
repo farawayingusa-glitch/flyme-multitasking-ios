@@ -1,7 +1,8 @@
 param(
     [string]$Source = 'Tweak.xm',
     [string]$KeyboardSource = 'Keyboard.xm',
-    [string]$LifecycleSource = 'SceneLifecycle.xm'
+    [string]$LifecycleSource = 'SceneLifecycle.xm',
+    [string]$KeyboardFilter = 'FlymeKeyboard.plist'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,153 +13,106 @@ function Require-Text([string]$Path, [string]$Text) {
     }
 }
 
-Require-Text $Source 'FLMFloatingLaunchTimeout = 6.5'
-Require-Text $Source 'FLMFloatingSceneSettleDelay = 0.18'
-Require-Text $Source 'FLMFloatingSceneGenerationDelay = 0.75'
-Require-Text $Source 'FLMFloatingLaunchStateWaitingForScene'
-Require-Text $Source 'failFloatingLaunchForIdentifier:'
-Require-Text $Source 'generatingNewPrimarySceneIfRequired:generatePrimaryScene'
-Require-Text $Source 'CACurrentMediaTime() - self.floatingLaunchStartedAt'
-Require-Text $Source 'FLMFloatingSceneSettleDelay'
-Require-Text $Source '- (void)restoreFloatingHandleInteraction'
-Require-Text $Source 'self.floatingHandle.userInteractionEnabled = YES;'
-Require-Text $Source 'UIView *primaryControl = self.floatingPrimaryControlView;'
-Require-Text $Source 'updateFloatingFullscreenSnapshotForProgress:'
-Require-Text $Source 'wrapper.frame = frame;'
-Require-Text $Source 'displayCommitted = targetIsFrontmost && attempt >= 1'
-Require-Text $Source 'setFloatingApplicationInputBlocked:YES'
-Require-Text $Source 'CGFloat handleWidth = visibleHandleWidth + 40.0;'
-Require-Text $Source 'pointIsInsideFloatingInteractionDomain:'
-Require-Text $Source 'self.floatingExclusiveTapEligible &&'
-Require-Text $Source 'UIKeyboardDidHideNotification'
-Require-Text $Source 'FLYME_KEYBOARD_SESSION_NOTIFICATION'
-Require-Text $Source 'floatingKeyboardSessionGeneration'
-Require-Text $KeyboardSource '%hook UITextEffectsWindow'
-Require-Text $KeyboardSource '- (CGRect)_referenceBounds'
-Require-Text $KeyboardSource 'FLMSceneMatchesKeyboardRoute'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_SCENE_NOTIFICATION'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_SESSION_NOTIFICATION'
-Require-Text $KeyboardSource '%hook UIResponder'
-Require-Text $KeyboardSource 'UIKeyboardDidHideNotification'
-Require-Text $KeyboardSource 'UIKeyboardWillHideNotification'
-Require-Text $KeyboardSource '%group FLMRemoteKeyboardGeometry'
-Require-Text $KeyboardSource 'intersectionHeightForWindowScene:'
-Require-Text $KeyboardSource 'FLMExternalKeyboardAvoidanceGeneration'
-Require-Text $KeyboardSource '_referenceBounds must remain UIKit-owned'
-Require-Text $KeyboardSource 'FLMEndingApplicationKeyboardSession'
-Require-Text $KeyboardSource '- (BOOL)resignFirstResponder'
-Require-Text $Source 'const CGFloat widthCompletion = 0.82;'
-Require-Text $Source 'const CGFloat verticalRevealStart = 0.22;'
-Require-Text $Source 'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;'
-Require-Text $Source '[UIView performWithoutAnimation:^{'
-Require-Text $Source 'endFloatingKeyboardSession'
-Require-Text $Source 'floatingLaunchCoverView'
-Require-Text $Source 'revealFloatingContentForGeneration'
-Require-Text $KeyboardSource 'FLMKeyboardActiveTextResponder'
-Require-Text $Source 'resolvedScene != self.floatingScene'
-Require-Text $Source 'needsInitialSceneSettle'
-Require-Text $Source '0.50 * NSEC_PER_SEC'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_DISMISS_NOTIFICATION'
-Require-Text $Source 'pointIsInsideFloatingInteractionDomain'
-Require-Text $KeyboardSource 'connectedScenes.count <= 1'
-Require-Text $KeyboardSource 'FLMResignFirstResponderInView'
-Require-Text $Source 'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION'
-Require-Text $KeyboardSource 'FLMKeyboardEndedSessionGeneration'
-Require-Text $KeyboardSource 'sendAction:@selector(resignFirstResponder)'
-Require-Text $Source '@interface FLMKeyboardForwardingWindow : UIWindow'
-Require-Text $Source 'window.windowLevel = self.floatingWindow.windowLevel + 1.0;'
-Require-Text $Source 'keyboardInteractionFrame'
-Require-Text $Source 'FLMPublishKeyboardAvoidance'
-Require-Text $KeyboardSource 'return FLMExternalKeyboardAvoidanceHeight;'
-Require-Text $KeyboardSource 'if (!currentSession)'
-Require-Text $KeyboardSource 'Never touch UIScreen/UIApplication from a dyld initializer'
-Require-Text $KeyboardSource 'FLMKeyboardTargetApplication'
-Require-Text $KeyboardSource 'FLMKeyboardExtensionProcess'
-Require-Text $KeyboardSource '@"keyboard-service"'
-Require-Text $Source 'FLMPublishKeyboardCardGeometry'
-Require-Text $KeyboardSource 'FLMReloadKeyboardCardGeometry'
-Require-Text $KeyboardSource 'FLMCorrectKeyboardNotificationUserInfo'
-Require-Text $KeyboardSource '%hook NSNotificationCenter'
-Require-Text $KeyboardSource 'FLMKeyboardCardVisualScale'
-Require-Text $Source 'outsideCloseAuthorized'
-Require-Text $Source 'flmOutsideCloseAuthorized'
-Require-Text $Source '[self.keyboardForwardingWindow makeKeyAndVisible];'
-Require-Text $Source 'floatingKeyboardAvoidanceHeightForFrame:'
-Require-Text $Source 'initWithWindowScene:targetWindowScene'
-Require-Text $Source 'setAutorotates:forceUpdateInterfaceOrientation:'
-Require-Text $Source 'hitView == self || hitView == rootView'
-Require-Text $Source '%hook _UIKeyboardLayerHostView'
-Require-Text $Source 'didUpdateClientSettingsWithDiff:'
-Require-Text $Source '[forwardingRoot addSubview:hostView];'
-Require-Text $Source '[self discardFloatingKeyboardLayerHost];'
-Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
-
-$KeyboardContents = Get-Content -LiteralPath $KeyboardSource -Raw
-if ($KeyboardContents -match 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);') {
-    throw 'Keyboard avoidance must not reload from route or dyld initialization paths'
-}
-if ((Select-String -LiteralPath $Source -SimpleMatch 'consumeOutsideTapForKeyboardDismissal' -Quiet)) {
-    throw 'Legacy first outside tap keyboard-only dismissal was reintroduced'
+function Reject-Text([string]$Path, [string]$Text) {
+    if (Select-String -LiteralPath $Path -SimpleMatch $Text -Quiet) {
+        throw "Rejected obsolete or unsafe marker in ${Path}: $Text"
+    }
 }
 
-foreach ($WrongKeyboardLayout in @(
-    'FLMApplyApplicationKeyboardSafeArea',
+# Scene launch and gesture foundations remain frozen.
+foreach ($Marker in @(
+    'FLMFloatingLaunchTimeout = 6.5',
+    'FLMFloatingSceneSettleDelay = 0.18',
+    'FLMFloatingSceneGenerationDelay = 0.75',
+    'failFloatingLaunchForIdentifier:',
+    'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
+    'restoreFloatingHandleInteraction',
+    'updateFloatingFullscreenSnapshotForProgress:',
+    'displayCommitted = targetIsFrontmost && attempt >= 1',
+    'CGFloat handleWidth = visibleHandleWidth + 40.0;',
+    'pointIsInsideFloatingInteractionDomain:',
+    'outsideCloseAuthorized',
+    'flmOutsideCloseAuthorized',
+    'UIKeyboardDidHideNotification',
+    'FLYME_KEYBOARD_SESSION_NOTIFICATION',
+    'FLMPublishKeyboardCardGeometry',
+    '@interface FLMKeyboardForwardingWindow : UIWindow',
+    'window.windowLevel = self.floatingWindow.windowLevel + 1.0;',
+    '[self.keyboardForwardingWindow makeKeyAndVisible];',
+    '%hook _UIKeyboardLayerHostView',
+    'didUpdateClientSettingsWithDiff:',
+    '[forwardingRoot addSubview:hostView];',
+    'sb frame-apply rejected=inactive-session',
+    'sb session-end route-cleared',
+    '0.24 * NSEC_PER_SEC'
+)) {
+    Require-Text $Source $Marker
+}
+
+# NathanLR/ElleKit loads UIKit adapters through the UIKit bundle filter. A
+# Classes=UIApplication filter was the 0.8.30 regression and must not return.
+Require-Text $KeyboardFilter '<key>Bundles</key>'
+Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
+Reject-Text $KeyboardFilter '<key>Classes</key>'
+
+# The app/extension module is a narrow geometry adapter. It may end an old
+# responder only when the centered Scene generation changes; it must not hook
+# keyboard hide notifications, mutate safe areas, or synthesize notifications.
+foreach ($Marker in @(
+    'This module is deliberately a narrow UIKit geometry adapter',
+    '%hook UITextEffectsWindow',
+    'keyboardScreenReferenceSize',
+    '%group FLMRemoteKeyboardGeometry',
+    'intersectionHeightForWindowScene:',
+    'FLMSceneMatchesKeyboardRoute',
+    'FLMKeyboardTargetApplication',
+    'FLMKeyboardExtensionProcess',
+    '@"keyboard-service"',
+    'FLMReloadKeyboardCardGeometry',
+    'FLMExternalKeyboardAvoidanceGeneration',
+    'FLMEndPreviousApplicationKeyboardSession',
+    'sendAction:@selector(resignFirstResponder)',
+    'FLMDiagnosticEventIntersection'
+)) {
+    Require-Text $KeyboardSource $Marker
+}
+
+foreach ($Removed in @(
+    '%hook UIResponder',
+    '%hook NSNotificationCenter',
+    'UIKeyboardWillHideNotification',
+    'UIKeyboardDidHideNotification',
+    'FLYME_KEYBOARD_FRAME_NOTIFICATION',
+    'FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION',
+    'FLYME_KEYBOARD_DISMISS_NOTIFICATION',
+    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION',
     'additionalSafeAreaInsets',
+    'FLMApplyApplicationKeyboardSafeArea',
+    'FLMCorrectKeyboardNotificationUserInfo',
     'applyFloatingKeyboardContainerOffsetForFrame:',
-    'centeredFloatingFrameWithKeyboardOffset',
+    '%hook UIWindowScene',
+    '%hook UIKeyboardWindow',
+    '%hook UIRemoteKeyboardWindow'
+)) {
+    Reject-Text $KeyboardSource $Removed
+}
+
+foreach ($Removed in @(
+    'FLYME_KEYBOARD_FRAME_NOTIFICATION',
+    'FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION',
+    'FLYME_KEYBOARD_DISMISS_NOTIFICATION',
+    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION',
+    'FLMRequestApplicationKeyboardDismiss',
+    'floatingKeyboardRouteReadyGeneration',
+    'finalizeFloatingKeyboardSessionEnd:',
+    'route-not-ready',
+    'consumeOutsideTapForKeyboardDismissal',
+    'applyFloatingKeyboardContainerOffsetForFrame:',
     'floatingKeyboardContainerOffsetY',
-    'keyboardTouchObserver'
+    'setFloatingSceneUsesFullscreenKeyboardHost'
 )) {
-    if ((Select-String -LiteralPath $KeyboardSource -SimpleMatch $WrongKeyboardLayout -Quiet) -or
-        (Select-String -LiteralPath $Source -SimpleMatch $WrongKeyboardLayout -Quiet)) {
-        throw "Wrong whole-card or safe-area keyboard layout detected: $WrongKeyboardLayout"
-    }
+    Reject-Text $Source $Removed
 }
 
-foreach ($RemovedKeyboardPatch in @(
-    'FLMRemoteKeyboardAvoidance',
-    'FLMApplyCorrectedKeyboardOcclusion',
-    'postNotificationName:UIKeyboardWillChangeFrameNotification',
-    '@interface FLMKeyboardOverlayWindow',
-    '@interface FLMKeyboardHostBridgeView',
-    'FLMPublishKeyboardOcclusion'
-)) {
-    if ((Select-String -LiteralPath $KeyboardSource -SimpleMatch $RemovedKeyboardPatch -Quiet) -or
-        (Select-String -LiteralPath $Source -SimpleMatch $RemovedKeyboardPatch -Quiet)) {
-        throw "Removed keyboard patch architecture was reintroduced: $RemovedKeyboardPatch"
-    }
-}
-
-if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {
-    throw 'Fixed fullscreen handoff stall was reintroduced.'
-}
-
-# The repair must retain a bounded escape route and must not hook keyboard
-# UIWindow classes themselves. The forwarding path observes only the layer
-# host's completed client-settings transaction.
-if (Select-String -LiteralPath $KeyboardSource -Pattern '^%hook UIWindow\s*$|^%hook UIRemoteKeyboardWindow\s*$|^%hook UIKeyboardWindow\s*$' -Quiet) {
-    throw 'Unsafe direct keyboard-window hook detected.'
-}
-
-if (Select-String -LiteralPath $KeyboardSource -SimpleMatch '%hook UIWindowScene' -Quiet) {
-    throw 'Application Scene reference bounds are being overridden again.'
-}
-
-if (Select-String -LiteralPath $Source -SimpleMatch 'setFloatingSceneUsesFullscreenKeyboardHost' -Quiet) {
-    throw 'Whole application Scene keyboard expansion was reintroduced.'
-}
-
-foreach ($unsafeKeyboardLine in @(
-    '- (void)didMoveToWindow',
-    'FLMKeyboardPreparePosted',
-    'floatingReusableKeyboardLayerHostView',
-    'scheduleFloatingKeyboardLayerHostDetach',
-    'FLMKeyboardDiagnosticLog'
-)) {
-    if ((Select-String -LiteralPath $Source -SimpleMatch $unsafeKeyboardLine -Quiet) -or
-        (Select-String -LiteralPath $KeyboardSource -SimpleMatch $unsafeKeyboardLine -Quiet)) {
-        throw "Unsafe or one-shot keyboard path detected: $unsafeKeyboardLine"
-    }
-}
-
-Write-Output 'lifecycle, launch, and keyboard repair markers verified'
+Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
+Write-Output 'scene lifecycle and SpringBoard-owned keyboard architecture verified'

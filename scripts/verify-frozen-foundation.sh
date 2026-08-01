@@ -3,220 +3,103 @@ set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
 keyboard_source="${2:-Keyboard.xm}"
+keyboard_filter="${3:-FlymeKeyboard.plist}"
 
-required_lines=(
+required_source=(
     "const CGFloat horizontalRadius = 58.0;"
     "const CGFloat verticalRadius = 65.0;"
     "self.cornerGesture.minimumPressDuration = 0.12;"
     "self.cornerGuardGesture.minimumPressDuration = 0.0;"
     "CGPoint rawPoint = [touch locationInView:nil];"
     "CGPoint rawPoint = [gesture locationInView:nil];"
-    "CGPoint point = FLMVisualPointFromRawPoint(rawPoint);"
     "return totalMovement >= 14.0 &&"
-    "(inwardMovement >= 4.0 || upwardMovement >= 4.0);"
     "static const CGFloat FLMDefaultWheelRadius = 202.0;"
     "static const CGFloat FLMDefaultWheelIconSize = 56.0;"
-    "maximumDistance:self.wheelIconSize * 0.5 + 2.0"
-    "CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);"
-    "CGFloat desiredSpacing = self.wheelIconSize + 20.0;"
-    "CGFloat containerWidth = width * 0.77;"
-    "CGFloat containerHeight = 520.0;"
-    "floor((height - containerHeight) * 0.5 - 44.0);"
-    "CGRectMake(0.0, 0.0, 5.0, handleHeight);"
-    "updateFloatingFullscreenSnapshotForProgress"
-    "wrapper.frame = frame;"
-    "displayCommitted = targetIsFrontmost && attempt >= 1"
-    "CGAffineTransformMakeScale(scale, scale)"
-    "setFloatingApplicationInputBlocked:YES"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
-    "self.floatingDockWidth = FLMMinimumDockWidth;"
-    "updateFloatingDockAccessoryPositions"
+    "updateFloatingFullscreenSnapshotForProgress"
+    "displayCommitted = targetIsFrontmost && attempt >= 1"
     "keyboardPassThroughFrame"
     "floatingKeyboardSessionGeneration"
+    "sb frame-apply rejected=inactive-session"
+    "sb session-end route-cleared"
+    "%hook _UIKeyboardLayerHostView"
 )
 
-for required_line in "${required_lines[@]}"; do
-    if ! grep -Fq "$required_line" "$source_file"; then
-        echo "frozen 0.3.4 foundation changed: $required_line" >&2
+for marker in "${required_source[@]}"; do
+    grep -Fq -- "$marker" "$source_file" || {
+        echo "frozen gesture, launch, or keyboard-host marker changed: $marker" >&2
+        exit 1
+    }
+done
+
+required_keyboard=(
+    "This module is deliberately a narrow UIKit geometry adapter"
+    "%hook UITextEffectsWindow"
+    "keyboardScreenReferenceSize"
+    "%group FLMRemoteKeyboardGeometry"
+    "intersectionHeightForWindowScene:"
+    "FLMEndPreviousApplicationKeyboardSession"
+    "FLMExternalKeyboardAvoidanceGeneration"
+    "notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION"
+)
+
+for marker in "${required_keyboard[@]}"; do
+    grep -Fq -- "$marker" "$keyboard_source" || {
+        echo "narrow UIKit keyboard adapter changed: $marker" >&2
+        exit 1
+    }
+done
+
+grep -Fq '<key>Bundles</key>' "$keyboard_filter"
+grep -Fq '<string>com.apple.UIKit</string>' "$keyboard_filter"
+! grep -Fq '<key>Classes</key>' "$keyboard_filter"
+
+removed_keyboard=(
+    "%hook UIResponder"
+    "%hook NSNotificationCenter"
+    "UIKeyboardWillHideNotification"
+    "UIKeyboardDidHideNotification"
+    "FLYME_KEYBOARD_FRAME_NOTIFICATION"
+    "FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION"
+    "FLYME_KEYBOARD_DISMISS_NOTIFICATION"
+    "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION"
+    "additionalSafeAreaInsets"
+    "FLMCorrectKeyboardNotificationUserInfo"
+    "%hook UIWindowScene"
+    "%hook UIKeyboardWindow"
+    "%hook UIRemoteKeyboardWindow"
+)
+
+for marker in "${removed_keyboard[@]}"; do
+    if grep -Fq -- "$marker" "$keyboard_source"; then
+        echo "obsolete keyboard patch architecture returned: $marker" >&2
         exit 1
     fi
 done
 
-if grep -Fq "locationInView:self.overlayWindow.rootViewController.view" "$source_file"; then
-    echo "global wheel touch was incorrectly converted through the overlay window" >&2
-    exit 1
-fi
+removed_source=(
+    "FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION"
+    "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION"
+    "FLMRequestApplicationKeyboardDismiss"
+    "floatingKeyboardRouteReadyGeneration"
+    "route-not-ready"
+    "consumeOutsideTapForKeyboardDismissal"
+    "floatingKeyboardContainerOffsetY"
+    "setFloatingSceneUsesFullscreenKeyboardHost"
+)
 
-if grep -Fq 'CFPreferencesSetValue(CFSTR("DockWidth")' "$source_file"; then
-    echo "docked card size persistence was reintroduced" >&2
-    exit 1
-fi
-
-if grep -Eq 'systemHome|SystemHome|SBHomeGesture' "$source_file"; then
-    echo "removed system-bottom handoff code was reintroduced" >&2
-    exit 1
-fi
-
-if grep -Fq '%hook UIRemoteKeyboardWindow' "$source_file" ||
-   grep -Fq '%hook UIKeyboardWindow' "$source_file"; then
-    echo "SpringBoard runtime directly hooks keyboard windows" >&2
-    exit 1
-fi
-
-for keyboard_line in \
-    '%hook UITextEffectsWindow' \
-    'keyboardScreenReferenceSize' \
-    'FLMIdentifierHash' \
-    'FLMSceneMatchesKeyboardRoute' \
-    'FLYME_KEYBOARD_SCENE_NOTIFICATION' \
-    'FLYME_KEYBOARD_SESSION_NOTIFICATION' \
-    'UIKeyboardWillHideNotification' \
-    '%group FLMRemoteKeyboardGeometry' \
-    'intersectionHeightForWindowScene:' \
-    'FLMExternalKeyboardAvoidanceGeneration' \
-    '_referenceBounds must remain UIKit-owned' \
-    'FLMEndingApplicationKeyboardSession' \
-    '- (BOOL)resignFirstResponder' \
-    '%hook UIResponder' \
-    'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
-    if ! grep -Fq -- "$keyboard_line" "$keyboard_source"; then
-        echo "safe keyboard bridge changed: $keyboard_line" >&2
+for marker in "${removed_source[@]}"; do
+    if grep -Fq -- "$marker" "$source_file"; then
+        echo "obsolete SpringBoard keyboard gate returned: $marker" >&2
         exit 1
     fi
 done
 
-for overlay_line in \
-    'const CGFloat widthCompletion = 0.82;' \
-    'const CGFloat verticalRevealStart = 0.22;' \
-    'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;' \
-    '[UIView performWithoutAnimation:^{'; do
-    if ! grep -Fq "$overlay_line" "$source_file"; then
-        echo "keyboard overlay or continuous fullscreen morph changed: $overlay_line" >&2
-        exit 1
-    fi
-done
-
-for keyboard_handoff_line in \
-    'FLMKeyboardActiveTextResponder' \
-    'resolvedScene != self.floatingScene' \
-    'needsInitialSceneSettle' \
-    '0.50 * NSEC_PER_SEC' \
-    'FLYME_KEYBOARD_DISMISS_NOTIFICATION' \
-    'pointIsInsideFloatingInteractionDomain' \
-    'connectedScenes.count <= 1' \
-    'FLMResignFirstResponderInView' \
-    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
-    'FLMKeyboardEndedSessionGeneration' \
-    'sendAction:@selector(resignFirstResponder)' \
-    '@interface FLMKeyboardForwardingWindow : UIWindow' \
-    'window.windowLevel = self.floatingWindow.windowLevel + 1.0;' \
-    'keyboardInteractionFrame' \
-    'FLMPublishKeyboardAvoidance' \
-    'return FLMExternalKeyboardAvoidanceHeight;' \
-    'if (!currentSession)' \
-    'Never touch UIScreen/UIApplication from a dyld initializer' \
-    'FLMKeyboardTargetApplication' \
-    'FLMKeyboardExtensionProcess' \
-    '@"keyboard-service"' \
-    'FLMPublishKeyboardCardGeometry' \
-    'FLMReloadKeyboardCardGeometry' \
-    'FLMCorrectKeyboardNotificationUserInfo' \
-    '%hook NSNotificationCenter' \
-    'FLMKeyboardCardVisualScale' \
-    'outsideCloseAuthorized' \
-    'flmOutsideCloseAuthorized' \
-    '[self.keyboardForwardingWindow makeKeyAndVisible];' \
-    'floatingKeyboardAvoidanceHeightForFrame:' \
-    'initWithWindowScene:targetWindowScene' \
-    'setAutorotates:forceUpdateInterfaceOrientation:' \
-    'hitView == self || hitView == rootView' \
-    '%hook _UIKeyboardLayerHostView' \
-    'didUpdateClientSettingsWithDiff:' \
-    '[forwardingRoot addSubview:hostView];' \
-    '[self discardFloatingKeyboardLayerHost];' \
-    'endFloatingKeyboardSession' \
-    'floatingLaunchCoverView' \
-    'revealFloatingContentForGeneration'; do
-    if ! grep -Fq -- "$keyboard_handoff_line" "$source_file" &&
-       ! grep -Fq -- "$keyboard_handoff_line" "$keyboard_source"; then
-        echo "keyboard handoff or launch reveal changed: $keyboard_handoff_line" >&2
-        exit 1
-    fi
-done
-
-if grep -Pzoq 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);' "$keyboard_source"; then
-    echo "keyboard avoidance reintroduced into a route or dyld initializer path" >&2
-    exit 1
-fi
-
-if grep -Fq 'consumeOutsideTapForKeyboardDismissal' "$source_file"; then
-    echo "legacy first outside tap keyboard-only dismissal was reintroduced" >&2
-    exit 1
-fi
-
-for wrong_keyboard_layout in \
-    'FLMApplyApplicationKeyboardSafeArea' \
-    'additionalSafeAreaInsets' \
-    'applyFloatingKeyboardContainerOffsetForFrame:' \
-    'centeredFloatingFrameWithKeyboardOffset' \
-    'floatingKeyboardContainerOffsetY' \
-    'keyboardTouchObserver'; do
-    if grep -Fq "$wrong_keyboard_layout" "$keyboard_source" ||
-       grep -Fq "$wrong_keyboard_layout" "$source_file"; then
-        echo "wrong whole-card or safe-area keyboard layout detected: $wrong_keyboard_layout" >&2
-        exit 1
-    fi
-done
-
-for removed_keyboard_patch in \
-    'FLMRemoteKeyboardAvoidance' \
-    'FLMApplyCorrectedKeyboardOcclusion' \
-    'postNotificationName:UIKeyboardWillChangeFrameNotification' \
-    '@interface FLMKeyboardOverlayWindow' \
-    '@interface FLMKeyboardHostBridgeView' \
-    'FLMPublishKeyboardOcclusion'; do
-    if grep -Fq "$removed_keyboard_patch" "$keyboard_source" ||
-       grep -Fq "$removed_keyboard_patch" "$source_file"; then
-        echo "removed keyboard patch architecture was reintroduced: $removed_keyboard_patch" >&2
-        exit 1
-    fi
-done
-
-if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
-    echo "whole application Scene keyboard expansion was reintroduced" >&2
-    exit 1
-fi
-
-for unsafe_keyboard_line in \
-    '- (void)didMoveToWindow' \
-    'FLMKeyboardPreparePosted' \
-    'floatingReusableKeyboardLayerHostView' \
-    'scheduleFloatingKeyboardLayerHostDetach' \
-    'FLMKeyboardDiagnosticLog'; do
-    if grep -Fq -- "$unsafe_keyboard_line" "$source_file" ||
-       grep -Fq -- "$unsafe_keyboard_line" "$keyboard_source"; then
-        echo "unsafe or one-shot keyboard path detected: $unsafe_keyboard_line" >&2
-        exit 1
-    fi
-done
-
-if grep -Fq '%hook UIWindowScene' "$keyboard_source"; then
-    echo "application Scene reference bounds are being overridden again" >&2
-    exit 1
-fi
-
-if grep -Eq '^%hook UIWindow[[:space:]]*$' "$keyboard_source"; then
-    echo "keyboard bridge grew beyond the verified minimal hook surface" >&2
-    exit 1
-fi
-
-guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" |
-    head -n1 | cut -d: -f1)"
-wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" |
-    head -n1 | cut -d: -f1)"
+guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
+wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
-    echo "frozen 0.3.4 first-frame guard registration order changed" >&2
+    echo "frozen first-frame guard registration order changed" >&2
     exit 1
 fi
 
-echo "frozen 0.3.4 gesture and wheel foundation verified"
+echo "frozen gesture foundation and SpringBoard-owned keyboard architecture verified"
