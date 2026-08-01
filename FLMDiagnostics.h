@@ -1,0 +1,72 @@
+#ifndef FLM_DIAGNOSTICS_H
+#define FLM_DIAGNOSTICS_H
+
+#import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
+#import <notify.h>
+#import <stdint.h>
+
+#define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-event-v2"
+
+typedef NS_ENUM(uint8_t, FLMDiagnosticRole) {
+    FLMDiagnosticRoleSpringBoard = 1,
+    FLMDiagnosticRoleApplication = 2,
+    FLMDiagnosticRoleKeyboardExtension = 3,
+    FLMDiagnosticRoleUIKitOther = 4,
+};
+
+typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
+    FLMDiagnosticEventProcessReady = 1,
+    FLMDiagnosticEventRouteReload = 2,
+    FLMDiagnosticEventResponderBecome = 3,
+    FLMDiagnosticEventResponderResign = 4,
+    FLMDiagnosticEventFramePublish = 5,
+    FLMDiagnosticEventFrameObserved = 6,
+    FLMDiagnosticEventFrameCorrected = 7,
+    FLMDiagnosticEventCardGeometry = 8,
+    FLMDiagnosticEventAvoidanceReload = 9,
+    FLMDiagnosticEventIntersection = 10,
+    FLMDiagnosticEventDismissRequest = 11,
+    FLMDiagnosticEventWillHide = 12,
+    FLMDiagnosticEventDidHide = 13,
+    FLMDiagnosticEventSceneMatch = 14,
+    FLMDiagnosticEventLayoutRefresh = 15,
+};
+
+// Cross-process diagnostics intentionally carry only fixed-width integers.
+// UIKit clients and third-party keyboard extensions never perform file I/O;
+// SpringBoard is the sole log writer after its launch has completed.
+static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
+                                             FLMDiagnosticEvent event,
+                                             uint64_t sessionGeneration,
+                                             uint16_t firstValue,
+                                             uint16_t secondValue) {
+    static int eventToken = -1;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (notify_register_check(FLYME_DIAGNOSTIC_EVENT_NOTIFICATION,
+                                  &eventToken) != NOTIFY_STATUS_OK) {
+            eventToken = -1;
+        }
+    });
+    if (eventToken < 0) {
+        return;
+    }
+    uint64_t state = ((uint64_t)event << 56) |
+                     ((uint64_t)role << 48) |
+                     ((sessionGeneration & 0xFFFFULL) << 32) |
+                     ((uint64_t)firstValue << 16) |
+                     (uint64_t)secondValue;
+    notify_set_state(eventToken, state);
+    notify_post(FLYME_DIAGNOSTIC_EVENT_NOTIFICATION);
+}
+
+static inline uint16_t FLMDiagnosticUnsignedValue(CGFloat value) {
+    if (!isfinite(value) || value <= 0.0) {
+        return 0;
+    }
+    return (uint16_t)MIN(65535.0, llround(value));
+}
+
+#endif
