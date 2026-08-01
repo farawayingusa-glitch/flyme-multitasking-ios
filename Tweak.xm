@@ -27,9 +27,9 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
 static const char *FLMDiagnosticPrimaryPath =
-    "/var/jb/var/mobile/Documents/FlymeMultitasking-Diagnostic.log";
+    "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
 static const char *FLMDiagnosticFallbackPath =
-    "/var/mobile/Documents/FlymeMultitasking-Diagnostic.log";
+    "/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
 static dispatch_queue_t FLMDiagnosticWriterQueue;
 static BOOL FLMDiagnosticWriterReady = NO;
 static int FLMDiagnosticReceiverToken = -1;
@@ -165,7 +165,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.29-diagnostic1 schema=2");
+                    @"logger-ready build=0.8.29-diagnostic2 schema=2");
             }
         });
     });
