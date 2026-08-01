@@ -15,6 +15,7 @@ static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
+static uint64_t FLMKeyboardEndedSessionGeneration = 0;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
@@ -109,6 +110,11 @@ static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
 }
 
 static void FLMEndApplicationKeyboardSession(void) {
+    [[UIApplication sharedApplication]
+        sendAction:@selector(resignFirstResponder)
+               to:nil
+             from:nil
+         forEvent:nil];
     if (@available(iOS 13.0, *)) {
         for (UIScene *connectedScene in
              [UIApplication sharedApplication].connectedScenes) {
@@ -151,7 +157,11 @@ static void FLMReloadKeyboardRoute(void) {
         // physical-screen host. This does not depend on delivery of the
         // short-lived route-off notification between two openings.
         if (previousSessionGeneration != 0 && previousRouteActive) {
+            FLMKeyboardEndedSessionGeneration = previousSessionGeneration;
             FLMEndApplicationKeyboardSession();
+        }
+        if (sessionGeneration != 0) {
+            FLMKeyboardEndedSessionGeneration = 0;
         }
         FLMKeyboardLastPrepareTime = 0.0;
     } else if (!FLMKeyboardRouteActive) {
@@ -200,7 +210,13 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
 %end
 
 static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
-    if (!FLMKeyboardRouteActive) {
+    if (visible && !FLMKeyboardRouteActive) {
+        return;
+    }
+    uint64_t sessionGeneration = FLMKeyboardRouteActive
+                                     ? FLMKeyboardSessionGeneration
+                                     : FLMKeyboardEndedSessionGeneration;
+    if (sessionGeneration == 0) {
         return;
     }
     if (FLMKeyboardFrameToken < 0 &&
@@ -209,8 +225,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return;
     }
     CGFloat height = visible ? MAX(0.0, CGRectGetHeight(frame)) : 0.0;
-    uint64_t encodedHeight = (uint64_t)llround(height * 100.0);
-    uint64_t state = (visible ? (1ULL << 63) : 0) | encodedHeight;
+    uint64_t encodedHeight =
+        MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
+    uint64_t encodedGeneration =
+        (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
+    uint64_t state = (visible ? (1ULL << 63) : 0) |
+                     encodedGeneration | encodedHeight;
     notify_set_state(FLMKeyboardFrameToken, state);
     notify_post(FLYME_KEYBOARD_FRAME_NOTIFICATION);
 }
@@ -244,8 +264,60 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 %end
 
+// TrollOpen's keyboard helper statically shows that iOS 16 asks this object
+// for the overlap of a remote keyboard and its client WindowScene. Once the
+// keyboard surface is hosted at the physical screen bottom, the reduced app
+// Scene can report no overlap at all. Compensate only the routed app process;
+// SpringBoard never installs this hook, which keeps the proven 0.8.15 host
+// capture path out of the system process.
+%group FLMRemoteKeyboardAvoidance
+
+%hook _UIRemoteKeyboards
+
+- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
+                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
+                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
+    CGFloat originalHeight = %orig(windowScene,
+                                   isLocalMinimumHeightOut,
+                                   ignoreHorizontalOffset);
+    if (!FLMSceneMatchesKeyboardRoute(windowScene) ||
+        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        return originalHeight;
+    }
+
+    CGFloat sceneHeight = 0.0;
+    for (UIWindow *window in windowScene.windows) {
+        if (window.hidden || window.alpha <= 0.01 ||
+            window.windowLevel > UIWindowLevelNormal + 1.0) {
+            continue;
+        }
+        sceneHeight = MAX(sceneHeight, CGRectGetHeight(window.bounds));
+    }
+    CGFloat physicalHeight =
+        CGRectGetHeight(FLMPhysicalReferenceBoundsForScene(windowScene));
+    if (sceneHeight < 1.0 || physicalHeight <= sceneHeight + 1.0) {
+        return originalHeight;
+    }
+
+    // UIKit already accounts for any local intersection. Only supply the
+    // missing bottom segment when the external host made that value smaller;
+    // do not add it twice, which would lift chat controls too far.
+    CGFloat missingBottomIntersection = physicalHeight - sceneHeight;
+    return MIN(sceneHeight, MAX(originalHeight, missingBottomIntersection));
+}
+
+%end
+
+%end
+
 %ctor {
     @autoreleasepool {
+        NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
+        if (currentIdentifier.length > 0 &&
+            ![currentIdentifier isEqualToString:@"com.apple.springboard"] &&
+            NSClassFromString(@"_UIRemoteKeyboards")) {
+            %init(FLMRemoteKeyboardAvoidance);
+        }
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                                  &FLMKeyboardRouteToken,
                                  dispatch_get_main_queue(),

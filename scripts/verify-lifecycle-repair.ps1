@@ -55,6 +55,14 @@ Require-Text $Source 'const CGFloat widthCompletion = 0.82;'
 Require-Text $Source 'const CGFloat verticalRevealStart = 0.22;'
 Require-Text $Source 'background.alpha = verticalProgress > 0.0001 ? 1.0 : 0.0;'
 Require-Text $Source '[UIView performWithoutAnimation:^{'
+Require-Text $Source 'endFloatingKeyboardHostSession'
+Require-Text $Source 'floatingLaunchCoverView'
+Require-Text $Source 'revealFloatingContentForGeneration'
+Require-Text $KeyboardSource '%group FLMRemoteKeyboardAvoidance'
+Require-Text $KeyboardSource '![currentIdentifier isEqualToString:@"com.apple.springboard"]'
+Require-Text $KeyboardSource 'MAX(originalHeight, missingBottomIntersection)'
+Require-Text $KeyboardSource 'FLMKeyboardEndedSessionGeneration'
+Require-Text $KeyboardSource 'sendAction:@selector(resignFirstResponder)'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 
 if (Select-String -LiteralPath $Source -SimpleMatch 'BOOL minimumCoverTimeElapsed = attempt >= 8;' -Quiet) {
@@ -76,7 +84,6 @@ if (Select-String -LiteralPath $Source -SimpleMatch 'setFloatingSceneUsesFullscr
 }
 
 foreach ($unsafeKeyboardLine in @(
-    '%hook _UIRemoteKeyboards',
     '- (void)didMoveToWindow',
     'FLMKeyboardPreparePosted',
     'floatingReusableKeyboardLayerHostView',

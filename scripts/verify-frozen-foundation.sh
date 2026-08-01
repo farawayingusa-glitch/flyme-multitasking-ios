@@ -99,13 +99,28 @@ for overlay_line in \
     fi
 done
 
+for keyboard_handoff_line in \
+    '%group FLMRemoteKeyboardAvoidance' \
+    '![currentIdentifier isEqualToString:@"com.apple.springboard"]' \
+    'MAX(originalHeight, missingBottomIntersection)' \
+    'FLMKeyboardEndedSessionGeneration' \
+    'sendAction:@selector(resignFirstResponder)' \
+    'endFloatingKeyboardHostSession' \
+    'floatingLaunchCoverView' \
+    'revealFloatingContentForGeneration'; do
+    if ! grep -Fq -- "$keyboard_handoff_line" "$source_file" &&
+       ! grep -Fq -- "$keyboard_handoff_line" "$keyboard_source"; then
+        echo "keyboard handoff or launch reveal changed: $keyboard_handoff_line" >&2
+        exit 1
+    fi
+done
+
 if grep -Fq 'setFloatingSceneUsesFullscreenKeyboardHost' "$source_file"; then
     echo "whole application Scene keyboard expansion was reintroduced" >&2
     exit 1
 fi
 
 for unsafe_keyboard_line in \
-    '%hook _UIRemoteKeyboards' \
     '- (void)didMoveToWindow' \
     'FLMKeyboardPreparePosted' \
     'floatingReusableKeyboardLayerHostView' \
