@@ -102,7 +102,7 @@ for keyboard_handoff_line in \
     'needsInitialSceneSettle' \
     '0.50 * NSEC_PER_SEC' \
     'FLYME_KEYBOARD_DISMISS_NOTIFICATION' \
-    'consumeOutsideTapForKeyboardDismissal' \
+    'pointIsInsideFloatingInteractionDomain' \
     'connectedScenes.count <= 1' \
     'FLMResignFirstResponderInView' \
     'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
@@ -115,6 +115,12 @@ for keyboard_handoff_line in \
     'return FLMExternalKeyboardAvoidanceHeight;' \
     'if (!currentSession)' \
     'Never touch UIScreen/UIApplication from a dyld initializer' \
+    'FLMKeyboardTargetApplication' \
+    'FLMKeyboardExtensionProcess' \
+    '@"keyboard-service"' \
+    'FLMApplyApplicationKeyboardSafeArea' \
+    '[self.keyboardForwardingWindow makeKeyAndVisible];' \
+    'floatingKeyboardAvoidanceHeightForFrame:' \
     'initWithWindowScene:targetWindowScene' \
     'setAutorotates:forceUpdateInterfaceOrientation:' \
     'hitView == self || hitView == rootView' \
@@ -134,6 +140,11 @@ done
 
 if grep -Pzoq 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);' "$keyboard_source"; then
     echo "keyboard avoidance reintroduced into a route or dyld initializer path" >&2
+    exit 1
+fi
+
+if grep -Fq 'consumeOutsideTapForKeyboardDismissal' "$source_file"; then
+    echo "legacy first outside tap keyboard-only dismissal was reintroduced" >&2
     exit 1
 fi
 

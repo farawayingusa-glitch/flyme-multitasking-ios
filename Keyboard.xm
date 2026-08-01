@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <math.h>
 #import <notify.h>
+#import <objc/runtime.h>
 
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
@@ -11,6 +12,8 @@
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 
 static BOOL FLMKeyboardRouteActive = NO;
+static BOOL FLMKeyboardTargetApplication = NO;
+static BOOL FLMKeyboardExtensionProcess = NO;
 static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
@@ -28,10 +31,25 @@ static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 static BOOL FLMEndingApplicationKeyboardSession = NO;
 static BOOL FLMRemoteKeyboardGeometryInstalled = NO;
+static const void *FLMKeyboardBaseSafeAreaInsetsKey =
+    &FLMKeyboardBaseSafeAreaInsetsKey;
 
 static void FLMRefreshApplicationKeyboardLayout(void);
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
+
+static BOOL FLMProcessIsKeyboardExtension(void) {
+    NSDictionary *extension =
+        [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+    NSString *pointIdentifier =
+        [extension isKindOfClass:[NSDictionary class]]
+            ? extension[@"NSExtensionPointIdentifier"]
+            : nil;
+    return [pointIdentifier isKindOfClass:[NSString class]] &&
+           [pointIdentifier rangeOfString:@"keyboard-service"
+                                  options:NSCaseInsensitiveSearch].location !=
+               NSNotFound;
+}
 
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
@@ -102,6 +120,13 @@ static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
         return NO;
     }
     if (FLMKeyboardTargetSceneHash == 0) {
+        return YES;
+    }
+    // A third-party keyboard extension owns a remote keyboard Scene, not the
+    // target application's UIWindowScene identifier. The active Darwin
+    // session already limits this route to the selected keyboard lifetime;
+    // do not query UIApplication from an extension process.
+    if (FLMKeyboardExtensionProcess) {
         return YES;
     }
     uint64_t currentHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
@@ -187,7 +212,7 @@ static void FLMEndApplicationKeyboardSession(void) {
 }
 
 static void FLMRefreshApplicationKeyboardLayout(void) {
-    if (!FLMKeyboardRouteActive) {
+    if (!FLMKeyboardTargetApplication) {
         return;
     }
     for (UIScene *connectedScene in
@@ -225,6 +250,74 @@ static void FLMRefreshApplicationKeyboardLayout(void) {
     });
 }
 
+static void FLMApplyApplicationKeyboardSafeArea(CGFloat avoidanceHeight) {
+    CGFloat height = MAX(0.0, avoidanceHeight);
+    if (height > 1.0 && !FLMKeyboardTargetApplication) {
+        return;
+    }
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)connectedScene;
+        if (height > 1.0 && !FLMSceneMatchesKeyboardRoute(windowScene)) {
+            continue;
+        }
+        for (UIWindow *window in windowScene.windows) {
+            UIViewController *rootController = window.rootViewController;
+            if (!rootController || window.hidden || window.alpha <= 0.01 ||
+                (height > 1.0 &&
+                 window.windowLevel > UIWindowLevelNormal + 1.0)) {
+                continue;
+            }
+            NSValue *baseValue =
+                objc_getAssociatedObject(rootController,
+                                         FLMKeyboardBaseSafeAreaInsetsKey);
+            if (height > 1.0 && !baseValue) {
+                baseValue = [NSValue valueWithUIEdgeInsets:
+                    rootController.additionalSafeAreaInsets];
+                objc_setAssociatedObject(rootController,
+                                         FLMKeyboardBaseSafeAreaInsetsKey,
+                                         baseValue,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            if (!baseValue) {
+                continue;
+            }
+            UIEdgeInsets baseInsets = baseValue.UIEdgeInsetsValue;
+            UIEdgeInsets targetInsets = baseInsets;
+            if (height > 1.0) {
+                targetInsets.bottom += height;
+            }
+            rootController.additionalSafeAreaInsets = targetInsets;
+            [rootController.view setNeedsLayout];
+            if (height <= 1.0) {
+                objc_setAssociatedObject(rootController,
+                                         FLMKeyboardBaseSafeAreaInsetsKey,
+                                         nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+    }
+    [UIView animateWithDuration:0.25
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionCurveEaseInOut |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        for (UIScene *connectedScene in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+                [window.rootViewController.view layoutIfNeeded];
+            }
+        }
+    } completion:nil];
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     if (FLMKeyboardRouteToken >= 0) {
@@ -233,6 +326,7 @@ static void FLMReloadKeyboardRoute(void) {
     NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
     uint64_t currentHash = FLMIdentifierHash(currentIdentifier);
     BOOL previousRouteActive = FLMKeyboardRouteActive;
+    BOOL previousTargetApplication = FLMKeyboardTargetApplication;
     uint64_t sessionGeneration = 0;
     if (FLMKeyboardSessionToken >= 0) {
         notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
@@ -241,8 +335,14 @@ static void FLMReloadKeyboardRoute(void) {
     BOOL sessionChanged =
         sessionGeneration != previousSessionGeneration;
     FLMKeyboardSessionGeneration = sessionGeneration;
-    FLMKeyboardRouteActive = sessionGeneration != 0 && targetHash != 0 &&
-                             currentHash != 0 && targetHash == currentHash;
+    FLMKeyboardTargetApplication =
+        sessionGeneration != 0 && targetHash != 0 && currentHash != 0 &&
+        targetHash == currentHash;
+    FLMKeyboardExtensionProcess = FLMProcessIsKeyboardExtension();
+    FLMKeyboardRouteActive =
+        FLMKeyboardTargetApplication ||
+        (sessionGeneration != 0 && targetHash != 0 &&
+         FLMKeyboardExtensionProcess);
     FLMKeyboardTargetSceneHash = 0;
     if (FLMKeyboardSceneToken >= 0) {
         notify_get_state(FLMKeyboardSceneToken,
@@ -255,15 +355,17 @@ static void FLMReloadKeyboardRoute(void) {
         // centered card before the new generation is allowed to focus. This
         // does not depend on delivery of the
         // short-lived route-off notification between two openings.
-        if (previousSessionGeneration != 0 && previousRouteActive) {
+        if (previousSessionGeneration != 0 && previousRouteActive &&
+            previousTargetApplication) {
             FLMKeyboardEndedSessionGeneration = previousSessionGeneration;
+            FLMApplyApplicationKeyboardSafeArea(0.0);
             FLMEndApplicationKeyboardSession();
         }
         if (sessionGeneration != 0) {
             FLMKeyboardEndedSessionGeneration = 0;
         }
     }
-    if (!FLMKeyboardRouteActive) {
+    if (!FLMKeyboardTargetApplication) {
         FLMExternalKeyboardAvoidanceGeneration = 0;
         FLMExternalKeyboardAvoidanceHeight = 0.0;
     }
@@ -278,7 +380,7 @@ static void FLMReloadKeyboardAvoidance(void) {
     BOOL visible = (state & (1ULL << 63)) != 0;
     uint64_t sessionGeneration = (state >> 24) & 0x7FFFFFFFFFULL;
     CGFloat height = (CGFloat)(state & 0xFFFFFFULL) / 100.0;
-    BOOL currentSession = FLMKeyboardRouteActive && visible &&
+    BOOL currentSession = FLMKeyboardTargetApplication && visible &&
                           sessionGeneration != 0 &&
                           sessionGeneration == FLMKeyboardSessionGeneration;
     if (!currentSession) {
@@ -288,14 +390,18 @@ static void FLMReloadKeyboardAvoidance(void) {
         // before SpringBoard has finished creating its display environment.
         FLMExternalKeyboardAvoidanceGeneration = 0;
         FLMExternalKeyboardAvoidanceHeight = 0.0;
+        if (FLMKeyboardTargetApplication) {
+            FLMApplyApplicationKeyboardSafeArea(0.0);
+        }
         FLMRefreshApplicationKeyboardLayout();
         return;
     }
     FLMExternalKeyboardAvoidanceGeneration = sessionGeneration;
-    // SpringBoard already normalized and clamped this physical keyboard
-    // height before publishing it. Avoid another UIScreen query here so this
-    // Darwin-notification path stays safe during process initialization.
+    // SpringBoard already mapped the physical card/keyboard overlap into the
+    // target Scene's logical coordinate space. Avoid another UIScreen query
+    // here so this Darwin path stays safe during process initialization.
     FLMExternalKeyboardAvoidanceHeight = MAX(0.0, height);
+    FLMApplyApplicationKeyboardSafeArea(FLMExternalKeyboardAvoidanceHeight);
     FLMRefreshApplicationKeyboardLayout();
 }
 
@@ -303,7 +409,8 @@ static void FLMReloadKeyboardAvoidance(void) {
 
 - (BOOL)becomeFirstResponder {
     BOOL routedTextInput =
-        FLMKeyboardRouteActive && [self conformsToProtocol:@protocol(UITextInput)];
+        FLMKeyboardTargetApplication &&
+        [self conformsToProtocol:@protocol(UITextInput)];
     if (routedTextInput) {
         FLMInstallRemoteKeyboardGeometryIfAvailable();
     }
@@ -388,6 +495,9 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
         return originalHeight;
     }
+    if (!FLMKeyboardTargetApplication) {
+        return originalHeight;
+    }
     if (UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
         return 0.0;
     }
@@ -449,7 +559,7 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                                  &FLMKeyboardDismissToken,
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
-            if (FLMKeyboardRouteActive) {
+            if (FLMKeyboardTargetApplication) {
                 // This is a focus change inside the current centered session,
                 // not the end of that session. Keep route/generation intact so
                 // the next deliberate input tap can reuse the native keyboard
@@ -480,7 +590,7 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
                             usingBlock:^(NSNotification *notification) {
-            if (!FLMKeyboardRouteActive) {
+            if (!FLMKeyboardTargetApplication) {
                 return;
             }
             NSValue *value = notification.userInfo[UIKeyboardFrameEndUserInfoKey];
@@ -492,13 +602,10 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
             BOOL visible = CGRectGetHeight(frame) > 0.0 &&
                            CGRectGetMinY(frame) < screenSize.height;
             if (visible) {
-                CGFloat height = MIN(screenSize.height,
-                                     MAX(0.0, CGRectGetHeight(frame)));
-                FLMExternalKeyboardAvoidanceGeneration =
-                    FLMKeyboardSessionGeneration;
-                FLMExternalKeyboardAvoidanceHeight = height;
+                // SpringBoard maps the physical keyboard/card overlap back to
+                // the app Scene's logical coordinates. Do not install the raw
+                // frame height here; that creates a one-frame scale mismatch.
                 FLMPublishKeyboardFrame(frame, YES);
-                FLMRefreshApplicationKeyboardLayout();
             }
         }];
         FLMKeyboardWillHideObserver =
@@ -510,7 +617,7 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
             // transaction, but apps such as WeChat can retain the remote text
             // responder and immediately keep it alive. End the concrete
             // responder without ending the centered-card route.
-            if (FLMKeyboardRouteActive) {
+            if (FLMKeyboardTargetApplication) {
                 FLMEndApplicationKeyboardSession();
             }
         }];
@@ -521,8 +628,11 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                              usingBlock:^(__unused NSNotification *notification) {
             FLMExternalKeyboardAvoidanceGeneration = 0;
             FLMExternalKeyboardAvoidanceHeight = 0.0;
+            if (FLMKeyboardTargetApplication) {
+                FLMApplyApplicationKeyboardSafeArea(0.0);
+            }
             FLMPublishKeyboardFrame(CGRectZero, NO);
-            if (FLMKeyboardRouteActive) {
+            if (FLMKeyboardTargetApplication) {
                 notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);
             }
         }];

@@ -346,10 +346,9 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @end
 
 // The remote keyboard host must live in a full-display window that belongs to
-// SpringBoard's active UIWindowScene.  Keep this window key-capable (the UIKit
-// default), but never call makeKeyWindow/makeKeyAndVisible on it.  Returning
-// nil for the empty root surface makes the window transparent to touches while
-// preserving the keyboard host's own private hit-testing and responder path.
+// SpringBoard's active UIWindowScene. The remote host needs a key event window
+// for third-party keyboard-extension buttons to complete their UIKit actions.
+// Empty root space still returns nil so card and backdrop touches fall through.
 @interface FLMKeyboardForwardingWindow : UIWindow
 @property(nonatomic, assign) CGRect keyboardInteractionFrame;
 @end
@@ -793,10 +792,11 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
             sessionGeneration:(NSUInteger)sessionGeneration;
 - (void)restoreFloatingKeyboardLayerHost;
 - (void)discardFloatingKeyboardLayerHost;
+- (void)deactivateKeyboardForwardingWindow;
 - (void)endFloatingKeyboardSession;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
-- (BOOL)consumeOutsideTapForKeyboardDismissal;
+- (CGFloat)floatingKeyboardAvoidanceHeightForFrame:(CGRect)frame;
 - (void)beginFloatingKeyboardInteractionSession;
 - (void)endFloatingKeyboardInteractionSession;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
@@ -2006,9 +2006,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
-    if ([self consumeOutsideTapForKeyboardDismissal]) {
-        return;
-    }
     [self closeFloatingWindowKeepingApplication:YES];
 }
 
@@ -2042,9 +2039,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       point.y - self.floatingExclusiveStartPoint.y) <= 12.0;
             self.floatingExclusiveTapEligible = NO;
             if (shouldClose && !self.floatingWindow.hidden && !self.floatingDocked) {
-                if ([self consumeOutsideTapForKeyboardDismissal]) {
-                    break;
-                }
                 [self closeFloatingWindowKeepingApplication:YES];
             }
             break;
@@ -3819,10 +3813,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
-    // Setting hidden=NO does not make this window key.  The existing Flyme
-    // window keeps focus while the native keyboard host remains key-capable and
-    // attached to the same SpringBoard UIWindowScene.
-    self.keyboardForwardingWindow.hidden = NO;
+    if (self.floatingKeyboardVisible) {
+        [self.keyboardForwardingWindow makeKeyAndVisible];
+    } else {
+        self.keyboardForwardingWindow.hidden = NO;
+    }
+}
+
+- (void)deactivateKeyboardForwardingWindow {
+    FLMKeyboardForwardingWindow *window = self.keyboardForwardingWindow;
+    window.keyboardInteractionFrame = CGRectNull;
+    if (window.isKeyWindow && !self.floatingWindow.hidden &&
+        !self.floatingDocked) {
+        [self.floatingWindow makeKeyWindow];
+    }
+    window.hidden = YES;
 }
 
 - (void)restoreFloatingKeyboardLayerHost {
@@ -3854,8 +3859,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
-    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardForwardingWindow.hidden = YES;
+    [self deactivateKeyboardForwardingWindow];
 }
 
 - (void)discardFloatingKeyboardLayerHost {
@@ -3868,8 +3872,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
-    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardForwardingWindow.hidden = YES;
+    [self deactivateKeyboardForwardingWindow];
 }
 
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible {
@@ -3900,11 +3903,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.keyboardForwardingWindow.windowLevel =
             self.floatingWindow.windowLevel + 1.0;
         self.keyboardForwardingWindow.keyboardInteractionFrame = frame;
+        CGFloat avoidanceHeight =
+            [self floatingKeyboardAvoidanceHeightForFrame:frame];
         FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
-                                    CGRectGetHeight(frame),
+                                    avoidanceHeight,
                                     YES);
         if (self.floatingKeyboardLayerHostView) {
-            self.keyboardForwardingWindow.hidden = NO;
+            [self.keyboardForwardingWindow makeKeyAndVisible];
         }
         return;
     }
@@ -3917,8 +3922,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
-    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardForwardingWindow.hidden = YES;
+    [self deactivateKeyboardForwardingWindow];
     FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration, 0.0, NO);
     if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
         !self.floatingWindow.hidden && !self.floatingDocked) {
@@ -3970,8 +3974,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
-    self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardForwardingWindow.hidden = YES;
+    [self deactivateKeyboardForwardingWindow];
     [self endFloatingKeyboardInteractionSession];
 
     // Do not restore a retained visible keyboard host into the reduced app
@@ -4021,52 +4024,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
            CGRectContainsPoint(keyboardFrame, point);
 }
 
-- (BOOL)consumeOutsideTapForKeyboardDismissal {
-    if (self.floatingWindow.hidden || self.floatingDocked) {
-        return NO;
+- (CGFloat)floatingKeyboardAvoidanceHeightForFrame:(CGRect)frame {
+    if (CGRectIsNull(frame) || CGRectGetHeight(frame) <= 1.0) {
+        return 0.0;
     }
-    CFTimeInterval now = CACurrentMediaTime();
-    BOOL recentlyDismissed =
-        self.floatingKeyboardDismissedAt > 0.0 &&
-        now - self.floatingKeyboardDismissedAt < 0.50;
-    BOOL keyboardOwnsThisTap = self.floatingKeyboardVisible ||
-                               self.floatingKeyboardInteractionSessionActive ||
-                               self.floatingKeyboardDismissRequestActive ||
-                               recentlyDismissed;
-    if (!keyboardOwnsThisTap) {
-        return NO;
+    CGRect contentFrame = self.floatingContainer.frame;
+    CGFloat physicalOverlap =
+        MAX(0.0, CGRectGetMaxY(contentFrame) - CGRectGetMinY(frame));
+    if (physicalOverlap <= 1.0) {
+        return 0.0;
     }
-    if (!self.floatingKeyboardDismissRequestActive &&
-        (self.floatingKeyboardVisible ||
-         self.floatingKeyboardInteractionSessionActive)) {
-        self.floatingKeyboardDismissRequestActive = YES;
-        self.floatingKeyboardDismissRequestGeneration += 1;
-        NSUInteger requestGeneration =
-            self.floatingKeyboardDismissRequestGeneration;
-        NSUInteger sessionGeneration =
-            self.floatingKeyboardSessionGeneration;
-        FLMRequestKeyboardDismissal();
-        for (NSNumber *delayValue in @[@0.32, @0.70]) {
-            NSTimeInterval delay = delayValue.doubleValue;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                         (int64_t)(delay * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                if (requestGeneration !=
-                        self.floatingKeyboardDismissRequestGeneration ||
-                    sessionGeneration !=
-                        self.floatingKeyboardSessionGeneration ||
-                    !self.floatingKeyboardDismissRequestActive ||
-                    self.floatingWindow.hidden || self.floatingDocked) {
-                    return;
-                }
-                FLMRequestKeyboardDismissal();
-            });
-        }
+    CGAffineTransform transform = self.floatingHostView.transform;
+    CGFloat visualScale = hypot(transform.a, transform.c);
+    if (visualScale <= 0.05) {
+        CGSize referenceSize = [self floatingSceneReferenceSize];
+        visualScale = referenceSize.width > 1.0
+                          ? CGRectGetWidth(contentFrame) / referenceSize.width
+                          : 1.0;
     }
-    // Consume the complete physical tap. It may dismiss the keyboard, but it
-    // can never also close the centered card. A later independent outside tap
-    // is required after the hide acknowledgement and protection interval.
-    return YES;
+    visualScale = MAX(0.05, visualScale);
+    CGSize referenceSize = [self floatingSceneReferenceSize];
+    CGFloat logicalGap = 8.0 / visualScale;
+    CGFloat logicalAvoidance = physicalOverlap / visualScale + logicalGap;
+    return referenceSize.height > 1.0
+               ? MIN(referenceSize.height * 0.72, logicalAvoidance)
+               : logicalAvoidance;
 }
 
 - (void)beginFloatingKeyboardInteractionSession {

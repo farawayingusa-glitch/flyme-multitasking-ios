@@ -59,7 +59,7 @@ Require-Text $Source 'resolvedScene != self.floatingScene'
 Require-Text $Source 'needsInitialSceneSettle'
 Require-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $Source 'FLYME_KEYBOARD_DISMISS_NOTIFICATION'
-Require-Text $Source 'consumeOutsideTapForKeyboardDismissal'
+Require-Text $Source 'pointIsInsideFloatingInteractionDomain'
 Require-Text $KeyboardSource 'connectedScenes.count <= 1'
 Require-Text $KeyboardSource 'FLMResignFirstResponderInView'
 Require-Text $Source 'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION'
@@ -72,6 +72,12 @@ Require-Text $Source 'FLMPublishKeyboardAvoidance'
 Require-Text $KeyboardSource 'return FLMExternalKeyboardAvoidanceHeight;'
 Require-Text $KeyboardSource 'if (!currentSession)'
 Require-Text $KeyboardSource 'Never touch UIScreen/UIApplication from a dyld initializer'
+Require-Text $KeyboardSource 'FLMKeyboardTargetApplication'
+Require-Text $KeyboardSource 'FLMKeyboardExtensionProcess'
+Require-Text $KeyboardSource '@"keyboard-service"'
+Require-Text $KeyboardSource 'FLMApplyApplicationKeyboardSafeArea'
+Require-Text $Source '[self.keyboardForwardingWindow makeKeyAndVisible];'
+Require-Text $Source 'floatingKeyboardAvoidanceHeightForFrame:'
 Require-Text $Source 'initWithWindowScene:targetWindowScene'
 Require-Text $Source 'setAutorotates:forceUpdateInterfaceOrientation:'
 Require-Text $Source 'hitView == self || hitView == rootView'
@@ -84,6 +90,9 @@ Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
 $KeyboardContents = Get-Content -LiteralPath $KeyboardSource -Raw
 if ($KeyboardContents -match 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);') {
     throw 'Keyboard avoidance must not reload from route or dyld initialization paths'
+}
+if ((Select-String -LiteralPath $Source -SimpleMatch 'consumeOutsideTapForKeyboardDismissal' -Quiet)) {
+    throw 'Legacy first outside tap keyboard-only dismissal was reintroduced'
 }
 
 foreach ($RemovedKeyboardPatch in @(
