@@ -110,6 +110,9 @@ for keyboard_handoff_line in \
     'FLYME_KEYBOARD_DISMISS_NOTIFICATION' \
     'consumeOutsideTapForKeyboardDismissal' \
     'connectedScenes.count <= 1' \
+    'FLMInstallRemoteKeyboardAvoidanceIfAvailable' \
+    'FLMResignFirstResponderInView' \
+    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION' \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
     'endFloatingKeyboardHostSession' \

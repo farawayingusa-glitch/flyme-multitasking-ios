@@ -8,6 +8,7 @@
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
+#define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
@@ -24,6 +25,11 @@ static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
 static CFAbsoluteTime FLMKeyboardLastPrepareTime = 0.0;
 static const CFTimeInterval FLMKeyboardPrepareDebounce = 0.15;
+static BOOL FLMRemoteKeyboardAvoidanceInstalled = NO;
+static NSUInteger FLMRemoteKeyboardAvoidanceInstallGeneration = 0;
+
+static void FLMInstallRemoteKeyboardAvoidanceIfAvailable(void);
+static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void);
 
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
@@ -128,16 +134,31 @@ static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
+static BOOL FLMResignFirstResponderInView(UIView *view) {
+    if (!view) {
+        return NO;
+    }
+    BOOL resigned = NO;
+    @try {
+        if (view.isFirstResponder) {
+            resigned = [view resignFirstResponder] || resigned;
+        }
+        for (UIView *subview in [view.subviews copy]) {
+            resigned = FLMResignFirstResponderInView(subview) || resigned;
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    return resigned;
+}
+
 static void FLMEndApplicationKeyboardSession(void) {
     UIResponder *activeResponder = FLMKeyboardActiveTextResponder;
-    if (activeResponder) {
-        [activeResponder resignFirstResponder];
+    @try {
+        if (activeResponder) {
+            [activeResponder resignFirstResponder];
+        }
+    } @catch (__unused NSException *exception) {
     }
-    [[UIApplication sharedApplication]
-        sendAction:@selector(resignFirstResponder)
-               to:nil
-             from:nil
-         forEvent:nil];
     if (@available(iOS 13.0, *)) {
         for (UIScene *connectedScene in
              [UIApplication sharedApplication].connectedScenes) {
@@ -145,10 +166,16 @@ static void FLMEndApplicationKeyboardSession(void) {
                 continue;
             }
             for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+                FLMResignFirstResponderInView(window);
                 [window endEditing:YES];
             }
         }
     }
+    [[UIApplication sharedApplication]
+        sendAction:@selector(resignFirstResponder)
+               to:nil
+             from:nil
+         forEvent:nil];
     FLMKeyboardActiveTextResponder = nil;
 }
 
@@ -191,6 +218,9 @@ static void FLMReloadKeyboardRoute(void) {
     } else if (!FLMKeyboardRouteActive) {
         FLMKeyboardLastPrepareTime = 0.0;
     }
+    if (FLMKeyboardRouteActive) {
+        FLMScheduleRemoteKeyboardAvoidanceInstallation();
+    }
 }
 
 static void FLMPrepareFullscreenKeyboardHost(void) {
@@ -212,6 +242,7 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
     BOOL routedTextInput =
         FLMKeyboardRouteActive && [self conformsToProtocol:@protocol(UITextInput)];
     if (routedTextInput) {
+        FLMScheduleRemoteKeyboardAvoidanceInstallation();
         // Request the physical display host before UIKit creates or pairs the
         // remote keyboard scene. The SpringBoard-side notification is handled
         // on its main queue while this responder transaction is still being
@@ -226,6 +257,9 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
         // forward again; window-wide endEditing alone does not reliably clear
         // that retained responder between centered-card generations.
         FLMKeyboardActiveTextResponder = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMScheduleRemoteKeyboardAvoidanceInstallation();
+        });
     }
     return result;
 }
@@ -361,15 +395,54 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
 
 %end
 
+static void FLMInstallRemoteKeyboardAvoidanceIfAvailable(void) {
+    NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    BOOL eligibleApplication = currentIdentifier.length > 0 &&
+        ![currentIdentifier isEqualToString:@"com.apple.springboard"];
+    if (!eligibleApplication ||
+        FLMRemoteKeyboardAvoidanceInstalled ||
+        !FLMKeyboardRouteActive ||
+        !NSClassFromString(@"_UIRemoteKeyboards")) {
+        return;
+    }
+    %init(FLMRemoteKeyboardAvoidance);
+    FLMRemoteKeyboardAvoidanceInstalled = YES;
+    // If installation happened during the first focus transaction, ask the
+    // application windows to perform another layout pass while the keyboard
+    // frame change is still being delivered.
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            [window setNeedsLayout];
+        }
+    }
+}
+
+static void FLMScheduleRemoteKeyboardAvoidanceInstallation(void) {
+    FLMRemoteKeyboardAvoidanceInstallGeneration += 1;
+    NSUInteger generation = FLMRemoteKeyboardAvoidanceInstallGeneration;
+    FLMInstallRemoteKeyboardAvoidanceIfAvailable();
+    for (NSNumber *delayValue in @[@0.05, @0.20, @0.60]) {
+        NSTimeInterval delay = delayValue.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (generation != FLMRemoteKeyboardAvoidanceInstallGeneration ||
+                !FLMKeyboardRouteActive ||
+                FLMRemoteKeyboardAvoidanceInstalled) {
+                return;
+            }
+            FLMInstallRemoteKeyboardAvoidanceIfAvailable();
+        });
+    }
+}
+
 %ctor {
     @autoreleasepool {
         %init;
-        NSString *currentIdentifier = [NSBundle mainBundle].bundleIdentifier;
-        if (currentIdentifier.length > 0 &&
-            ![currentIdentifier isEqualToString:@"com.apple.springboard"] &&
-            NSClassFromString(@"_UIRemoteKeyboards")) {
-            %init(FLMRemoteKeyboardAvoidance);
-        }
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                                  &FLMKeyboardRouteToken,
                                  dispatch_get_main_queue(),
@@ -398,6 +471,21 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                 // the next deliberate input tap can reuse the external host.
                 FLMEndApplicationKeyboardSession();
                 FLMKeyboardLastPrepareTime = 0.0;
+                uint64_t dismissSessionGeneration =
+                    FLMKeyboardSessionGeneration;
+                for (NSNumber *delayValue in @[@0.06, @0.18]) {
+                    NSTimeInterval delay = delayValue.doubleValue;
+                    dispatch_after(
+                        dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(delay * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{
+                        if (FLMKeyboardRouteActive &&
+                            dismissSessionGeneration ==
+                                FLMKeyboardSessionGeneration) {
+                            FLMEndApplicationKeyboardSession();
+                        }
+                    });
+                }
             }
         });
         FLMReloadKeyboardRoute();
@@ -436,9 +524,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
             [center addObserverForName:UIKeyboardDidHideNotification
                                 object:nil
                                  queue:[NSOperationQueue mainQueue]
-                            usingBlock:^(__unused NSNotification *notification) {
+                             usingBlock:^(__unused NSNotification *notification) {
             FLMKeyboardLastPrepareTime = 0.0;
             FLMPublishKeyboardFrame(CGRectZero, NO);
+            if (FLMKeyboardRouteActive) {
+                notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);
+            }
         }];
     }
 }
