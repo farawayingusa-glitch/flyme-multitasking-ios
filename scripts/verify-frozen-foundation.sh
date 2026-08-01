@@ -119,6 +119,12 @@ for keyboard_handoff_line in \
     'FLMKeyboardExtensionProcess' \
     '@"keyboard-service"' \
     'FLMApplyApplicationKeyboardSafeArea' \
+    'keyboardTouchObserver' \
+    'floatingKeyboardTouchProtectionUntil' \
+    'applyFloatingKeyboardContainerOffsetForFrame:' \
+    'centeredFloatingFrameWithKeyboardOffset' \
+    'UIKeyboardAnimationDurationUserInfoKey' \
+    'UIKeyboardAnimationCurveUserInfoKey' \
     '[self.keyboardForwardingWindow makeKeyAndVisible];' \
     'floatingKeyboardAvoidanceHeightForFrame:' \
     'initWithWindowScene:targetWindowScene' \

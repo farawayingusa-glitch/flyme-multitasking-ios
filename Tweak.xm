@@ -350,9 +350,20 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 // Empty root space still returns nil so card and backdrop touches fall through.
 @interface FLMKeyboardForwardingWindow : UIWindow
 @property(nonatomic, assign) CGRect keyboardInteractionFrame;
+@property(nonatomic, copy) void (^keyboardTouchObserver)(UIEvent *event);
 @end
 
 @implementation FLMKeyboardForwardingWindow
+
+- (void)sendEvent:(UIEvent *)event {
+    // Record the event before UIKit dispatches it. A third-party keyboard can
+    // hide this window synchronously while handling its collapse button; the
+    // controller still needs to remember that the physical touch began here.
+    if (event.type == UIEventTypeTouches && self.keyboardTouchObserver) {
+        self.keyboardTouchObserver(event);
+    }
+    [super sendEvent:event];
+}
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     if (CGRectIsNull(self.keyboardInteractionFrame) ||
@@ -731,6 +742,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSTimeInterval floatingKeyboardDismissedAt;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
+@property(nonatomic, assign) NSTimeInterval floatingKeyboardTouchProtectionUntil;
+@property(nonatomic, assign) CGFloat floatingKeyboardContainerOffsetY;
+@property(nonatomic, assign) NSTimeInterval floatingKeyboardAnimationDuration;
+@property(nonatomic, assign) UIViewAnimationOptions floatingKeyboardAnimationOptions;
 @property(nonatomic, strong) FLMKeyboardForwardingWindow *keyboardForwardingWindow;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
 @property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
@@ -796,6 +811,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
 - (CGFloat)floatingKeyboardAvoidanceHeightForFrame:(CGRect)frame;
+- (CGRect)centeredFloatingFrameWithKeyboardOffset;
+- (void)applyFloatingKeyboardContainerOffsetForFrame:(CGRect)frame
+                                              visible:(BOOL)visible;
+- (BOOL)shouldSuppressCenteredCloseForKeyboardTouch;
 - (void)beginFloatingKeyboardInteractionSession;
 - (void)endFloatingKeyboardInteractionSession;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
@@ -1110,6 +1129,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                  object:nil];
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
+        self.floatingKeyboardAnimationDuration = 0.25;
+        self.floatingKeyboardAnimationOptions =
+            UIViewAnimationOptionCurveEaseInOut;
         // Dock resizing is deliberately session-local. Every new dock transition
         // starts from the fixed minimum size instead of restoring a prior resize.
         self.floatingDockWidth = FLMDefaultDockWidth;
@@ -2001,7 +2023,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden) {
         return;
     }
-    [self closeFloatingWindowKeepingApplication:YES];
+    if (![self shouldSuppressCenteredCloseForKeyboardTouch]) {
+        [self closeFloatingWindowKeepingApplication:YES];
+    }
 }
 
 - (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
@@ -2033,7 +2057,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 hypot(point.x - self.floatingExclusiveStartPoint.x,
                       point.y - self.floatingExclusiveStartPoint.y) <= 12.0;
             self.floatingExclusiveTapEligible = NO;
-            if (shouldClose && !self.floatingWindow.hidden && !self.floatingDocked) {
+            if (shouldClose && !self.floatingWindow.hidden && !self.floatingDocked &&
+                ![self shouldSuppressCenteredCloseForKeyboardTouch]) {
                 [self closeFloatingWindowKeepingApplication:YES];
             }
             break;
@@ -3063,6 +3088,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return CGRectMake(originX, top, containerWidth, containerHeight);
 }
 
+- (CGRect)centeredFloatingFrameWithKeyboardOffset {
+    CGRect frame = [self centeredFloatingFrame];
+    if (!self.floatingDocked && !self.floatingInteractiveFullscreenTransition) {
+        frame.origin.y += self.floatingKeyboardContainerOffsetY;
+    }
+    return frame;
+}
+
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width {
     UIView *rootView = self.floatingWindow.rootViewController.view;
     CGRect bounds = rootView.bounds;
@@ -3585,7 +3618,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDocked
             ? [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
                                          width:self.floatingDockWidth]
-            : [self centeredFloatingFrame];
+            : [self centeredFloatingFrameWithKeyboardOffset];
     [self layoutFloatingHostView];
     self.floatingStatusLabel.frame = self.floatingContainer.bounds;
     self.floatingLaunchCoverView.frame = self.floatingContainer.bounds;
@@ -3717,6 +3750,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     window.opaque = NO;
     window.userInteractionEnabled = YES;
     window.keyboardInteractionFrame = CGRectNull;
+    __weak FLMWheelController *weakController = self;
+    window.keyboardTouchObserver = ^(UIEvent *event) {
+        FLMWheelController *controller = weakController;
+        if (!controller || event.allTouches.count == 0) {
+            return;
+        }
+        // Keep the lease slightly beyond the final event. UIWindow switching
+        // during a keyboard-extension action may cause SpringBoard's global
+        // recognizer to observe the tail of the same physical touch later.
+        controller.floatingKeyboardTouchProtectionUntil =
+            MAX(controller.floatingKeyboardTouchProtectionUntil,
+                CACurrentMediaTime() + 0.72);
+        controller.floatingExclusiveTapEligible = NO;
+    };
     FLMOverlayViewController *rootController =
         [[FLMOverlayViewController alloc] init];
     rootController.view.backgroundColor = [UIColor clearColor];
@@ -3903,6 +3950,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
                                     avoidanceHeight,
                                     YES);
+        [self applyFloatingKeyboardContainerOffsetForFrame:frame visible:YES];
         if (self.floatingKeyboardLayerHostView) {
             [self.keyboardForwardingWindow makeKeyAndVisible];
         }
@@ -3917,6 +3965,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    [self applyFloatingKeyboardContainerOffsetForFrame:CGRectNull visible:NO];
     [self deactivateKeyboardForwardingWindow];
     FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration, 0.0, NO);
     if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
@@ -3958,6 +4007,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSUInteger endingSession = self.floatingKeyboardSessionGeneration;
     __weak UIView *endingHost = self.floatingKeyboardLayerHostView;
     [self.floatingHostView endEditing:YES];
+    [self applyFloatingKeyboardContainerOffsetForFrame:CGRectNull visible:NO];
     FLMPublishKeyboardAvoidance(endingSession, 0.0, NO);
     self.floatingKeyboardSessionGeneration = 0;
     FLMPublishKeyboardState(nil, nil, 0);
@@ -4023,7 +4073,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (CGRectIsNull(frame) || CGRectGetHeight(frame) <= 1.0) {
         return 0.0;
     }
-    CGRect contentFrame = self.floatingContainer.frame;
+    // Measure against the unshifted card. Otherwise the first physical shift
+    // would make a later keyboard-frame update publish zero avoidance.
+    CGRect contentFrame = self.floatingDocked
+                              ? self.floatingContainer.frame
+                              : [self centeredFloatingFrame];
     CGFloat physicalOverlap =
         MAX(0.0, CGRectGetMaxY(contentFrame) - CGRectGetMinY(frame));
     if (physicalOverlap <= 1.0) {
@@ -4044,6 +4098,54 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return referenceSize.height > 1.0
                ? MIN(referenceSize.height * 0.72, logicalAvoidance)
                : logicalAvoidance;
+}
+
+- (void)applyFloatingKeyboardContainerOffsetForFrame:(CGRect)frame
+                                              visible:(BOOL)visible {
+    if (self.floatingWindow.hidden || self.floatingDocked ||
+        self.floatingInteractiveFullscreenTransition) {
+        visible = NO;
+    }
+    CGRect baseFrame = [self centeredFloatingFrame];
+    CGFloat targetOffset = 0.0;
+    if (visible && !CGRectIsNull(frame) && CGRectGetHeight(frame) > 1.0) {
+        const CGFloat physicalGap = 10.0;
+        CGFloat overlap =
+            MAX(0.0, CGRectGetMaxY(baseFrame) - CGRectGetMinY(frame) + physicalGap);
+        // Keep enough of the card reachable while prioritizing its input edge.
+        // On an iPhone 13 Pro this clears the keyboard without resizing or
+        // asking the embedded application's layout system to understand a
+        // synthetic safe area.
+        CGFloat maximumShift = CGRectGetHeight(baseFrame) * 0.46;
+        targetOffset = -MIN(maximumShift, overlap);
+    }
+    if (fabs(targetOffset - self.floatingKeyboardContainerOffsetY) < 0.5) {
+        return;
+    }
+    self.floatingKeyboardContainerOffsetY = targetOffset;
+    CGRect targetFrame = baseFrame;
+    targetFrame.origin.y += targetOffset;
+    NSTimeInterval duration = self.floatingKeyboardAnimationDuration;
+    if (duration < 0.05 || duration > 1.0) {
+        duration = 0.25;
+    }
+    UIViewAnimationOptions options =
+        self.floatingKeyboardAnimationOptions |
+        UIViewAnimationOptionBeginFromCurrentState |
+        UIViewAnimationOptionAllowUserInteraction;
+    [UIView animateWithDuration:duration
+                          delay:0.0
+                        options:options
+                     animations:^{
+                         self.floatingContainer.frame = targetFrame;
+                         [self layoutFloatingHandleForCurrentContainer];
+                     }
+                     completion:nil];
+}
+
+- (BOOL)shouldSuppressCenteredCloseForKeyboardTouch {
+    return !self.floatingDocked &&
+           CACurrentMediaTime() < self.floatingKeyboardTouchProtectionUntil;
 }
 
 - (void)beginFloatingKeyboardInteractionSession {
@@ -4086,11 +4188,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGRect frame = frameValue.CGRectValue;
+    NSNumber *durationValue = notification.userInfo[UIKeyboardAnimationDurationUserInfoKey];
+    if ([durationValue isKindOfClass:[NSNumber class]]) {
+        self.floatingKeyboardAnimationDuration = durationValue.doubleValue;
+    }
+    NSNumber *curveValue = notification.userInfo[UIKeyboardAnimationCurveUserInfoKey];
+    if ([curveValue isKindOfClass:[NSNumber class]]) {
+        self.floatingKeyboardAnimationOptions =
+            (UIViewAnimationOptions)(curveValue.unsignedIntegerValue << 16);
+    }
     CGRect bounds = FLMVisualScreenBounds();
     BOOL visible = CGRectIntersectsRect(bounds, frame) &&
                    CGRectGetMinY(frame) < CGRectGetHeight(bounds);
     if (visible) {
         [self applyKeyboardFrame:frame visible:YES];
+    } else {
+        [self applyKeyboardFrame:CGRectNull visible:NO];
     }
 }
 
@@ -4476,6 +4589,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardDismissedAt = 0.0;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardTouchProtectionUntil = 0.0;
+    self.floatingKeyboardContainerOffsetY = 0.0;
     self.floatingExclusiveTapEligible = NO;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
@@ -4697,6 +4812,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
+    // This is the final gate shared by gesture and lifecycle close paths. A
+    // keyboard collapse action may synchronously hide its UIWindow before the
+    // originating touch ends; never reinterpret that same touch as a backdrop
+    // request to close centered mode.
+    if (![self.floatingWindow isHidden] &&
+        [self shouldSuppressCenteredCloseForKeyboardTouch]) {
+        return;
+    }
     [self endFloatingKeyboardSession];
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
@@ -4756,6 +4879,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardDismissedAt = 0.0;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardTouchProtectionUntil = 0.0;
+    self.floatingKeyboardContainerOffsetY = 0.0;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
     if (previousKeyWindow && previousKeyWindow != self.floatingWindow) {
