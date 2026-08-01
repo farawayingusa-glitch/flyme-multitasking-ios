@@ -1,10 +1,13 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <fcntl.h>
 #import <math.h>
 #import <notify.h>
 #import <objc/message.h>
 #import <stdarg.h>
 #import <stdint.h>
+#import <string.h>
+#import <sys/stat.h>
 #import <unistd.h>
 
 #import "FLMSceneLifecycle.h"
@@ -34,9 +37,8 @@ static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
-static NSString *const FLMKeyboardDiagnosticLogPath =
-    @"/var/mobile/Library/Logs/FlymeKeyboardDiagnostic.log";
-static const unsigned long long FLMKeyboardDiagnosticLogLimit = 512ULL * 1024ULL;
+static const char *FLMKeyboardDiagnosticLogPath =
+    "/var/mobile/Library/Logs/FlymeKeyboardDiagnostic.log";
 
 typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
     FLMFloatingLaunchStateIdle,
@@ -63,50 +65,31 @@ static void FLMKeyboardDiagnosticLog(NSString *format, ...) {
     if (message.length == 0) {
         return;
     }
-    NSLog(@"[FlymeKeyboardDiagnostic] %@", message);
-
     @autoreleasepool {
         NSString *line =
             [NSString stringWithFormat:@"%.3f pid=%d %@\n",
                                        [NSDate date].timeIntervalSince1970,
                                        getpid(), message];
-        NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
-        if (!data) {
+        const char *bytes = line.UTF8String;
+        if (!bytes) {
             return;
         }
-        @synchronized([NSFileManager class]) {
-            @try {
-                NSFileManager *manager = [NSFileManager defaultManager];
-                NSString *directory =
-                    [FLMKeyboardDiagnosticLogPath stringByDeletingLastPathComponent];
-                [manager createDirectoryAtPath:directory
-                   withIntermediateDirectories:YES
-                                    attributes:nil
-                                         error:nil];
-                NSDictionary *attributes =
-                    [manager attributesOfItemAtPath:FLMKeyboardDiagnosticLogPath
-                                              error:nil];
-                unsigned long long size =
-                    [attributes[NSFileSize] unsignedLongLongValue];
-                if (size > FLMKeyboardDiagnosticLogLimit) {
-                    [data writeToFile:FLMKeyboardDiagnosticLogPath atomically:YES];
-                    return;
-                }
-                if (![manager fileExistsAtPath:FLMKeyboardDiagnosticLogPath]) {
-                    [data writeToFile:FLMKeyboardDiagnosticLogPath atomically:YES];
-                    return;
-                }
-                NSFileHandle *handle =
-                    [NSFileHandle fileHandleForWritingAtPath:FLMKeyboardDiagnosticLogPath];
-                [handle seekToEndOfFile];
-                [handle writeData:data];
-                [handle synchronizeFile];
-                [handle closeFile];
-            } @catch (NSException *exception) {
-                NSLog(@"[FlymeKeyboardDiagnostic] file-write-failed %@",
-                      exception.reason ?: @"<unknown>");
-            }
+        size_t remaining = strlen(bytes);
+        int descriptor = open(FLMKeyboardDiagnosticLogPath,
+                              O_WRONLY | O_CREAT | O_APPEND,
+                              S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (descriptor < 0) {
+            return;
         }
+        while (remaining > 0) {
+            ssize_t written = write(descriptor, bytes, remaining);
+            if (written <= 0) {
+                break;
+            }
+            bytes += written;
+            remaining -= (size_t)written;
+        }
+        close(descriptor);
     }
 }
 
@@ -1109,8 +1092,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)start {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        FLMKeyboardDiagnosticLog(@"process-start build=0.8.12-diagnostic home=%@",
-                                 NSHomeDirectory() ?: @"<unknown>");
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         FLMPreferencesChanged,
