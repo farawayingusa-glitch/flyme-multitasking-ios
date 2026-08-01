@@ -107,6 +107,9 @@ for keyboard_handoff_line in \
     'resolvedScene != self.floatingScene' \
     'needsInitialSceneSettle' \
     '0.50 * NSEC_PER_SEC' \
+    'FLYME_KEYBOARD_DISMISS_NOTIFICATION' \
+    'consumeOutsideTapForKeyboardDismissal' \
+    'connectedScenes.count <= 1' \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
     'endFloatingKeyboardHostSession' \

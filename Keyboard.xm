@@ -7,12 +7,14 @@
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_PREPARE_NOTIFICATION "com.codex.flymemultitasking.keyboard-prepare-fullscreen-host"
+#define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 
 static BOOL FLMKeyboardRouteActive = NO;
 static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardFrameToken = -1;
+static int FLMKeyboardDismissToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
 static uint64_t FLMKeyboardEndedSessionGeneration = 0;
@@ -98,7 +100,23 @@ static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
     // Some iOS 16 app scenes hide their private sceneIdentifier until the
     // first keyboard transaction. The process-level bundle route is still a
     // safer fallback than leaving the keyboard trapped in the card.
-    return currentHash == 0 || currentHash == FLMKeyboardTargetSceneHash;
+    if (currentHash == 0 || currentHash == FLMKeyboardTargetSceneHash) {
+        return YES;
+    }
+
+    // SpringBoard's private sceneIdentifier and the application process's
+    // UISceneSession persistentIdentifier are not guaranteed to be the same
+    // string on iOS 16. The bundle route already limits this tweak to the one
+    // target application process, so accept its connected UIWindowScene as a
+    // safe process-local fallback instead of silently skipping all avoidance.
+    NSSet<UIScene *> *connectedScenes =
+        [UIApplication sharedApplication].connectedScenes;
+    for (UIScene *connectedScene in connectedScenes) {
+        if (connectedScene == scene) {
+            return YES;
+        }
+    }
+    return connectedScenes.count <= 1;
 }
 
 static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
@@ -369,6 +387,18 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
             FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_DISMISS_NOTIFICATION,
+                                 &FLMKeyboardDismissToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            if (FLMKeyboardRouteActive) {
+                // This is a focus change inside the current centered session,
+                // not the end of that session. Keep route/generation intact so
+                // the next deliberate input tap can reuse the external host.
+                FLMEndApplicationKeyboardSession();
+                FLMKeyboardLastPrepareTime = 0.0;
+            }
         });
         FLMReloadKeyboardRoute();
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
