@@ -75,7 +75,6 @@ for keyboard_line in \
     'UIKeyboardWillHideNotification' \
     'FLMRoutedKeyboardHeight' \
     'FLMEndingApplicationKeyboardSession' \
-    'FLMKeyboardHostBridgeView' \
     '- (BOOL)resignFirstResponder' \
     '%hook UIResponder' \
     'notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION'; do
@@ -87,6 +86,7 @@ done
 
 for overlay_line in \
     '@interface FLMKeyboardOverlayWindow' \
+    '@interface FLMKeyboardHostBridgeView' \
     'keyboardLayerHostView:' \
     'valueForKey:@"_owningScene"' \
     'floatingKeyboardOriginalSuperview' \
