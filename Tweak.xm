@@ -97,7 +97,7 @@ static void FLMAppendDiagnosticLineNow(NSString *message) {
     if (descriptor < 0) {
         return;
     }
-    const uint8_t *bytes = data.bytes;
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
     size_t remaining = data.length;
     while (remaining > 0) {
         ssize_t written = write(descriptor, bytes, remaining);
@@ -137,7 +137,7 @@ static void FLMStartDiagnosticWriter(void) {
         FLMDiagnosticWriterQueue =
             dispatch_queue_create("com.codex.flymemultitasking.diagnostic-writer",
                                   DISPATCH_QUEUE_SERIAL);
-        uint32_t status = notify_register_dispatch(
+        notify_register_dispatch(
             FLYME_DIAGNOSTIC_EVENT_NOTIFICATION,
             &FLMDiagnosticReceiverToken,
             FLMDiagnosticWriterQueue,
