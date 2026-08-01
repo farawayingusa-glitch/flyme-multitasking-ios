@@ -32,6 +32,8 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventDidHide = 13,
     FLMDiagnosticEventSceneMatch = 14,
     FLMDiagnosticEventLayoutRefresh = 15,
+    FLMDiagnosticEventRouteReady = 16,
+    FLMDiagnosticEventDismissAck = 17,
 };
 
 // Cross-process diagnostics intentionally carry only fixed-width integers.

@@ -5,8 +5,11 @@
 #import <objc/message.h>
 #import <errno.h>
 #import <fcntl.h>
+#import <limits.h>
 #import <stdarg.h>
 #import <stdint.h>
+#import <stdio.h>
+#import <sys/stat.h>
 #import <sys/time.h>
 #import <unistd.h>
 
@@ -22,6 +25,8 @@
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
+#define FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-route-ready"
+#define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
@@ -33,6 +38,9 @@ static const char *FLMDiagnosticFallbackPath =
 static dispatch_queue_t FLMDiagnosticWriterQueue;
 static BOOL FLMDiagnosticWriterReady = NO;
 static int FLMDiagnosticReceiverToken = -1;
+static int FLMKeyboardDismissRequestToken = -1;
+static const off_t FLMDiagnosticMaximumSize = 1024 * 1024;
+static const CGFloat FLMKeyboardAccessoryProtectionHeight = 56.0;
 
 static const char *FLMDiagnosticRoleName(uint8_t role) {
     switch (role) {
@@ -61,17 +69,39 @@ static const char *FLMDiagnosticEventName(uint8_t event) {
         case FLMDiagnosticEventDidHide: return "did-hide";
         case FLMDiagnosticEventSceneMatch: return "scene-match";
         case FLMDiagnosticEventLayoutRefresh: return "layout-refresh";
+        case FLMDiagnosticEventRouteReady: return "route-ready";
+        case FLMDiagnosticEventDismissAck: return "dismiss-ack";
         default: return "unknown-event";
     }
 }
 
+static void FLMRotateDiagnosticFileIfNeeded(const char *path) {
+    if (!path) {
+        return;
+    }
+    struct stat information;
+    if (stat(path, &information) != 0 ||
+        information.st_size < FLMDiagnosticMaximumSize) {
+        return;
+    }
+    char previousPath[PATH_MAX];
+    int length = snprintf(previousPath, sizeof(previousPath), "%s.previous", path);
+    if (length <= 0 || (size_t)length >= sizeof(previousPath)) {
+        return;
+    }
+    unlink(previousPath);
+    rename(path, previousPath);
+}
+
 static int FLMOpenDiagnosticFile(void) {
+    FLMRotateDiagnosticFileIfNeeded(FLMDiagnosticPrimaryPath);
     int descriptor = open(FLMDiagnosticPrimaryPath,
                           O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
                           0644);
     if (descriptor >= 0) {
         return descriptor;
     }
+    FLMRotateDiagnosticFileIfNeeded(FLMDiagnosticFallbackPath);
     return open(FLMDiagnosticFallbackPath,
                 O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
                 0644);
@@ -165,10 +195,24 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.29-diagnostic2 schema=2");
+                    @"logger-ready build=0.8.30 schema=3");
             }
         });
     });
+}
+
+static void FLMRequestApplicationKeyboardDismiss(uint64_t sessionGeneration) {
+    if (sessionGeneration == 0) {
+        return;
+    }
+    if (FLMKeyboardDismissRequestToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_DISMISS_NOTIFICATION,
+                              &FLMKeyboardDismissRequestToken) !=
+            NOTIFY_STATUS_OK) {
+        return;
+    }
+    notify_set_state(FLMKeyboardDismissRequestToken, sessionGeneration);
+    notify_post(FLYME_KEYBOARD_DISMISS_NOTIFICATION);
 }
 
 static const CGFloat FLMDefaultWheelRadius = 202.0;
@@ -894,6 +938,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) CGRect floatingKeyboardFrame;
 @property(nonatomic, assign) CGFloat lastPortraitKeyboardHeight;
 @property(nonatomic, assign) int keyboardFrameNotifyToken;
+@property(nonatomic, assign) int keyboardRouteAckNotifyToken;
 @property(nonatomic, assign) int keyboardDismissAckNotifyToken;
 @property(nonatomic, assign) BOOL floatingKeyboardInteractionSessionActive;
 @property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
@@ -901,6 +946,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) NSUInteger floatingKeyboardDismissRequestGeneration;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
+@property(nonatomic, assign) NSUInteger floatingKeyboardRouteReadyGeneration;
 @property(nonatomic, strong) FLMKeyboardForwardingWindow *keyboardForwardingWindow;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
 @property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
@@ -963,6 +1009,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)discardFloatingKeyboardLayerHost;
 - (void)deactivateKeyboardForwardingWindow;
 - (void)endFloatingKeyboardSession;
+- (void)finalizeFloatingKeyboardSessionEnd:(NSUInteger)sessionGeneration;
 - (CGRect)floatingKeyboardInteractionFrame;
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point;
 - (CGFloat)floatingKeyboardAvoidanceHeightForFrame:(CGRect)frame;
@@ -1364,25 +1411,64 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }) == NOTIFY_STATUS_OK) {
             self.keyboardFrameNotifyToken = keyboardToken;
         }
+        int keyboardRouteAckToken = -1;
+        if (notify_register_dispatch(FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION,
+                                     &keyboardRouteAckToken,
+                                     dispatch_get_main_queue(),
+                                     ^(int token) {
+            uint64_t acknowledgedSession = 0;
+            if (notify_get_state(token, &acknowledgedSession) !=
+                NOTIFY_STATUS_OK) {
+                return;
+            }
+            FLMWheelController *controller =
+                [FLMWheelController sharedController];
+            BOOL accepted = acknowledgedSession != 0 &&
+                acknowledgedSession ==
+                    controller.floatingKeyboardSessionGeneration &&
+                !controller.floatingWindow.hidden &&
+                !controller.floatingDocked;
+            FLMEnqueueDiagnosticLine(
+                @"sb route-ready received session=%llu current=%lu accepted=%d scene=%@",
+                (unsigned long long)acknowledgedSession,
+                (unsigned long)controller.floatingKeyboardSessionGeneration,
+                accepted,
+                FLMSceneIdentifier(controller.floatingScene) ?: @"<none>");
+            if (accepted) {
+                controller.floatingKeyboardRouteReadyGeneration =
+                    (NSUInteger)acknowledgedSession;
+            }
+        }) == NOTIFY_STATUS_OK) {
+            self.keyboardRouteAckNotifyToken = keyboardRouteAckToken;
+        }
         int keyboardDismissAckToken = -1;
         if (notify_register_dispatch(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION,
                                      &keyboardDismissAckToken,
                                      dispatch_get_main_queue(),
-                                     ^(__unused int token) {
+                                     ^(int token) {
+            uint64_t acknowledgedSession = 0;
+            notify_get_state(token, &acknowledgedSession);
             FLMWheelController *controller =
                 [FLMWheelController sharedController];
             FLMEnqueueDiagnosticLine(
-                @"sb dismiss-ack received session=%lu hidden=%d docked=%d active=%d",
+                @"sb dismiss-ack received ack=%llu session=%lu hidden=%d docked=%d active=%d",
+                (unsigned long long)acknowledgedSession,
                 (unsigned long)controller.floatingKeyboardSessionGeneration,
                 controller.floatingWindow.hidden, controller.floatingDocked,
                 controller.floatingKeyboardDismissRequestActive);
-            if (controller.floatingKeyboardSessionGeneration == 0 ||
-                controller.floatingWindow.hidden || controller.floatingDocked) {
+            if (acknowledgedSession == 0 ||
+                acknowledgedSession !=
+                    controller.floatingKeyboardSessionGeneration) {
                 return;
             }
+            BOOL endingCenteredSession =
+                controller.floatingKeyboardDismissRequestActive;
             controller.floatingKeyboardDismissRequestGeneration += 1;
-            controller.floatingKeyboardDismissRequestActive = NO;
             [controller applyKeyboardFrame:CGRectNull visible:NO];
+            if (endingCenteredSession) {
+                [controller finalizeFloatingKeyboardSessionEnd:
+                    (NSUInteger)acknowledgedSession];
+            }
         }) == NOTIFY_STATUS_OK) {
             self.keyboardDismissAckNotifyToken = keyboardDismissAckToken;
         }
@@ -4160,6 +4246,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.floatingWindow.hidden || self.floatingDocked) {
         visible = NO;
     }
+    if (visible &&
+        (self.floatingKeyboardSessionGeneration == 0 ||
+         self.floatingKeyboardRouteReadyGeneration !=
+             self.floatingKeyboardSessionGeneration ||
+         !self.floatingScene)) {
+        FLMEnqueueDiagnosticLine(
+            @"sb frame-apply rejected=route-not-ready session=%lu ready=%lu scene=%@ frame=%@",
+            (unsigned long)self.floatingKeyboardSessionGeneration,
+            (unsigned long)self.floatingKeyboardRouteReadyGeneration,
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+            NSStringFromCGRect(frame));
+        return;
+    }
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
     FLMEnqueueDiagnosticLine(
         @"sb frame-apply inputVisible=%d inputFrame=%@ cardHidden=%d docked=%d session=%lu host=%p",
@@ -4184,11 +4283,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            height);
         self.floatingKeyboardVisible = YES;
         self.floatingKeyboardFrame = frame;
-        self.floatingBackdropTap.additionalProtectedFrame = frame;
-        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = frame;
+        CGRect interactionFrame = [self floatingKeyboardInteractionFrame];
+        self.floatingBackdropTap.additionalProtectedFrame = interactionFrame;
+        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+            interactionFrame;
         self.keyboardForwardingWindow.windowLevel =
             self.floatingWindow.windowLevel + 1.0;
-        self.keyboardForwardingWindow.keyboardInteractionFrame = frame;
+        self.keyboardForwardingWindow.keyboardInteractionFrame = interactionFrame;
         CGFloat avoidanceHeight =
             [self floatingKeyboardAvoidanceHeightForFrame:frame];
         FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
@@ -4198,8 +4299,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [self.keyboardForwardingWindow makeKeyAndVisible];
         }
         FLMEnqueueDiagnosticLine(
-            @"sb frame-visible normalized=%@ avoidance=%.2f forwardingKey=%d level=%.1f cardLevel=%.1f",
-            NSStringFromCGRect(frame), avoidanceHeight,
+            @"sb frame-visible normalized=%@ interaction=%@ avoidance=%.2f forwardingKey=%d level=%.1f cardLevel=%.1f",
+            NSStringFromCGRect(frame), NSStringFromCGRect(interactionFrame),
+            avoidanceHeight,
             self.keyboardForwardingWindow.isKeyWindow,
             self.keyboardForwardingWindow.windowLevel,
             self.floatingWindow.windowLevel);
@@ -4262,7 +4364,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)endFloatingKeyboardSession {
     NSUInteger endingSession = self.floatingKeyboardSessionGeneration;
-    __weak UIView *endingHost = self.floatingKeyboardLayerHostView;
     FLMEnqueueDiagnosticLine(
         @"sb session-end begin session=%lu visible=%d interaction=%d host=%p app=%@ scene=%@",
         (unsigned long)endingSession, self.floatingKeyboardVisible,
@@ -4270,54 +4371,103 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (__bridge void *)self.floatingKeyboardLayerHostView,
         self.floatingIdentifier ?: @"<none>",
         FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
+    if (endingSession == 0) {
+        self.floatingKeyboardRouteReadyGeneration = 0;
+        [self deactivateKeyboardForwardingWindow];
+        [self endFloatingKeyboardInteractionSession];
+        return;
+    }
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardAvoidance(endingSession, 0.0, NO);
     FLMPublishKeyboardCardGeometry(endingSession, 0.0, 0.0, NO);
-    self.floatingKeyboardSessionGeneration = 0;
-    FLMPublishKeyboardState(nil, nil, 0);
-
-    self.floatingKeyboardVisible = NO;
     self.floatingKeyboardDismissRequestGeneration += 1;
-    self.floatingKeyboardDismissRequestActive = NO;
-    self.floatingKeyboardFrame = CGRectNull;
-    self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
-    ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
-    [self deactivateKeyboardForwardingWindow];
-    [self endFloatingKeyboardInteractionSession];
+    NSUInteger requestGeneration =
+        self.floatingKeyboardDismissRequestGeneration;
+    self.floatingKeyboardDismissRequestActive = YES;
+    FLMEnqueueDiagnosticLine(
+        @"sb session-end dismiss-request session=%lu request=%lu routeReady=%lu",
+        (unsigned long)endingSession,
+        (unsigned long)requestGeneration,
+        (unsigned long)self.floatingKeyboardRouteReadyGeneration);
+    FLMRequestApplicationKeyboardDismiss(endingSession);
 
-    // Do not restore a retained visible keyboard host into the reduced app
-    // Scene.  Give UIKit one hide transaction, then discard the stale host so
-    // the next centered generation must obtain a fresh native pairing.
+    // Keep the old route alive until the application has resigned its actual
+    // UITextInput responder. A bounded timeout handles apps that terminate or
+    // fail to acknowledge without allowing an old responder to be adopted by
+    // the next centered generation.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.24 * NSEC_PER_SEC)),
+                                 (int64_t)(0.38 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        UIView *hostView = endingHost;
-        if (endingSession != 0 && hostView &&
-            self.floatingKeyboardSessionGeneration == 0 &&
-            self.floatingKeyboardHostSessionGeneration == endingSession &&
-            self.floatingKeyboardLayerHostView == hostView) {
-            [self discardFloatingKeyboardLayerHost];
+        if (endingSession == self.floatingKeyboardSessionGeneration &&
+            requestGeneration ==
+                self.floatingKeyboardDismissRequestGeneration &&
+            self.floatingKeyboardDismissRequestActive) {
+            FLMEnqueueDiagnosticLine(
+                @"sb session-end dismiss-timeout session=%lu request=%lu",
+                (unsigned long)endingSession,
+                (unsigned long)requestGeneration);
+            [self finalizeFloatingKeyboardSessionEnd:endingSession];
         }
     });
+}
+
+- (void)finalizeFloatingKeyboardSessionEnd:(NSUInteger)sessionGeneration {
+    if (sessionGeneration == 0 ||
+        sessionGeneration != self.floatingKeyboardSessionGeneration) {
+        FLMEnqueueDiagnosticLine(
+            @"sb session-end finalize-rejected requested=%lu current=%lu",
+            (unsigned long)sessionGeneration,
+            (unsigned long)self.floatingKeyboardSessionGeneration);
+        return;
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb session-end finalize session=%lu host=%p",
+        (unsigned long)sessionGeneration,
+        (__bridge void *)self.floatingKeyboardLayerHostView);
+    self.floatingKeyboardDismissRequestGeneration += 1;
+    self.floatingKeyboardDismissRequestActive = NO;
+    self.floatingKeyboardRouteReadyGeneration = 0;
+    self.floatingKeyboardSessionGeneration = 0;
+    FLMPublishKeyboardState(nil, nil, 0);
+    self.floatingKeyboardVisible = NO;
+    self.floatingKeyboardFrame = CGRectNull;
+    self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
+    ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+        CGRectNull;
+    [self endFloatingKeyboardInteractionSession];
+    [self discardFloatingKeyboardLayerHost];
 }
 
 - (CGRect)floatingKeyboardInteractionFrame {
     if (!self.floatingKeyboardInteractionSessionActive) {
         return CGRectNull;
     }
+    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect keyboardFrame = CGRectNull;
     if (self.floatingKeyboardVisible &&
         !CGRectIsNull(self.floatingKeyboardFrame) &&
         CGRectGetWidth(self.floatingKeyboardFrame) > 1.0 &&
         CGRectGetHeight(self.floatingKeyboardFrame) > 1.0) {
-        return self.floatingKeyboardFrame;
+        keyboardFrame = self.floatingKeyboardFrame;
+    } else {
+        CGFloat height = MIN(CGRectGetHeight(bounds),
+                             MAX(216.0, self.lastPortraitKeyboardHeight));
+        keyboardFrame = CGRectMake(0.0,
+                                   CGRectGetHeight(bounds) - height,
+                                   CGRectGetWidth(bounds),
+                                   height);
     }
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    CGFloat height = MIN(CGRectGetHeight(bounds),
-                         MAX(216.0, self.lastPortraitKeyboardHeight));
-    return CGRectMake(0.0,
-                      CGRectGetHeight(bounds) - height,
+    // Third-party keyboard toolbars can own controls above UIKit's reported
+    // keyboard end frame. The captured WeChat keyboard collapse touch began
+    // 26 pt above that frame. Protect a bounded 56 pt accessory band so the
+    // physical touch remains in the keyboard domain from begin through end.
+    CGFloat top = MAX(CGRectGetMinY(bounds),
+                      CGRectGetMinY(keyboardFrame) -
+                          FLMKeyboardAccessoryProtectionHeight);
+    return CGRectMake(CGRectGetMinX(bounds),
+                      top,
                       CGRectGetWidth(bounds),
-                      height);
+                      CGRectGetMaxY(bounds) - top);
 }
 
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point {
@@ -4808,6 +4958,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardDismissRequestGeneration += 1;
     self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardRouteReadyGeneration = 0;
     self.floatingExclusiveTapEligible = NO;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
@@ -5110,8 +5261,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGesture.enabled = self.enabled;
     self.previousKeyWindow = nil;
     self.floatingKeyboardVisible = NO;
-    self.floatingKeyboardDismissRequestGeneration += 1;
-    self.floatingKeyboardDismissRequestActive = NO;
     self.floatingKeyboardFrame = CGRectNull;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;

@@ -11,6 +11,7 @@
 #define FLYME_KEYBOARD_FRAME_NOTIFICATION "com.codex.flymemultitasking.keyboard-frame-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
+#define FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-route-ready"
 #define FLYME_KEYBOARD_DISMISS_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-requested"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-acknowledged"
 
@@ -23,10 +24,13 @@ static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardFrameToken = -1;
 static int FLMKeyboardAvoidanceToken = -1;
 static int FLMKeyboardCardGeometryToken = -1;
+static int FLMKeyboardRouteAckToken = -1;
 static int FLMKeyboardDismissToken = -1;
+static int FLMKeyboardDismissAckToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
 static uint64_t FLMKeyboardEndedSessionGeneration = 0;
+static uint64_t FLMKeyboardDismissRequestedGeneration = 0;
 static uint64_t FLMExternalKeyboardAvoidanceGeneration = 0;
 static CGFloat FLMExternalKeyboardAvoidanceHeight = 0.0;
 static __weak UIResponder *FLMKeyboardActiveTextResponder = nil;
@@ -54,6 +58,32 @@ static void FLMRefreshApplicationKeyboardLayout(void);
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+
+static void FLMPublishSessionState(const char *notificationName,
+                                   int *token,
+                                   uint64_t sessionGeneration) {
+    if (!notificationName || !token || sessionGeneration == 0) {
+        return;
+    }
+    if (*token < 0 &&
+        notify_register_check(notificationName, token) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    notify_set_state(*token, sessionGeneration);
+    notify_post(notificationName);
+}
+
+static void FLMPublishKeyboardDismissAck(uint64_t sessionGeneration) {
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventDismissAck,
+        sessionGeneration,
+        FLMKeyboardActiveTextResponder ? 1 : 0,
+        FLMEndingApplicationKeyboardSession ? 1 : 0);
+    FLMPublishSessionState(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION,
+                           &FLMKeyboardDismissAckToken,
+                           sessionGeneration);
+}
 
 static BOOL FLMProcessIsKeyboardExtension(void) {
     NSDictionary *extension =
@@ -338,6 +368,17 @@ static void FLMReloadKeyboardRoute(void) {
             FLMKeyboardSessionGeneration,
             routeFlags,
             (uint16_t)(targetHash & 0xFFFFULL));
+    }
+    if (FLMKeyboardTargetApplication && sessionGeneration != 0) {
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventRouteReady,
+            sessionGeneration,
+            FLMRemoteKeyboardGeometryInstalled ? 1 : 0,
+            (uint16_t)(getpid() & 0xFFFF));
+        FLMPublishSessionState(FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION,
+                               &FLMKeyboardRouteAckToken,
+                               sessionGeneration);
     }
 }
 
@@ -845,12 +886,16 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
         notify_register_dispatch(FLYME_KEYBOARD_DISMISS_NOTIFICATION,
                                  &FLMKeyboardDismissToken,
                                  dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            if (FLMKeyboardTargetApplication) {
+                                 ^(int token) {
+            uint64_t requestedSession = 0;
+            notify_get_state(token, &requestedSession);
+            if (FLMKeyboardTargetApplication && requestedSession != 0 &&
+                requestedSession == FLMKeyboardSessionGeneration) {
+                FLMKeyboardDismissRequestedGeneration = requestedSession;
                 FLMPublishDiagnosticEvent(
                     FLMDiagnosticRoleApplication,
                     FLMDiagnosticEventDismissRequest,
-                    FLMKeyboardSessionGeneration,
+                    requestedSession,
                     1,
                     FLMKeyboardActiveTextResponder ? 1 : 0);
                 // This is a focus change inside the current centered session,
@@ -859,7 +904,7 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                 // Scene pairing.
                 FLMEndApplicationKeyboardSession();
                 uint64_t dismissSessionGeneration =
-                    FLMKeyboardSessionGeneration;
+                    requestedSession;
                 for (NSNumber *delayValue in @[@0.06, @0.18]) {
                     NSTimeInterval delay = delayValue.doubleValue;
                     dispatch_after(
@@ -873,6 +918,21 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                         }
                     });
                 }
+                // Some third-party keyboards do not emit DidHide after their
+                // extension has already torn down its remote scene. Always
+                // acknowledge the concrete responder cleanup within a bounded
+                // interval so SpringBoard can finish the old card generation.
+                dispatch_after(
+                    dispatch_time(DISPATCH_TIME_NOW,
+                                  (int64_t)(0.26 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{
+                    if (FLMKeyboardDismissRequestedGeneration ==
+                            dismissSessionGeneration &&
+                        FLMKeyboardSessionGeneration ==
+                            dismissSessionGeneration) {
+                        FLMPublishKeyboardDismissAck(dismissSessionGeneration);
+                    }
+                });
             }
         });
         FLMReloadKeyboardRoute();
@@ -921,7 +981,15 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                     FLMKeyboardSessionGeneration,
                     FLMKeyboardActiveTextResponder ? 1 : 0,
                     0);
-                notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);
+                uint64_t acknowledgedSession =
+                    FLMKeyboardDismissRequestedGeneration != 0
+                        ? FLMKeyboardDismissRequestedGeneration
+                        : FLMKeyboardSessionGeneration;
+                FLMPublishKeyboardDismissAck(acknowledgedSession);
+                if (acknowledgedSession ==
+                    FLMKeyboardDismissRequestedGeneration) {
+                    FLMKeyboardDismissRequestedGeneration = 0;
+                }
             }
         }];
     }

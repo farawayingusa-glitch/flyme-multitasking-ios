@@ -72,8 +72,8 @@ codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.29~diagnostic2" "$workspace/control/control"
-grep -q "com.apple.UIKit" "$keyboard_filter"
+grep -qx "Version: 0.8.30" "$workspace/control/control"
+grep -q "UIApplication" "$keyboard_filter"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then

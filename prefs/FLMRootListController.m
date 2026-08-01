@@ -14,6 +14,11 @@
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
+static NSString *const FLMDiagnosticPrimaryPath =
+    @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
+static NSString *const FLMDiagnosticFallbackPath =
+    @"/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
+
 @interface NSObject (FLMPreferencesPrivate)
 + (id)defaultWorkspace;
 - (NSArray *)allInstalledApplications;
@@ -49,6 +54,87 @@ static void FLMSetPreference(NSString *key, id value) {
                              kCFPreferencesAnyHost);
     notify_post(FLYME_PREFERENCES_NOTIFICATION);
 }
+
+static NSArray<NSString *> *FLMDiagnosticBasePaths(void) {
+    return @[FLMDiagnosticPrimaryPath, FLMDiagnosticFallbackPath];
+}
+
+static NSString *FLMActiveDiagnosticPath(void) {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *newestPath = nil;
+    NSDate *newestDate = nil;
+    for (NSString *path in FLMDiagnosticBasePaths()) {
+        NSDictionary *attributes =
+            [manager attributesOfItemAtPath:path error:nil];
+        NSDate *date = attributes[NSFileModificationDate];
+        if (attributes && (!newestDate || [date compare:newestDate] ==
+                                           NSOrderedDescending)) {
+            newestPath = path;
+            newestDate = date;
+        }
+    }
+    return newestPath;
+}
+
+static NSData *FLMCompleteDiagnosticData(void) {
+    NSString *path = FLMActiveDiagnosticPath();
+    if (path.length == 0) {
+        return nil;
+    }
+    NSMutableData *result = [NSMutableData data];
+    NSString *previousPath = [path stringByAppendingString:@".previous"];
+    NSData *previous = [NSData dataWithContentsOfFile:previousPath];
+    if (previous.length > 0) {
+        [result appendData:previous];
+        const char separator[] = "\n--- current log ---\n";
+        [result appendBytes:separator length:sizeof(separator) - 1];
+    }
+    NSData *current = [NSData dataWithContentsOfFile:path];
+    if (current.length > 0) {
+        [result appendData:current];
+    }
+    return result.length > 0 ? result : nil;
+}
+
+static NSString *FLMDiagnosticStatusText(void) {
+    NSString *path = FLMActiveDiagnosticPath();
+    NSData *data = FLMCompleteDiagnosticData();
+    if (path.length == 0 || data.length == 0) {
+        return @"暂无日志";
+    }
+    NSDictionary *attributes =
+        [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    NSDate *date = attributes[NSFileModificationDate];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"MM-dd HH:mm";
+    NSString *dateText = date ? [formatter stringFromDate:date] : @"未知时间";
+    CGFloat kibibytes = (CGFloat)data.length / 1024.0;
+    return [NSString stringWithFormat:@"%.1f KB · %@", kibibytes, dateText];
+}
+
+@interface FLMDiagnosticLogController : UIViewController
+@property(nonatomic, copy) NSString *logText;
+@end
+
+@implementation FLMDiagnosticLogController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"诊断日志";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    UITextView *textView = [[UITextView alloc] initWithFrame:self.view.bounds];
+    textView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    textView.editable = NO;
+    textView.selectable = YES;
+    textView.alwaysBounceVertical = YES;
+    textView.font = [UIFont monospacedSystemFontOfSize:11.0
+                                               weight:UIFontWeightRegular];
+    textView.text = self.logText ?: @"暂无诊断日志。";
+    [self.view addSubview:textView];
+}
+
+@end
 
 static NSArray<NSString *> *FLMWheelItems(void) {
     id value = FLMCopyPreference(@"wheelItems");
@@ -276,6 +362,7 @@ static NSString *FLMNameForIdentifier(
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadSpecifierID:@"runtime-status" animated:NO];
+    [self reloadSpecifierID:@"diagnostic-status" animated:NO];
 }
 
 - (NSNumber *)flymeEnabled:(PSSpecifier *)specifier {
@@ -292,6 +379,90 @@ static NSString *FLMNameForIdentifier(
 - (NSString *)runtimeStatus:(PSSpecifier *)specifier {
     (void)specifier;
     return FlymeRuntimeIsConnected() ? @"已连接" : @"未连接";
+}
+
+- (NSString *)diagnosticStatus:(PSSpecifier *)specifier {
+    (void)specifier;
+    return FLMDiagnosticStatusText();
+}
+
+- (void)showDiagnosticAlertWithTitle:(NSString *)title
+                             message:(NSString *)message {
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:title
+                                            message:message
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                                             style:UIAlertActionStyleDefault
+                                           handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)shareDiagnosticLog:(PSSpecifier *)specifier {
+    (void)specifier;
+    NSData *data = FLMCompleteDiagnosticData();
+    if (data.length == 0) {
+        [self showDiagnosticAlertWithTitle:@"暂无日志"
+                                  message:@"请先复现问题，再点击分享诊断日志。"];
+        return;
+    }
+    NSString *snapshotPath =
+        [NSTemporaryDirectory()
+            stringByAppendingPathComponent:@"FlymeMultitasking-Diagnostic.log"];
+    if (![data writeToFile:snapshotPath options:NSDataWritingAtomic error:nil]) {
+        [self showDiagnosticAlertWithTitle:@"无法准备日志"
+                                  message:@"请稍后重试，或先打开日志确认文件状态。"];
+        return;
+    }
+    NSURL *url = [NSURL fileURLWithPath:snapshotPath];
+    UIActivityViewController *activity =
+        [[UIActivityViewController alloc] initWithActivityItems:@[url]
+                                          applicationActivities:nil];
+    UIPopoverPresentationController *popover = activity.popoverPresentationController;
+    if (popover) {
+        popover.sourceView = self.view;
+        popover.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                        CGRectGetMidY(self.view.bounds),
+                                        1.0,
+                                        1.0);
+    }
+    [self presentViewController:activity animated:YES completion:nil];
+}
+
+- (void)openDiagnosticLog:(PSSpecifier *)specifier {
+    (void)specifier;
+    NSData *data = FLMCompleteDiagnosticData();
+    NSString *text = data.length > 0
+        ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+        : @"暂无诊断日志。请先复现问题，再返回此页面查看或分享。";
+    FLMDiagnosticLogController *controller =
+        [[FLMDiagnosticLogController alloc] init];
+    controller.logText = text ?: @"日志不是有效的 UTF-8 文本。";
+    [self.navigationController pushViewController:controller animated:YES];
+}
+
+- (void)clearDiagnosticLog:(PSSpecifier *)specifier {
+    (void)specifier;
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"清除诊断日志？"
+                                            message:@"清除后不可恢复，之后的新操作仍会继续记录。"
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"清除"
+                                             style:UIAlertActionStyleDestructive
+                                           handler:^(__unused UIAlertAction *action) {
+        NSFileManager *manager = [NSFileManager defaultManager];
+        for (NSString *path in FLMDiagnosticBasePaths()) {
+            [manager removeItemAtPath:path error:nil];
+            [manager removeItemAtPath:[path stringByAppendingString:@".previous"]
+                                error:nil];
+        }
+        [weakSelf reloadSpecifierID:@"diagnostic-status" animated:YES];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

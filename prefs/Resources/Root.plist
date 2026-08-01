@@ -94,6 +94,48 @@
             <key>label</key>
             <string>运行状态</string>
         </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>日志只记录 Scene、键盘、手势和会话状态，不记录输入文字或聊天内容。日志达到 1 MB 后自动轮换。</string>
+            <key>label</key>
+            <string>日志与诊断</string>
+        </dict>
+        <dict>
+            <key>action</key>
+            <string>shareDiagnosticLog:</string>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>label</key>
+            <string>快捷分享诊断日志</string>
+        </dict>
+        <dict>
+            <key>action</key>
+            <string>openDiagnosticLog:</string>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>label</key>
+            <string>打开诊断日志</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSTitleValueCell</string>
+            <key>get</key>
+            <string>diagnosticStatus:</string>
+            <key>id</key>
+            <string>diagnostic-status</string>
+            <key>label</key>
+            <string>日志状态</string>
+        </dict>
+        <dict>
+            <key>action</key>
+            <string>clearDiagnosticLog:</string>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>label</key>
+            <string>清除诊断日志</string>
+        </dict>
     </array>
     <key>title</key>
     <string>Flyme 多任务</string>
