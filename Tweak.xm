@@ -2971,9 +2971,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         self.floatingKeyboardSessionGeneration =
             self.floatingKeyboardSessionCounter;
-        FLMPublishKeyboardState(identifier,
-                                nil,
-                                self.floatingKeyboardSessionGeneration);
     }
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
@@ -3688,17 +3685,49 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         return;
     }
+    BOOL protectKeyboardDismissal =
+        self.floatingKeyboardVisible || self.floatingKeyboardInteractionSessionActive;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
-    self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
-    ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
     self.keyboardOverlayWindow.keyboardInteractionFrame = CGRectNull;
     // Keep the current generation's host paired while the centered card stays
     // open. UIKit commonly reuses it for the next focus without publishing a
     // second client-settings diff. The host is detached synchronously only
     // when this centered-card generation actually ends.
     self.keyboardOverlayWindow.hidden = YES;
-    [self endFloatingKeyboardInteractionSession];
+    if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
+        !self.floatingWindow.hidden && !self.floatingDocked) {
+        // UIKeyboardDidHide can arrive before the touch that pressed the
+        // keyboard's dismiss key has completely left the system gesture path.
+        // Keep the former keyboard area protected briefly so that one physical
+        // touch can only dismiss the keyboard, never the centered card too.
+        self.floatingKeyboardInteractionSessionActive = YES;
+        self.floatingKeyboardInteractionGeneration += 1;
+        NSUInteger protectionGeneration =
+            self.floatingKeyboardInteractionGeneration;
+        CGRect protectedFrame = [self floatingKeyboardInteractionFrame];
+        self.floatingBackdropTap.additionalProtectedFrame = protectedFrame;
+        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+            protectedFrame;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.50 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (protectionGeneration != self.floatingKeyboardInteractionGeneration ||
+                self.floatingKeyboardVisible || self.floatingWindow.hidden ||
+                self.floatingDocked) {
+                return;
+            }
+            self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
+            ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+                CGRectNull;
+            [self endFloatingKeyboardInteractionSession];
+        });
+    } else {
+        self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
+        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+            CGRectNull;
+        [self endFloatingKeyboardInteractionSession];
+    }
     if (self.floatingKeyboardSessionGeneration == 0 || self.floatingDocked ||
         self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
         [self detachFloatingKeyboardLayerHost];
@@ -4216,6 +4245,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     id scene = [self sceneForHandle:sceneHandle];
     BOOL sceneChanged = scene && scene != self.floatingScene;
+    BOOL needsInitialSceneSettle = self.floatingScenePreparedAt <= 0.0;
     if (![self prepareFloatingScene:scene handle:sceneHandle]) {
         return nil;
     }
@@ -4229,7 +4259,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // creating the remote presenter. Creating both in the same transaction is
     // fast on a warm app but intermittently leaves a permanently black surface
     // during cold launch.
-    if (sceneChanged) {
+    if (sceneChanged || needsInitialSceneSettle) {
         self.floatingScenePreparedAt = CACurrentMediaTime();
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
         return nil;
@@ -4381,9 +4411,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingKeyboardSessionGeneration =
         self.floatingKeyboardSessionCounter;
-    FLMPublishKeyboardState(identifier,
-                            nil,
-                            self.floatingKeyboardSessionGeneration);
+    // Keep the per-application route disabled until the exact Scene has been
+    // resolved. On a warm second opening UIKit may restore the previous text
+    // responder immediately; publishing a bundle-only route here allowed that
+    // first keyboard transaction to be paired inside the card before
+    // SpringBoard knew which Scene host it had to move.
+    FLMPublishKeyboardState(nil, nil, 0);
     [self configureFloatingLaunchCoverForIdentifier:identifier];
     [self layoutFloatingWindow];
 
@@ -4464,7 +4497,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    if (![self sceneForHandle:sceneHandle]) {
+    id resolvedScene = [self sceneForHandle:sceneHandle];
+    if (!resolvedScene) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
         self.floatingStatusLabel.text = @"正在启动应用…";
         if (attempt > 0 && attempt % 5 == 0) {
@@ -4488,6 +4522,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             return;
         }
         [self failFloatingLaunchForIdentifier:identifier generation:generation];
+        return;
+    }
+
+    if (resolvedScene != self.floatingScene) {
+        self.floatingScene = resolvedScene;
+        FLMPublishKeyboardState(identifier,
+                                resolvedScene,
+                                self.floatingKeyboardSessionGeneration);
+        // Give the application process one short main-run-loop interval to
+        // resign the prior generation's concrete responder and install the
+        // Scene-scoped route before foreground/frame settings are committed.
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                [self attachFloatingIdentifier:identifier
+                                    generation:generation
+                                       attempt:attempt + 1];
+            });
         return;
     }
 

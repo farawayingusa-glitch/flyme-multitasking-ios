@@ -16,6 +16,7 @@ static int FLMKeyboardFrameToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
 static uint64_t FLMKeyboardEndedSessionGeneration = 0;
+static __weak UIResponder *FLMKeyboardActiveTextResponder = nil;
 static id FLMKeyboardFrameObserver = nil;
 static id FLMKeyboardWillHideObserver = nil;
 static id FLMKeyboardHideObserver = nil;
@@ -110,6 +111,10 @@ static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
 }
 
 static void FLMEndApplicationKeyboardSession(void) {
+    UIResponder *activeResponder = FLMKeyboardActiveTextResponder;
+    if (activeResponder) {
+        [activeResponder resignFirstResponder];
+    }
     [[UIApplication sharedApplication]
         sendAction:@selector(resignFirstResponder)
                to:nil
@@ -126,6 +131,7 @@ static void FLMEndApplicationKeyboardSession(void) {
             }
         }
     }
+    FLMKeyboardActiveTextResponder = nil;
 }
 
 static void FLMReloadKeyboardRoute(void) {
@@ -185,8 +191,9 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
 %hook UIResponder
 
 - (BOOL)becomeFirstResponder {
-    if (FLMKeyboardRouteActive &&
-        [self conformsToProtocol:@protocol(UITextInput)]) {
+    BOOL routedTextInput =
+        FLMKeyboardRouteActive && [self conformsToProtocol:@protocol(UITextInput)];
+    if (routedTextInput) {
         // Request the physical display host before UIKit creates or pairs the
         // remote keyboard scene. The SpringBoard-side notification is handled
         // on its main queue while this responder transaction is still being
@@ -194,7 +201,15 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
         // of the reduced floating application scene.
         FLMPrepareFullscreenKeyboardHost();
     }
-    return %orig;
+    BOOL result = %orig;
+    if (routedTextInput && result) {
+        // Keep the concrete responder, not just its containing windows. Several
+        // applications restore a text responder while their Scene is brought
+        // forward again; window-wide endEditing alone does not reliably clear
+        // that retained responder between centered-card generations.
+        FLMKeyboardActiveTextResponder = self;
+    }
+    return result;
 }
 
 - (BOOL)resignFirstResponder {
@@ -203,6 +218,9 @@ static void FLMPrepareFullscreenKeyboardHost(void) {
     BOOL result = %orig;
     if (routedTextInput && result) {
         FLMKeyboardLastPrepareTime = 0.0;
+    }
+    if (result && FLMKeyboardActiveTextResponder == self) {
+        FLMKeyboardActiveTextResponder = nil;
     }
     return result;
 }
@@ -286,12 +304,26 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
     }
 
     CGFloat sceneHeight = 0.0;
-    for (UIWindow *window in windowScene.windows) {
-        if (window.hidden || window.alpha <= 0.01 ||
-            window.windowLevel > UIWindowLevelNormal + 1.0) {
-            continue;
+    SEL frameSelector = NSSelectorFromString(@"frame");
+    if ([windowScene respondsToSelector:frameSelector]) {
+        @try {
+            CGRect (*frameGetter)(id, SEL) =
+                (CGRect (*)(id, SEL))[windowScene methodForSelector:frameSelector];
+            if (frameGetter) {
+                sceneHeight = CGRectGetHeight(frameGetter(windowScene, frameSelector));
+            }
+        } @catch (__unused NSException *exception) {
+            sceneHeight = 0.0;
         }
-        sceneHeight = MAX(sceneHeight, CGRectGetHeight(window.bounds));
+    }
+    if (sceneHeight < 1.0) {
+        for (UIWindow *window in windowScene.windows) {
+            if (window.hidden || window.alpha <= 0.01 ||
+                window.windowLevel > UIWindowLevelNormal + 1.0) {
+                continue;
+            }
+            sceneHeight = MAX(sceneHeight, CGRectGetHeight(window.bounds));
+        }
     }
     CGFloat physicalHeight =
         CGRectGetHeight(FLMPhysicalReferenceBoundsForScene(windowScene));
@@ -299,11 +331,12 @@ static void FLMPublishKeyboardFrame(CGRect frame, BOOL visible) {
         return originalHeight;
     }
 
-    // UIKit already accounts for any local intersection. Only supply the
-    // missing bottom segment when the external host made that value smaller;
-    // do not add it twice, which would lift chat controls too far.
+    // UIKit's original result is the part already intersecting the reduced
+    // Scene. The original implementation's iOS 16 strategy adds the missing
+    // physical-screen segment; taking MAX here left WeChat's input bar behind
+    // the externally hosted keyboard whenever both segments were non-zero.
     CGFloat missingBottomIntersection = physicalHeight - sceneHeight;
-    return MIN(sceneHeight, MAX(originalHeight, missingBottomIntersection));
+    return MIN(sceneHeight, MAX(0.0, originalHeight + missingBottomIntersection));
 }
 
 %end

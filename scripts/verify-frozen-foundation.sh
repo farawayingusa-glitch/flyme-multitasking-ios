@@ -102,7 +102,11 @@ done
 for keyboard_handoff_line in \
     '%group FLMRemoteKeyboardAvoidance' \
     '![currentIdentifier isEqualToString:@"com.apple.springboard"]' \
-    'MAX(originalHeight, missingBottomIntersection)' \
+    'originalHeight + missingBottomIntersection' \
+    'FLMKeyboardActiveTextResponder' \
+    'resolvedScene != self.floatingScene' \
+    'needsInitialSceneSettle' \
+    '0.50 * NSEC_PER_SEC' \
     'FLMKeyboardEndedSessionGeneration' \
     'sendAction:@selector(resignFirstResponder)' \
     'endFloatingKeyboardHostSession' \
