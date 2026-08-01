@@ -70,6 +70,8 @@ Require-Text $Source 'window.windowLevel = self.floatingWindow.windowLevel + 1.0
 Require-Text $Source 'keyboardInteractionFrame'
 Require-Text $Source 'FLMPublishKeyboardAvoidance'
 Require-Text $KeyboardSource 'return FLMExternalKeyboardAvoidanceHeight;'
+Require-Text $KeyboardSource 'if (!currentSession)'
+Require-Text $KeyboardSource 'Never touch UIScreen/UIApplication from a dyld initializer'
 Require-Text $Source 'initWithWindowScene:targetWindowScene'
 Require-Text $Source 'setAutorotates:forceUpdateInterfaceOrientation:'
 Require-Text $Source 'hitView == self || hitView == rootView'
@@ -78,6 +80,11 @@ Require-Text $Source 'didUpdateClientSettingsWithDiff:'
 Require-Text $Source '[forwardingRoot addSubview:hostView];'
 Require-Text $Source '[self discardFloatingKeyboardLayerHost];'
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
+
+$KeyboardContents = Get-Content -LiteralPath $KeyboardSource -Raw
+if ($KeyboardContents -match 'FLMReloadKeyboardRoute\(\);\s*FLMReloadKeyboardAvoidance\(\);') {
+    throw 'Keyboard avoidance must not reload from route or dyld initialization paths'
+}
 
 foreach ($RemovedKeyboardPatch in @(
     'FLMRemoteKeyboardAvoidance',
