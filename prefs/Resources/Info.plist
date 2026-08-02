@@ -15,10 +15,11 @@
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.8.44</string>
+    <string>0.8.45</string>
     <key>CFBundleVersion</key>
-    <string>46</string>
+    <string>47</string>
     <key>NSPrincipalClass</key>
     <string>FLMRootListController</string>
 </dict>
 </plist>
+
