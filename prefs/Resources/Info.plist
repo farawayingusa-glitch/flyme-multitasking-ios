@@ -11,14 +11,15 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Flyme 多任务</string>
+    <string>Flyme 澶氫换鍔?/string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.8.43</string>
+    <string>0.8.44</string>
     <key>CFBundleVersion</key>
-    <string>45</string>
+    <string>46</string>
     <key>NSPrincipalClass</key>
     <string>FLMRootListController</string>
 </dict>
 </plist>
+

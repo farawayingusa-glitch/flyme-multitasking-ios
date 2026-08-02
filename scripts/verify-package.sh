@@ -56,9 +56,9 @@ test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
-grep -q "com.tencent.xin" "$keyboard_filter"
-if grep -Eq "com.apple.UIKit|UIApplication|Executables" "$keyboard_filter"; then
-    echo "keyboard adapter must use only the WeChat bundle filter" >&2
+grep -q "com.apple.UIKit" "$keyboard_filter"
+if grep -Eq "com.tencent.xin|UIApplication|Executables" "$keyboard_filter"; then
+    echo "keyboard adapter must use the UIKit framework filter only" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -79,12 +79,12 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 # directly, then enforce the same non-CS_ADHOC flags as the working reference.
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtime"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
-strings "$keyboard" | grep -q "keyboard-app-ctor-v43"
-strings "$keyboard" | grep -q "keyboard-app-ready-v43"
+strings "$keyboard" | grep -q "keyboard-app-ctor-v44"
+strings "$keyboard" | grep -q "keyboard-app-ready-v44"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.43" "$workspace/control/control"
+grep -qx "Version: 0.8.44" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "WeChat" "$workspace/control/postinst"
@@ -100,3 +100,4 @@ if grep -Riq "dpkg-divert" "$workspace/control"; then
 fi
 
 echo "package verification passed"
+

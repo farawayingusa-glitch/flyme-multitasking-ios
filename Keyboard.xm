@@ -16,12 +16,12 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v43"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v43"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v44"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v44"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF143ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF243ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 43ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF144ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF244ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 44ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -137,6 +137,15 @@ static uint16_t FLMWeChatProcessIdentityFlags(void) {
         [processName isEqualToString:@"WeChat"] ||
         [executableName isEqualToString:@"WeChat"];
     return (containsBundle ? 1U : 0U) | (executableMatches ? 2U : 0U);
+}
+
+// The original TrollOpen keyboard adapter is filtered through UIKit, not the
+// application bundle. That reaches the process that owns the UIKit keyboard
+// contract on this iOS version, but it also maps the dylib into many processes.
+// Do not initialise hooks, notify state, or UI access unless both independent
+// checks prove that this is WeChat's main process.
+static BOOL FLMIsTargetWeChatProcess(void) {
+    return (FLMWeChatProcessIdentityFlags() & 3U) == 3U;
 }
 
 static CGSize FLMFullPhysicalScreenSize(void) {
@@ -624,6 +633,9 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
 
 %ctor {
     @autoreleasepool {
+        if (!FLMIsTargetWeChatProcess()) {
+            return;
+        }
         // The two independent notify states make a failed device run
         // unambiguous: no ctor token means no injection; ctor without ready
         // means initialization did not complete; both mean SpringBoard can
@@ -680,3 +692,4 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
             FLMDiagnosticEventAdapterReady);
     }
 }
+

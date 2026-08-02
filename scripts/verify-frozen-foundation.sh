@@ -92,9 +92,9 @@ for marker in "${required_keyboard_source[@]}"; do
 done
 
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
-grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
-if grep -Eq 'com.apple.UIKit|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard adapter filter must contain only the WeChat bundle" >&2
+grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
+if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard adapter filter must contain only the UIKit framework filter" >&2
     exit 1
 fi
 
@@ -105,4 +105,5 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and bundle-only WeChat adapter architecture verified"
+echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
+
