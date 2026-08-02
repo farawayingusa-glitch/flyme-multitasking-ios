@@ -33,7 +33,7 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
         run: |
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          test -x "$THEOS/bin/ldid"
+          command -v ldid
 
       - name: Build package
         env:
