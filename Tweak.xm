@@ -24,6 +24,7 @@
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
+#define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -207,7 +208,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.37 schema=8");
+                    @"logger-ready build=0.8.38 schema=9");
             }
         });
     });
@@ -1075,6 +1076,19 @@ static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
 static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
+static NSString *const FLMKeyboardSharedStatePath =
+    @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
+static NSString *const FLMKeyboardSharedStateRootlessPath =
+    @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
+static dispatch_queue_t FLMKeyboardSharedStateWriterQueue;
+static NSString *FLMKeyboardSharedIdentifier;
+static uint64_t FLMKeyboardSharedSceneHash = 0;
+static uint64_t FLMKeyboardSharedSessionGeneration = 0;
+static BOOL FLMKeyboardSharedAvoidanceVisible = NO;
+static CGFloat FLMKeyboardSharedAvoidanceHeight = 0.0;
+static BOOL FLMKeyboardSharedCardActive = NO;
+static CGFloat FLMKeyboardSharedCardBottom = 0.0;
+static CGFloat FLMKeyboardSharedCardScale = 0.0;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -1136,13 +1150,99 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
     return value ?: 1;
 }
 
+static void FLMScheduleKeyboardSharedStateWrite(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        FLMKeyboardSharedStateWriterQueue = dispatch_queue_create(
+            "com.codex.flymemultitasking.keyboard-shared-state",
+            DISPATCH_QUEUE_SERIAL);
+    });
+    BOOL active = FLMKeyboardSharedIdentifier.length > 0 &&
+                  FLMKeyboardSharedSessionGeneration != 0;
+    NSDictionary *snapshot = @{
+        @"version": @2,
+        @"active": @(active),
+        @"bundleID": FLMKeyboardSharedIdentifier ?: @"",
+        @"sceneHash": @(FLMKeyboardSharedSceneHash),
+        @"sessionGeneration": @(FLMKeyboardSharedSessionGeneration),
+        @"avoidanceVisible": @(FLMKeyboardSharedAvoidanceVisible),
+        @"avoidanceHeight": @(FLMKeyboardSharedAvoidanceHeight),
+        @"cardActive": @(FLMKeyboardSharedCardActive),
+        @"cardBottom": @(FLMKeyboardSharedCardBottom),
+        @"cardScale": @(FLMKeyboardSharedCardScale),
+        @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
+    };
+    dispatch_async(FLMKeyboardSharedStateWriterQueue, ^{
+        @autoreleasepool {
+            NSError *serializationError = nil;
+            NSData *data = [NSPropertyListSerialization
+                dataWithPropertyList:snapshot
+                              format:NSPropertyListBinaryFormat_v1_0
+                             options:0
+                               error:&serializationError];
+            if (!data || serializationError) {
+                return;
+            }
+            NSError *writeError = nil;
+            BOOL wrote = [data writeToFile:FLMKeyboardSharedStatePath
+                                   options:NSDataWritingAtomic
+                                     error:&writeError];
+            NSString *writtenPath = nil;
+            if (wrote) {
+                chmod(FLMKeyboardSharedStatePath.fileSystemRepresentation, 0644);
+                writtenPath = FLMKeyboardSharedStatePath;
+            } else {
+                writeError = nil;
+                wrote = [data writeToFile:FLMKeyboardSharedStateRootlessPath
+                                  options:NSDataWritingAtomic
+                                    error:&writeError];
+                if (wrote) {
+                    chmod(
+                        FLMKeyboardSharedStateRootlessPath.fileSystemRepresentation,
+                        0644);
+                    writtenPath = FLMKeyboardSharedStateRootlessPath;
+                }
+            }
+            if (wrote) {
+                // The notification is only a refresh signal. All routing and
+                // geometry values are read from the atomically replaced file.
+                notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);
+            }
+            FLMEnqueueDiagnosticLine(
+                @"sb shared-state write success=%d path=%@ error=%@",
+                wrote, writtenPath ?: @"<none>",
+                writeError.localizedDescription ?: @"<none>");
+        }
+    });
+    FLMEnqueueDiagnosticLine(
+        @"sb shared-state publish active=%d app=%@ session=%llu avoidance=%d/%.2f card=%d/%.2f/%.5f",
+        active, FLMKeyboardSharedIdentifier ?: @"<none>",
+        (unsigned long long)FLMKeyboardSharedSessionGeneration,
+        FLMKeyboardSharedAvoidanceVisible, FLMKeyboardSharedAvoidanceHeight,
+        FLMKeyboardSharedCardActive, FLMKeyboardSharedCardBottom,
+        FLMKeyboardSharedCardScale);
+}
+
 static void FLMPublishKeyboardState(NSString *identifier,
                                     id scene,
                                     uint64_t sessionGeneration) {
+    uint64_t routeHash = FLMIdentifierHash(identifier);
+    uint64_t sceneHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
+    FLMKeyboardSharedIdentifier = [identifier copy];
+    FLMKeyboardSharedSceneHash = sceneHash;
+    FLMKeyboardSharedSessionGeneration = sessionGeneration;
+    if (identifier.length == 0 || sessionGeneration == 0) {
+        FLMKeyboardSharedAvoidanceVisible = NO;
+        FLMKeyboardSharedAvoidanceHeight = 0.0;
+        FLMKeyboardSharedCardActive = NO;
+        FLMKeyboardSharedCardBottom = 0.0;
+        FLMKeyboardSharedCardScale = 0.0;
+    }
+    FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardRouteToken < 0 &&
         notify_register_check(FLYME_KEYBOARD_NOTIFICATION,
                               &FlymeKeyboardRouteToken) != NOTIFY_STATUS_OK) {
-        return;
+        FlymeKeyboardRouteToken = -1;
     }
     if (FlymeKeyboardSceneToken < 0) {
         notify_register_check(FLYME_KEYBOARD_SCENE_NOTIFICATION,
@@ -1152,9 +1252,9 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_register_check(FLYME_KEYBOARD_SESSION_NOTIFICATION,
                               &FlymeKeyboardSessionToken);
     }
-    uint64_t routeHash = FLMIdentifierHash(identifier);
-    uint64_t sceneHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
-    notify_set_state(FlymeKeyboardRouteToken, routeHash);
+    if (FlymeKeyboardRouteToken >= 0) {
+        notify_set_state(FlymeKeyboardRouteToken, routeHash);
+    }
     if (FlymeKeyboardSceneToken >= 0) {
         notify_set_state(FlymeKeyboardSceneToken, sceneHash);
     }
@@ -1162,8 +1262,12 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_set_state(FlymeKeyboardSessionToken, sessionGeneration);
         notify_post(FLYME_KEYBOARD_SESSION_NOTIFICATION);
     }
-    notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
-    notify_post(FLYME_KEYBOARD_NOTIFICATION);
+    if (FlymeKeyboardSceneToken >= 0) {
+        notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
+    }
+    if (FlymeKeyboardRouteToken >= 0) {
+        notify_post(FLYME_KEYBOARD_NOTIFICATION);
+    }
     FLMEnqueueDiagnosticLine(
         @"sb route-publish app=%@ scene=%@ session=%llu routeHash=0x%llx sceneHash=0x%llx",
         identifier ?: @"<none>", FLMSceneIdentifier(scene) ?: @"<none>",
@@ -1178,20 +1282,25 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
     if (sessionGeneration == 0) {
         return;
     }
+    CGFloat height = visible ? MAX(0.0, keyboardHeight) : 0.0;
+    FLMKeyboardSharedAvoidanceVisible = visible;
+    FLMKeyboardSharedAvoidanceHeight = height;
+    FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardAvoidanceToken < 0 &&
         notify_register_check(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
                               &FlymeKeyboardAvoidanceToken) != NOTIFY_STATUS_OK) {
-        return;
+        FlymeKeyboardAvoidanceToken = -1;
     }
-    CGFloat height = visible ? MAX(0.0, keyboardHeight) : 0.0;
     uint64_t encodedHeight =
         MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
     uint64_t encodedGeneration =
         (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
     uint64_t state = (visible ? (1ULL << 63) : 0) |
                      encodedGeneration | encodedHeight;
-    notify_set_state(FlymeKeyboardAvoidanceToken, state);
-    notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
+    if (FlymeKeyboardAvoidanceToken >= 0) {
+        notify_set_state(FlymeKeyboardAvoidanceToken, state);
+        notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
+    }
     FLMEnqueueDiagnosticLine(
         @"sb avoidance-publish session=%llu visible=%d height=%.2f state=0x%llx",
         (unsigned long long)sessionGeneration, visible, height,
@@ -1202,11 +1311,18 @@ static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
                                            CGFloat cardBottom,
                                            CGFloat visualScale,
                                            BOOL active) {
+    FLMKeyboardSharedCardActive = active && sessionGeneration != 0 &&
+                                  cardBottom > 1.0 && visualScale > 0.05;
+    FLMKeyboardSharedCardBottom =
+        FLMKeyboardSharedCardActive ? cardBottom : 0.0;
+    FLMKeyboardSharedCardScale =
+        FLMKeyboardSharedCardActive ? visualScale : 0.0;
+    FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardCardGeometryToken < 0 &&
         notify_register_check(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
                               &FlymeKeyboardCardGeometryToken) !=
             NOTIFY_STATUS_OK) {
-        return;
+        FlymeKeyboardCardGeometryToken = -1;
     }
     uint64_t state = 0;
     if (active && sessionGeneration != 0 && cardBottom > 1.0 &&
@@ -1218,8 +1334,10 @@ static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
             MIN(0xFFFFFFULL, (uint64_t)llround(visualScale * 1000000.0));
         state = (1ULL << 63) | generation | encodedBottom | encodedScale;
     }
-    notify_set_state(FlymeKeyboardCardGeometryToken, state);
-    notify_post(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION);
+    if (FlymeKeyboardCardGeometryToken >= 0) {
+        notify_set_state(FlymeKeyboardCardGeometryToken, state);
+        notify_post(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION);
+    }
     FLMEnqueueDiagnosticLine(
         @"sb geometry-publish session=%llu active=%d bottom=%.2f scale=%.5f state=0x%llx",
         (unsigned long long)sessionGeneration, active, cardBottom, visualScale,

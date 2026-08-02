@@ -53,7 +53,11 @@ test -f "$preferences"
 test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
-grep -q "com.tencent.xin" "$keyboard_filter"
+grep -q "com.apple.UIKit" "$keyboard_filter"
+if grep -q "com.tencent.xin" "$keyboard_filter"; then
+    echo "keyboard adapter must use the UIKit process filter" >&2
+    exit 1
+fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.plist"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon.png"
@@ -75,7 +79,7 @@ codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.37" "$workspace/control/control"
+grep -qx "Version: 0.8.38" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then

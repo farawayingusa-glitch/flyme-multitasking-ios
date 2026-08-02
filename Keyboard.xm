@@ -15,6 +15,13 @@
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
+#define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
+#define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
+
+static NSString *const FLMKeyboardSharedStatePath =
+    @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
+static NSString *const FLMKeyboardSharedStateRootlessPath =
+    @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 
 static BOOL FLMKeyboardRouteActive = NO;
 static BOOL FLMKeyboardTargetApplication = NO;
@@ -25,6 +32,7 @@ static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardAvoidanceToken = -1;
 static int FLMKeyboardCardGeometryToken = -1;
+static int FLMKeyboardSharedStateToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
 static uint64_t FLMExternalKeyboardAvoidanceGeneration = 0;
@@ -37,6 +45,21 @@ static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+
+static NSDictionary *FLMReadKeyboardSharedState(void) {
+    NSDictionary *state =
+        [NSDictionary dictionaryWithContentsOfFile:FLMKeyboardSharedStatePath];
+    if (![state isKindOfClass:[NSDictionary class]]) {
+        state = [NSDictionary
+            dictionaryWithContentsOfFile:FLMKeyboardSharedStateRootlessPath];
+    }
+    NSNumber *version = [state[@"version"] isKindOfClass:[NSNumber class]]
+                            ? state[@"version"]
+                            : nil;
+    return version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION
+               ? state
+               : nil;
+}
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
     const char *bytes = identifier.UTF8String;
@@ -279,14 +302,30 @@ static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
     uint64_t sceneHash = 0;
-    if (FLMKeyboardRouteToken >= 0) {
+    NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    BOOL sharedStateAvailable = sharedState != nil;
+    BOOL sharedStateActive =
+        [sharedState[@"active"] isKindOfClass:[NSNumber class]] &&
+        [sharedState[@"active"] boolValue];
+    NSString *sharedTargetIdentifier =
+        [sharedState[@"bundleID"] isKindOfClass:[NSString class]]
+            ? sharedState[@"bundleID"]
+            : nil;
+    if (sharedStateAvailable) {
+        targetHash = sharedStateActive
+                         ? FLMIdentifierHash(sharedTargetIdentifier)
+                         : 0;
+        sessionGeneration =
+            [sharedState[@"sessionGeneration"] unsignedLongLongValue];
+        sceneHash = [sharedState[@"sceneHash"] unsignedLongLongValue];
+    } else if (FLMKeyboardRouteToken >= 0) {
         notify_get_state(FLMKeyboardRouteToken, &targetHash);
-    }
-    if (FLMKeyboardSessionToken >= 0) {
-        notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
-    }
-    if (FLMKeyboardSceneToken >= 0) {
-        notify_get_state(FLMKeyboardSceneToken, &sceneHash);
+        if (FLMKeyboardSessionToken >= 0) {
+            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
+        }
+        if (FLMKeyboardSceneToken >= 0) {
+            notify_get_state(FLMKeyboardSceneToken, &sceneHash);
+        }
     }
 
     BOOL previousTargetApplication = FLMKeyboardTargetApplication;
@@ -344,7 +383,9 @@ static void FLMReloadKeyboardRoute(void) {
              (sceneHash != 0 ? 16U : 0U) |
              (explicitWeChatTarget ? 32U : 0U) |
              ((weChatIdentityFlags & 1U) != 0 ? 64U : 0U) |
-             ((weChatIdentityFlags & 2U) != 0 ? 128U : 0U);
+             ((weChatIdentityFlags & 2U) != 0 ? 128U : 0U) |
+             (sharedStateAvailable ? 256U : 0U) |
+             (sharedStateActive ? 512U : 0U);
         FLMPublishDiagnosticEvent(
             role,
             FLMDiagnosticEventRouteReload,
@@ -364,6 +405,34 @@ static void FLMReloadKeyboardRoute(void) {
 
 static void FLMReloadKeyboardCardGeometry(void) {
     uint64_t state = 0;
+    NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    if (sharedState) {
+        BOOL active = [sharedState[@"cardActive"] boolValue];
+        uint64_t generation =
+            [sharedState[@"sessionGeneration"] unsignedLongLongValue] &
+            0x7FFFULL;
+        CGFloat cardBottom = [sharedState[@"cardBottom"] doubleValue];
+        CGFloat visualScale = [sharedState[@"cardScale"] doubleValue];
+        BOOL current = FLMKeyboardTargetApplication && active &&
+                       generation != 0 &&
+                       generation ==
+                           (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
+                       cardBottom > 1.0 && visualScale > 0.05;
+        FLMKeyboardCardGeometryActive = current;
+        FLMKeyboardCardGeometryGeneration = current ? generation : 0;
+        FLMKeyboardCardBottom = current ? cardBottom : 0.0;
+        FLMKeyboardCardVisualScale = current ? visualScale : 0.0;
+        if (FLMKeyboardTargetApplication) {
+            FLMPublishDiagnosticEvent(
+                FLMDiagnosticRoleApplication,
+                FLMDiagnosticEventCardGeometry,
+                FLMKeyboardSessionGeneration,
+                FLMDiagnosticUnsignedValue(FLMKeyboardCardBottom),
+                FLMDiagnosticUnsignedValue(FLMKeyboardCardVisualScale *
+                                           1000.0));
+        }
+        return;
+    }
     if (FLMKeyboardCardGeometryToken < 0 ||
         notify_get_state(FLMKeyboardCardGeometryToken, &state) !=
             NOTIFY_STATUS_OK) {
@@ -392,18 +461,33 @@ static void FLMReloadKeyboardCardGeometry(void) {
 
 static void FLMReloadKeyboardAvoidance(void) {
     uint64_t state = 0;
-    if (FLMKeyboardAvoidanceToken < 0 ||
+    NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    BOOL visible = NO;
+    uint64_t generation = 0;
+    CGFloat height = 0.0;
+    if (sharedState) {
+        visible = [sharedState[@"avoidanceVisible"] boolValue];
+        generation =
+            [sharedState[@"sessionGeneration"] unsignedLongLongValue];
+        height = [sharedState[@"avoidanceHeight"] doubleValue];
+    } else if (FLMKeyboardAvoidanceToken < 0 ||
         notify_get_state(FLMKeyboardAvoidanceToken, &state) != NOTIFY_STATUS_OK) {
         return;
+    } else {
+        visible = (state & (1ULL << 63)) != 0;
+        generation = (state >> 24) & 0x7FFFFFFFFFULL;
+        height = (CGFloat)(state & 0xFFFFFFULL) / 100.0;
     }
-    BOOL visible = (state & (1ULL << 63)) != 0;
-    uint64_t generation = (state >> 24) & 0x7FFFFFFFFFULL;
-    CGFloat height = (CGFloat)(state & 0xFFFFFFULL) / 100.0;
+    uint64_t previousGeneration = FLMExternalKeyboardAvoidanceGeneration;
+    CGFloat previousHeight = FLMExternalKeyboardAvoidanceHeight;
     BOOL current = FLMKeyboardTargetApplication && visible && generation != 0 &&
                    generation == FLMKeyboardSessionGeneration;
     FLMExternalKeyboardAvoidanceGeneration = current ? generation : 0;
     FLMExternalKeyboardAvoidanceHeight = current ? MAX(0.0, height) : 0.0;
-    if (FLMKeyboardTargetApplication) {
+    BOOL changed = previousGeneration != FLMExternalKeyboardAvoidanceGeneration ||
+                   fabs(previousHeight - FLMExternalKeyboardAvoidanceHeight) >
+                       0.25;
+    if (FLMKeyboardTargetApplication && changed) {
         FLMPublishDiagnosticEvent(
             FLMDiagnosticRoleApplication,
             FLMDiagnosticEventAvoidanceReload,
@@ -436,6 +520,7 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
 %hook UITextEffectsWindow
 
 - (CGSize)keyboardScreenReferenceSize {
+    FLMReloadKeyboardRoute();
     UIWindowScene *scene = ((UIWindow *)self).windowScene;
     if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return %orig;
@@ -460,6 +545,7 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
 - (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
                     isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
                      ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
+    FLMReloadKeyboardRoute();
     CGFloat originalHeight = %orig(windowScene,
                                    isLocalMinimumHeightOut,
                                    ignoreHorizontalOffset);
@@ -540,6 +626,12 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
                                  dispatch_get_main_queue(),
                                  ^(__unused int token) {
             FLMReloadKeyboardCardGeometry();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
+                                 &FLMKeyboardSharedStateToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
         });
         FLMInstallRemoteKeyboardGeometryIfAvailable();
         FLMReloadKeyboardRoute();
