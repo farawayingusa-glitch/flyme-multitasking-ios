@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
+keyboard_source="${2:-Keyboard.xm}"
 
 required_source=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -25,7 +26,9 @@ required_source=(
     "setPreferredSceneHostIdentity:"
     "sb scene-pair apply="
     "sb scene-pair clear="
-    "sb viewport committed"
+    "FLMPublishKeyboardState"
+    "FLMPublishKeyboardAvoidance"
+    "FLMPublishKeyboardCardGeometry"
 )
 
 for marker in "${required_source[@]}"; do
@@ -36,11 +39,9 @@ for marker in "${required_source[@]}"; do
 done
 
 removed_source=(
-    "FLMPublishKeyboardState"
-    "FLMPublishKeyboardAvoidance"
-    "FLMPublishKeyboardCardGeometry"
-    "FLYME_KEYBOARD_NOTIFICATION"
-    "FLYME_KEYBOARD_SESSION_NOTIFICATION"
+    "applyFloatingKeyboardViewportAvoidance"
+    "floatingKeyboardViewportApplied"
+    "sb viewport committed"
     "%hook UIResponder"
     "%hook NSNotificationCenter"
     "FLYME_KEYBOARD_FRAME_NOTIFICATION"
@@ -66,6 +67,23 @@ for marker in "${removed_source[@]}"; do
     fi
 done
 
+required_keyboard_source=(
+    "%hook UITextEffectsWindow"
+    "keyboardScreenReferenceSize"
+    "%hook _UIRemoteKeyboards"
+    "intersectionHeightForWindowScene:"
+    "FLMExternalKeyboardAvoidanceHeight"
+    "FLMEndPreviousApplicationKeyboardSession"
+    "FLMDiagnosticEventIntersection"
+)
+
+for marker in "${required_keyboard_source[@]}"; do
+    grep -Fq -- "$marker" "$keyboard_source" || {
+        echo "native application keyboard marker missing: $marker" >&2
+        exit 1
+    }
+done
+
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
 wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
@@ -73,4 +91,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and SpringBoard-owned keyboard architecture verified"
+echo "frozen gesture foundation and fixed-scene UIKit keyboard architecture verified"

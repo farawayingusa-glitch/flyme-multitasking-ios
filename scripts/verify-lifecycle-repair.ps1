@@ -1,6 +1,7 @@
 param(
     [string]$Source = 'Tweak.xm',
-    [string]$LifecycleSource = 'SceneLifecycle.xm'
+    [string]$LifecycleSource = 'SceneLifecycle.xm',
+    [string]$KeyboardSource = 'Keyboard.xm'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,18 +45,18 @@ foreach ($Marker in @(
     'setPreferredSceneHostIdentity:',
     'sb scene-pair apply=',
     'sb scene-pair clear=',
-    'sb viewport committed',
+    'FLMPublishKeyboardState',
+    'FLMPublishKeyboardAvoidance',
+    'FLMPublishKeyboardCardGeometry',
     '0.24 * NSEC_PER_SEC'
 )) {
     Require-Text $Source $Marker
 }
 
 foreach ($Removed in @(
-    'FLMPublishKeyboardState',
-    'FLMPublishKeyboardAvoidance',
-    'FLMPublishKeyboardCardGeometry',
-    'FLYME_KEYBOARD_NOTIFICATION',
-    'FLYME_KEYBOARD_SESSION_NOTIFICATION',
+    'applyFloatingKeyboardViewportAvoidance',
+    'floatingKeyboardViewportApplied',
+    'sb viewport committed',
     '%hook UIResponder',
     '%hook NSNotificationCenter',
     'FLYME_KEYBOARD_FRAME_NOTIFICATION',
@@ -81,4 +82,15 @@ foreach ($Removed in @(
 }
 
 Require-Text $LifecycleSource 'FLMClearProtectedScene(self);'
-Write-Output 'scene lifecycle and SpringBoard-owned keyboard architecture verified'
+foreach ($Marker in @(
+    '%hook UITextEffectsWindow',
+    'keyboardScreenReferenceSize',
+    '%hook _UIRemoteKeyboards',
+    'intersectionHeightForWindowScene:',
+    'FLMExternalKeyboardAvoidanceHeight',
+    'FLMEndPreviousApplicationKeyboardSession',
+    'FLMDiagnosticEventIntersection'
+)) {
+    Require-Text $KeyboardSource $Marker
+}
+Write-Output 'scene lifecycle and fixed-scene UIKit keyboard architecture verified'
