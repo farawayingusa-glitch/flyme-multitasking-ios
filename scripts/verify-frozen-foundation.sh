@@ -84,6 +84,11 @@ required_keyboard_source=(
     "FLMDiagnosticEventAdapterReady"
 )
 
+grep -Fq -- 'scene-frame policy=fullscreen' "$source_file"
+grep -Fq -- 'uniformly scaled into the card' "$source_file"
+grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
+grep -Fq -- 'centered-preserved=%d' "$source_file"
+
 for marker in "${required_keyboard_source[@]}"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
         echo "native application keyboard marker missing: $marker" >&2
@@ -106,3 +111,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
 fi
 
 echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
+
