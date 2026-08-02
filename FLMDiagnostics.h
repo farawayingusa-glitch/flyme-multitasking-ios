@@ -8,6 +8,14 @@
 
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-event-v2"
+#define FLYME_DIAGNOSTIC_SPRINGBOARD_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-springboard-v3"
+#define FLYME_DIAGNOSTIC_APPLICATION_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-application-v3"
+#define FLYME_DIAGNOSTIC_KEYBOARD_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-keyboard-v3"
+#define FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-uikit-other-v3"
 
 typedef NS_ENUM(uint8_t, FLMDiagnosticRole) {
     FLMDiagnosticRoleSpringBoard = 1,
@@ -44,15 +52,44 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
                                              uint64_t sessionGeneration,
                                              uint16_t firstValue,
                                              uint16_t secondValue) {
-    static int eventToken = -1;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        if (notify_register_check(FLYME_DIAGNOSTIC_EVENT_NOTIFICATION,
-                                  &eventToken) != NOTIFY_STATUS_OK) {
-            eventToken = -1;
+    static int springBoardToken = -1;
+    static int applicationToken = -1;
+    static int keyboardToken = -1;
+    static int uiKitOtherToken = -1;
+    static dispatch_once_t springBoardOnceToken;
+    static dispatch_once_t applicationOnceToken;
+    static dispatch_once_t keyboardOnceToken;
+    static dispatch_once_t uiKitOtherOnceToken;
+    int *eventToken = &uiKitOtherToken;
+    dispatch_once_t *onceToken = &uiKitOtherOnceToken;
+    const char *notificationName = FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION;
+    switch (role) {
+        case FLMDiagnosticRoleSpringBoard:
+            eventToken = &springBoardToken;
+            onceToken = &springBoardOnceToken;
+            notificationName = FLYME_DIAGNOSTIC_SPRINGBOARD_NOTIFICATION;
+            break;
+        case FLMDiagnosticRoleApplication:
+            eventToken = &applicationToken;
+            onceToken = &applicationOnceToken;
+            notificationName = FLYME_DIAGNOSTIC_APPLICATION_NOTIFICATION;
+            break;
+        case FLMDiagnosticRoleKeyboardExtension:
+            eventToken = &keyboardToken;
+            onceToken = &keyboardOnceToken;
+            notificationName = FLYME_DIAGNOSTIC_KEYBOARD_NOTIFICATION;
+            break;
+        case FLMDiagnosticRoleUIKitOther:
+        default:
+            break;
+    }
+    dispatch_once(onceToken, ^{
+        if (notify_register_check(notificationName, eventToken) !=
+            NOTIFY_STATUS_OK) {
+            *eventToken = -1;
         }
     });
-    if (eventToken < 0) {
+    if (*eventToken < 0) {
         return;
     }
     uint64_t state = ((uint64_t)event << 56) |
@@ -60,8 +97,8 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
                      ((sessionGeneration & 0xFFFFULL) << 32) |
                      ((uint64_t)firstValue << 16) |
                      (uint64_t)secondValue;
-    notify_set_state(eventToken, state);
-    notify_post(FLYME_DIAGNOSTIC_EVENT_NOTIFICATION);
+    notify_set_state(*eventToken, state);
+    notify_post(notificationName);
 }
 
 static inline uint16_t FLMDiagnosticUnsignedValue(CGFloat value) {

@@ -489,7 +489,10 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
         FLMKeyboardSessionGeneration,
         FLMDiagnosticUnsignedValue(originalHeight),
         FLMDiagnosticUnsignedValue(mappedHeight));
-    return mappedHeight;
+    // A hosted Scene can already receive a valid UIKit intersection computed
+    // from the physical keyboard. Flyme only supplies missing external-card
+    // avoidance; it must never reduce UIKit's native value.
+    return MAX(originalHeight, mappedHeight);
 }
 
 %end

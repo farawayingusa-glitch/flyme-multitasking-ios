@@ -33,7 +33,11 @@ static const char *FLMDiagnosticFallbackPath =
     "/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
 static dispatch_queue_t FLMDiagnosticWriterQueue;
 static BOOL FLMDiagnosticWriterReady = NO;
-static int FLMDiagnosticReceiverToken = -1;
+static int FLMDiagnosticLegacyReceiverToken = -1;
+static int FLMDiagnosticSpringBoardReceiverToken = -1;
+static int FLMDiagnosticApplicationReceiverToken = -1;
+static int FLMDiagnosticKeyboardReceiverToken = -1;
+static int FLMDiagnosticUIKitOtherReceiverToken = -1;
 static const off_t FLMDiagnosticMaximumSize = 1024 * 1024;
 static const CGFloat FLMKeyboardAccessoryProtectionHeight = 56.0;
 
@@ -156,41 +160,54 @@ static void FLMEnqueueDiagnosticLine(NSString *format, ...) {
     });
 }
 
+static void FLMRecordRemoteDiagnosticEvent(int token) {
+    uint64_t state = 0;
+    if (token < 0 || notify_get_state(token, &state) != NOTIFY_STATUS_OK) {
+        return;
+    }
+    uint8_t event = (uint8_t)(state >> 56);
+    uint8_t role = (uint8_t)((state >> 48) & 0xFFULL);
+    uint16_t session = (uint16_t)((state >> 32) & 0xFFFFULL);
+    uint16_t first = (uint16_t)((state >> 16) & 0xFFFFULL);
+    uint16_t second = (uint16_t)(state & 0xFFFFULL);
+    FLMAppendDiagnosticLineNow(
+        [NSString stringWithFormat:
+            @"remote role=%s event=%s session=%u a=%u b=%u raw=0x%016llx",
+            FLMDiagnosticRoleName(role), FLMDiagnosticEventName(event),
+            session, first, second, (unsigned long long)state]);
+}
+
+static void FLMRegisterDiagnosticReceiver(const char *notificationName,
+                                          int *receiverToken) {
+    notify_register_dispatch(notificationName,
+                             receiverToken,
+                             FLMDiagnosticWriterQueue,
+                             ^(int deliveredToken) {
+        FLMRecordRemoteDiagnosticEvent(deliveredToken);
+    });
+}
+
 static void FLMStartDiagnosticWriter(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         FLMDiagnosticWriterQueue =
             dispatch_queue_create("com.codex.flymemultitasking.diagnostic-writer",
                                   DISPATCH_QUEUE_SERIAL);
-        notify_register_dispatch(
-            FLYME_DIAGNOSTIC_EVENT_NOTIFICATION,
-            &FLMDiagnosticReceiverToken,
-            FLMDiagnosticWriterQueue,
-            ^(__unused int token) {
-                uint64_t state = 0;
-                if (FLMDiagnosticReceiverToken < 0 ||
-                    notify_get_state(FLMDiagnosticReceiverToken, &state) !=
-                        NOTIFY_STATUS_OK) {
-                    return;
-                }
-                uint8_t event = (uint8_t)(state >> 56);
-                uint8_t role = (uint8_t)((state >> 48) & 0xFFULL);
-                uint16_t session = (uint16_t)((state >> 32) & 0xFFFFULL);
-                uint16_t first = (uint16_t)((state >> 16) & 0xFFFFULL);
-                uint16_t second = (uint16_t)(state & 0xFFFFULL);
-                FLMAppendDiagnosticLineNow(
-                    [NSString stringWithFormat:
-                        @"remote role=%s event=%s session=%u a=%u b=%u raw=0x%016llx",
-                        FLMDiagnosticRoleName(role),
-                        FLMDiagnosticEventName(event),
-                        session, first, second,
-                        (unsigned long long)state]);
-            });
+        FLMRegisterDiagnosticReceiver(FLYME_DIAGNOSTIC_EVENT_NOTIFICATION,
+                                      &FLMDiagnosticLegacyReceiverToken);
+        FLMRegisterDiagnosticReceiver(FLYME_DIAGNOSTIC_SPRINGBOARD_NOTIFICATION,
+                                      &FLMDiagnosticSpringBoardReceiverToken);
+        FLMRegisterDiagnosticReceiver(FLYME_DIAGNOSTIC_APPLICATION_NOTIFICATION,
+                                      &FLMDiagnosticApplicationReceiverToken);
+        FLMRegisterDiagnosticReceiver(FLYME_DIAGNOSTIC_KEYBOARD_NOTIFICATION,
+                                      &FLMDiagnosticKeyboardReceiverToken);
+        FLMRegisterDiagnosticReceiver(FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION,
+                                      &FLMDiagnosticUIKitOtherReceiverToken);
         FLMDiagnosticWriterReady = YES;
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.36 schema=7");
+                    @"logger-ready build=0.8.37 schema=8");
             }
         });
     });
@@ -919,6 +936,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, assign) BOOL floatingKeyboardVisible;
 @property(nonatomic, assign) CGRect floatingKeyboardFrame;
 @property(nonatomic, assign) CGFloat lastPortraitKeyboardHeight;
+@property(nonatomic, assign) CGFloat floatingKeyboardMaximumVisibleHeight;
 @property(nonatomic, assign) BOOL floatingKeyboardInteractionSessionActive;
 @property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
@@ -4305,13 +4323,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (__bridge void *)self.floatingKeyboardLayerHostView);
     if (visible) {
         [self beginFloatingKeyboardInteractionSession];
-        CGFloat height = CGRectGetHeight(frame);
-        if (height < 180.0) {
-            height = self.lastPortraitKeyboardHeight;
+        CGFloat reportedHeight = CGRectGetHeight(frame);
+        if (reportedHeight < 180.0) {
+            reportedHeight = self.lastPortraitKeyboardHeight;
         } else {
-            self.lastPortraitKeyboardHeight = height;
+            self.lastPortraitKeyboardHeight = reportedHeight;
         }
-        height = MIN(CGRectGetHeight(bounds), MAX(216.0, height));
+        reportedHeight =
+            MIN(CGRectGetHeight(bounds), MAX(216.0, reportedHeight));
+        self.floatingKeyboardMaximumVisibleHeight =
+            MAX(self.floatingKeyboardMaximumVisibleHeight, reportedHeight);
+        CGFloat height = self.floatingKeyboardMaximumVisibleHeight;
         frame = CGRectMake(0.0,
                            CGRectGetHeight(bounds) - height,
                            CGRectGetWidth(bounds),
@@ -4326,7 +4348,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingWindow.windowLevel + 1.0;
         self.keyboardForwardingWindow.keyboardInteractionFrame = interactionFrame;
         CGFloat avoidanceHeight =
-            [self floatingKeyboardAvoidanceHeightForFrame:frame];
+            [self floatingKeyboardAvoidanceHeightForFrame:interactionFrame];
         // The application Scene frame remains immutable.  UIKit in the target
         // application consumes this logical overlap through
         // _UIRemoteKeyboards and performs its own responder avoidance.
@@ -4337,7 +4359,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [self.keyboardForwardingWindow makeKeyAndVisible];
         }
         FLMEnqueueDiagnosticLine(
-            @"sb frame-visible normalized=%@ interaction=%@ avoidance=%.2f forwardingKey=%d level=%.1f cardLevel=%.1f",
+            @"sb frame-visible reportedHeight=%.2f stableHeight=%.2f normalized=%@ interaction=%@ avoidance=%.2f forwardingKey=%d level=%.1f cardLevel=%.1f",
+            reportedHeight, height,
             NSStringFromCGRect(frame), NSStringFromCGRect(interactionFrame),
             avoidanceHeight,
             self.keyboardForwardingWindow.isKeyWindow,
@@ -4423,6 +4446,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardState(nil, nil, 0);
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardMaximumVisibleHeight = 0.0;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
         CGRectNull;
@@ -4568,7 +4592,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (visible) {
         [self applyKeyboardFrame:frame visible:YES];
     } else {
-        [self applyKeyboardFrame:CGRectNull visible:NO];
+        // WillChangeFrame marks the beginning of the physical dismissal
+        // animation. Keep the stable avoidance and touch envelope until
+        // UIKeyboardDidHide confirms that the keyboard is actually gone.
+        FLMEnqueueDiagnosticLine(
+            @"sb frame-hidden pending-confirmation stableHeight=%.2f avoidance-retained=1",
+            self.floatingKeyboardMaximumVisibleHeight);
     }
 }
 
@@ -4592,6 +4621,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
         CGRectNull;
     [self endFloatingKeyboardInteractionSession];
+    self.floatingKeyboardMaximumVisibleHeight = 0.0;
     FLMEnqueueDiagnosticLine(
         @"sb frame-hidden protection=finalized generation=%lu",
         (unsigned long)finalizedGeneration);
