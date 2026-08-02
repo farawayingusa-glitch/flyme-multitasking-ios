@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.46 schema=16");
+                    @"logger-ready build=0.8.48 schema=16");
             }
         });
     });
@@ -986,6 +986,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, assign) BOOL floatingExclusiveTapEligible;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
+@property(nonatomic, assign) BOOL floatingSceneUsesCardGeometry;
 @property(nonatomic, assign) CGFloat floatingFullscreenProgress;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshotBackground;
@@ -1117,6 +1118,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)revealFloatingContentForGeneration:(NSUInteger)generation;
 - (void)layoutFloatingHostView;
 - (CGSize)floatingSceneReferenceSize;
+- (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -3112,6 +3114,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotContent = content;
     self.floatingContainer.alpha = 0.0;
     [self updateFloatingFullscreenSnapshotForProgress:0.0];
+
+    // The live Scene is now covered by the same card snapshot. Give the
+    // application its real fullscreen bounds before SpringBoard promotes it,
+    // so the final handoff does not expose a stale compact layout.
+    self.floatingSceneUsesCardGeometry = NO;
+    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"fullscreen-handoff"];
+    [self layoutFloatingHostView];
 }
 
 - (void)restoreFloatingSceneAfterCancelledTransition {
@@ -3126,6 +3135,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingFullscreenProgress = 0.0;
+    self.floatingSceneUsesCardGeometry = YES;
+    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"card-restore"];
     self.floatingContainer.alpha = 1.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
     if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
@@ -3421,8 +3432,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL targetIsFrontmost =
         identifier.length > 0 &&
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    BOOL displayCommitted = targetIsFrontmost && attempt >= 1;
+    BOOL displayCommitted = targetIsFrontmost && attempt >= 3;
     if (!displayCommitted && attempt < 24) {
+        if (attempt == 0 || attempt >= 22) {
+            FLMEnqueueDiagnosticLine(
+                @"sb fullscreen-handoff wait target=%@ frontmost=%@ attempt=%lu",
+                identifier ?: @"<none>",
+                FLMFrontmostApplicationIdentifier() ?: @"<none>",
+                (unsigned long)attempt);
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(0.05 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -3430,6 +3448,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                        identifier:identifier
                                           attempt:attempt + 1];
         });
+        return;
+    }
+
+    if (!displayCommitted) {
+        // Never remove the only visible surface merely because the promotion
+        // deadline expired. Keep the app in centered mode and let the user
+        // retry; this prevents an occasional black SpringBoard screen when
+        // launchApplicationWithIdentifier: has not committed the target Scene.
+        FLMEnqueueDiagnosticLine(
+            @"sb fullscreen-handoff timeout target=%@ frontmost=%@ restoring-card=1",
+            identifier ?: @"<none>",
+            FLMFrontmostApplicationIdentifier() ?: @"<none>");
+        [cover removeFromSuperview];
+        self.floatingReconnectSuppressed = NO;
+        [self restoreFloatingSceneAfterCancelledTransition];
+        [self resetFloatingInteractiveLayoutAnimated:NO];
+        self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
+        self.cornerGuardGesture.enabled = self.enabled;
+        self.cornerGesture.enabled = self.enabled;
         return;
     }
 
@@ -3549,26 +3586,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIEdgeInsets safeInsets =
         self.floatingWindow.rootViewController.view.safeAreaInsets;
-    // The hosted Scene is display-sized and is uniformly transformed into the
-    // card.  Keep the card at the display aspect ratio too; otherwise a
-    // 390x844 Scene fitted into 300x520 leaves black letterbox strips at both
-    // sides of the card.
-    CGFloat displayAspect = width / MAX(1.0, height);
     CGFloat containerWidth = width * 0.77;
-    CGFloat containerHeight = containerWidth / MAX(0.1, displayAspect);
+    CGFloat containerHeight = 520.0;
     CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
     BOOL landscape = width > height;
     CGFloat originX = 0.0;
     if (landscape) {
+        CGFloat portraitRatio = (390.0 * 0.77) / 520.0;
         CGFloat verticalMargin = 16.0;
         containerHeight = MAX(240.0, height - verticalMargin * 2.0);
-        containerWidth = containerHeight * displayAspect;
+        containerWidth = containerHeight * portraitRatio;
         CGFloat maximumWidth = MAX(240.0,
                                    width - safeInsets.left -
                                        safeInsets.right - 16.0);
         if (containerWidth > maximumWidth) {
             containerWidth = maximumWidth;
-            containerHeight = containerWidth / MAX(0.1, displayAspect);
+            containerHeight = containerWidth / MAX(0.1, portraitRatio);
         }
         top = floor((height - containerHeight) * 0.5);
         originX = MAX(0.0, safeInsets.left);
@@ -4188,9 +4221,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // Centered mode is a uniform fit of the complete display-sized Scene into
-    // the card. This is a visual transform only; the app's logical Scene
-    // remains full-screen so UIKit can place its input bar above the keyboard.
+    // Centered mode normally has a card-sized logical Scene, so the host is
+    // 1:1. During the fullscreen handoff the logical Scene is restored to the
+    // physical display while the snapshot covers the live host.
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
                         : MIN(widthScale, heightScale);
@@ -4911,18 +4944,66 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingSceneReferenceSize {
-    // The hosted application Scene is always a real display-sized foreground
-    // Scene.  The centered card is only a presentation transform applied by
-    // layoutFloatingHostView; it must never become the Scene's logical frame.
-    // Keeping this value independent from floatingContainer is what lets
-    // UIKit and third-party keyboard extensions compute input avoidance in
-    // full-screen coordinates.
+    // Centered mode is a real compact Scene, not a full-screen Scene squeezed
+    // into a card. UIKit therefore receives the card bounds and can relayout
+    // the app's input bar, safe area, and scroll content naturally. During the
+    // fullscreen handoff we switch back to display coordinates while the
+    // cover is still on screen.
+    if (self.floatingSceneUsesCardGeometry &&
+        !self.floatingInteractiveFullscreenTransition) {
+        CGSize cardSize = self.floatingContainer.bounds.size;
+        if (cardSize.width > 1.0 && cardSize.height > 1.0) {
+            return cardSize;
+        }
+    }
+
     CGRect displayBounds = FLMVisualScreenBounds();
     CGSize size = displayBounds.size;
     if (size.width < 1.0 || size.height < 1.0) {
         size = self.floatingWindow.bounds.size;
     }
     return size.width > 1.0 && size.height > 1.0 ? size : CGSizeZero;
+}
+
+- (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy {
+    id scene = self.floatingScene;
+    if (!scene ||
+        ![scene respondsToSelector:@selector(updateSettings:withTransitionContext:)]) {
+        return NO;
+    }
+    CGSize logicalSize = [self floatingSceneReferenceSize];
+    if (logicalSize.width <= 1.0 || logicalSize.height <= 1.0) {
+        return NO;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings && [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if (!mutableSettings ||
+            ![mutableSettings respondsToSelector:@selector(setFrame:)]) {
+            return NO;
+        }
+        [mutableSettings setFrame:CGRectMake(0.0,
+                                              0.0,
+                                              logicalSize.width,
+                                              logicalSize.height)];
+        [scene updateSettings:mutableSettings withTransitionContext:nil];
+        self.floatingHostReferenceSize = logicalSize;
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-frame policy=%@ logical={%.1f,%.1f} card=%@",
+            policy ?: @"unknown", logicalSize.width, logicalSize.height,
+            NSStringFromCGRect(self.floatingContainer.frame));
+        return YES;
+    } @catch (__unused NSException *exception) {
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-frame policy=%@ rejected=exception card=%@",
+            policy ?: @"unknown", NSStringFromCGRect(self.floatingContainer.frame));
+        return NO;
+    }
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
@@ -5053,6 +5134,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [mutableSettings setBackgrounded:NO];
         }
         CGSize logicalSceneSize = [self floatingSceneReferenceSize];
+        NSString *sceneFramePolicy =
+            (self.floatingSceneUsesCardGeometry &&
+             !self.floatingInteractiveFullscreenTransition)
+                ? @"card"
+                : @"fullscreen";
+        // Diagnostic contract: scene-frame policy=card is used for centered
+        // launches; scene-frame policy=fullscreen marks the handoff.
         if (logicalSceneSize.width > 0.0 && logicalSceneSize.height > 0.0 &&
             [mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings
@@ -5061,8 +5149,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                     logicalSceneSize.width,
                                     logicalSceneSize.height)];
             FLMEnqueueDiagnosticLine(
-                @"sb scene-frame policy=fullscreen logical={%.1f,%.1f} card=%@",
-                logicalSceneSize.width, logicalSceneSize.height,
+                @"sb scene-frame policy=%@ logical={%.1f,%.1f} card=%@",
+                sceneFramePolicy, logicalSceneSize.width,
+                logicalSceneSize.height,
                 NSStringFromCGRect(self.floatingContainer.frame));
         }
         BOOL landscapeWindow =
@@ -5221,8 +5310,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = presenter;
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
-    // The host represents the complete full-screen application Scene. It is
-    // uniformly scaled into the card; do not crop its bounds here.
+    // The host may represent either the compact centered Scene or the
+    // fullscreen handoff Scene. Never crop the remote surface at this layer.
     host.clipsToBounds = NO;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
     FLMEnqueueDiagnosticLine(
@@ -5272,6 +5361,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
+    self.floatingSceneUsesCardGeometry = YES;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
@@ -5558,6 +5648,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
+    self.floatingSceneUsesCardGeometry = NO;
     self.floatingDocked = NO;
     self.floatingDockTransitionActive = NO;
     self.floatingExternalActivationArmed = NO;
