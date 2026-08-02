@@ -42,37 +42,44 @@ test -d "$workspace/root/var/jb/Library/PreferenceLoader/Preferences"
 
 runtime="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.dylib"
 keyboard="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboard.dylib"
+keyboard_bootstrap="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
 preferences="$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/FlymeMultitaskingPrefs"
 filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.plist"
 keyboard_filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboard.plist"
+keyboard_bootstrap_filter="$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.plist"
 loader="$workspace/root/var/jb/Library/PreferenceLoader/Preferences/com.codex.flymemultitasking.plist"
 
 test -f "$runtime"
 test -f "$keyboard"
+test -f "$keyboard_bootstrap"
 test -f "$preferences"
 test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
+test -f "$keyboard_bootstrap_filter"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon.png"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@2x.png"
 test -f "$workspace/root/var/jb/Library/PreferenceBundles/FlymeMultitaskingPrefs.bundle/icon@3x.png"
 
 runtime_arches="$(xcrun lipo -archs "$runtime")"
 keyboard_arches="$(xcrun lipo -archs "$keyboard")"
+keyboard_bootstrap_arches="$(xcrun lipo -archs "$keyboard_bootstrap")"
 preferences_arches="$(xcrun lipo -archs "$preferences")"
 [[ "$runtime_arches" == *"arm64"* && "$runtime_arches" == *"arm64e"* ]]
 [[ "$keyboard_arches" == *"arm64"* && "$keyboard_arches" == *"arm64e"* ]]
+[[ "$keyboard_bootstrap_arches" == *"arm64"* && "$keyboard_bootstrap_arches" == *"arm64e"* ]]
 [[ "$preferences_arches" == *"arm64"* && "$preferences_arches" == *"arm64e"* ]]
 
 codesign --verify --verbose=4 --all-architectures --strict "$runtime"
 codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
+codesign --verify --verbose=4 --all-architectures --strict "$keyboard_bootstrap"
 # PreferenceLoader loads this Mach-O from a jailbreak resource directory, not
 # from an Apple app bundle. Verify every code page and architecture while
 # deliberately excluding the app-only resource envelope.
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.33" "$workspace/control/control"
+grep -qx "Version: 0.8.34" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then
