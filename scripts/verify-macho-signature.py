@@ -2,6 +2,7 @@
 """Inspect embedded Mach-O CodeDirectories without relying on codesign output."""
 
 import argparse
+import hashlib
 import struct
 import sys
 from pathlib import Path
@@ -72,8 +73,49 @@ def inspect_slice(data, slice_offset, slice_size):
         magic = read_u32(data, blob_offset, ">")
         length = read_u32(data, blob_offset + 4, ">")
         if magic == CSMAGIC_CODEDIRECTORY:
+            if length < 40 or blob_offset + length > signature_offset + signature_size:
+                raise ValueError("invalid CodeDirectory length")
             flags = read_u32(data, blob_offset + 12, ">")
-            code_directories.append((slot_type, flags, length))
+            hash_offset = read_u32(data, blob_offset + 16, ">")
+            code_slots = read_u32(data, blob_offset + 28, ">")
+            code_limit = read_u32(data, blob_offset + 32, ">")
+            hash_size = data[blob_offset + 36]
+            hash_type = data[blob_offset + 37]
+            page_exponent = data[blob_offset + 39]
+            algorithms = {
+                1: hashlib.sha1,
+                2: hashlib.sha256,
+                3: hashlib.sha256,
+                4: hashlib.sha384,
+                5: hashlib.sha512,
+            }
+            algorithm = algorithms.get(hash_type)
+            if algorithm is None:
+                raise ValueError(f"unsupported CodeDirectory hash type {hash_type}")
+            if code_limit > slice_size:
+                raise ValueError("CodeDirectory code limit exceeds its Mach-O slice")
+            page_size = (1 << page_exponent) if page_exponent else code_limit
+            expected_slots = (
+                (code_limit + page_size - 1) // page_size if page_size else 0
+            )
+            if code_slots != expected_slots:
+                raise ValueError(
+                    f"unexpected code slot count {code_slots}, expected {expected_slots}"
+                )
+            if hash_offset + code_slots * hash_size > length:
+                raise ValueError("CodeDirectory code hashes extend beyond the blob")
+            for code_slot in range(code_slots):
+                page_start = slice_offset + code_slot * page_size
+                page_end = min(page_start + page_size, slice_offset + code_limit)
+                actual = algorithm(data[page_start:page_end]).digest()[:hash_size]
+                stored_offset = blob_offset + hash_offset + code_slot * hash_size
+                stored = data[stored_offset:stored_offset + hash_size]
+                if actual != stored:
+                    raise ValueError(
+                        f"code hash mismatch in slot {code_slot} "
+                        f"for CodeDirectory type {slot_type}"
+                    )
+            code_directories.append((slot_type, flags, length, code_slots))
             if slot_type >= CSSLOT_ALTERNATE_CODEDIRECTORIES:
                 alternate_count += 1
         elif slot_type == CSSLOT_REQUIREMENTS:
@@ -95,10 +137,12 @@ def main():
             data, offset, size
         )
         flags = [entry[1] for entry in directories]
+        verified_slots = sum(entry[3] for entry in directories)
         print(
             f"slice={index} offset=0x{offset:x} flags="
             f"{','.join(f'0x{value:x}' for value in flags)} "
-            f"requirements={requirements_length} alternates={alternate_count}"
+            f"requirements={requirements_length} alternates={alternate_count} "
+            f"verified_code_slots={verified_slots}"
         )
         inspected_flags.extend(flags)
     if arguments.require_flags is not None:

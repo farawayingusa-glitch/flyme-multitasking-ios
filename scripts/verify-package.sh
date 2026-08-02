@@ -74,16 +74,14 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 [[ "$keyboard_arches" == *"arm64"* && "$keyboard_arches" == *"arm64e"* ]]
 [[ "$preferences_arches" == *"arm64"* && "$preferences_arches" == *"arm64e"* ]]
 
-codesign --verify --verbose=4 --all-architectures --strict "$runtime"
-codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
+# Apple's codesign verifier does not recognize ldid's jailbreak-native arm64e
+# signature. Validate the embedded CodeDirectory and every code-page hash
+# directly, then enforce the same non-CS_ADHOC flags as the working reference.
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtime"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
 strings "$keyboard" | grep -q "keyboard-app-ctor-v43"
 strings "$keyboard" | grep -q "keyboard-app-ready-v43"
-# PreferenceLoader loads this Mach-O from a jailbreak resource directory, not
-# from an Apple app bundle. Verify every code page and architecture while
-# deliberately excluding the app-only resource envelope.
-codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
+python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
 grep -qx "Version: 0.8.43" "$workspace/control/control"
