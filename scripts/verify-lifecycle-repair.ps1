@@ -28,7 +28,7 @@ foreach ($Marker in @(
     'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
     'restoreFloatingHandleInteraction',
     'updateFloatingFullscreenSnapshotForProgress:',
-    'displayCommitted = targetIsFrontmost && attempt >= 1',
+    'displayCommitted = targetIsFrontmost && attempt >= 3',
     'CGFloat handleWidth = visibleHandleWidth + 40.0;',
     'pointIsInsideFloatingInteractionDomain:',
     'outsideCloseAuthorized',
@@ -124,11 +124,13 @@ Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
 Require-Text $Source 'filter=UIKit-framework target-gated'
+Require-Text $Source 'scene-frame policy=card'
 Require-Text $Source 'scene-frame policy=fullscreen'
-Require-Text $Source 'uniformly scaled into the card'
-Require-Text $Source 'display aspect ratio too'
+Require-Text $Source 'floatingSceneUsesCardGeometry'
+Require-Text $Source 'applyFloatingSceneLogicalFrameForCurrentPresentation'
 Require-Text $Source 'single proportional recovery'
 Require-Text $Source 'geometryProgress'
+Require-Text $Source 'restoring-card=1'
 Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
