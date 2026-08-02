@@ -132,4 +132,3 @@ Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
 Write-Output 'scene lifecycle and target-gated UIKit keyboard adapter verified'
-
