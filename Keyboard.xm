@@ -330,89 +330,159 @@ static void FLMReloadKeyboardCardGeometry(void) {
             FLMDiagnosticEventCardGeometry,
             FLMKeyboardSessionGeneration,
             FLMDiagnosticUnsignedValue(FLMKeyboardCardBottom),
-            FLMDiagnosticUnsignedValue(FLMKgÍ|ó[h‘éì¶»§q«^v;
+            FLMDiagnosticUnsignedValue(FLMKeyboardCardVisualScale * 1000.0));
     }
-    if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
-        self.prewarmedIdentifier = nil;
+}
+
+static void FLMReloadKeyboardAvoidance(void) {
+    uint64_t state = 0;
+    if (FLMKeyboardAvoidanceToken < 0 ||
+        notify_get_state(FLMKeyboardAvoidanceToken, &state) != NOTIFY_STATUS_OK) {
         return;
     }
-    [self openFloatingIdentifier:identifier];
+    BOOL visible = (state & (1ULL << 63)) != 0;
+    uint64_t generation = (state >> 24) & 0x7FFFFFFFFFULL;
+    CGFloat height = (CGFloat)(state & 0xFFFFFFULL) / 100.0;
+    BOOL current = FLMKeyboardTargetApplication && visible && generation != 0 &&
+                   generation == FLMKeyboardSessionGeneration;
+    FLMExternalKeyboardAvoidanceGeneration = current ? generation : 0;
+    FLMExternalKeyboardAvoidanceHeight = current ? MAX(0.0, height) : 0.0;
+    if (FLMKeyboardTargetApplication) {
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventAvoidanceReload,
+            FLMKeyboardSessionGeneration,
+            current ? 1 : 0,
+            FLMDiagnosticUnsignedValue(FLMExternalKeyboardAvoidanceHeight));
+        FLMRefreshApplicationKeyboardLayout();
+    }
 }
 
-@end
+static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
+                                                          CGRect logicalBounds) {
+    if (!FLMKeyboardCardGeometryActive ||
+        FLMKeyboardCardGeometryGeneration !=
+            (FLMKeyboardSessionGeneration & 0x7FFFULL) ||
+        FLMKeyboardCardVisualScale <= 0.05 ||
+        CGRectGetHeight(logicalBounds) <= 1.0) {
+        return 0.0;
+    }
+    CGFloat physicalOverlap = MAX(0.0, FLMKeyboardCardBottom - keyboardTop);
+    if (physicalOverlap <= 1.0) {
+        return 0.0;
+    }
+    CGFloat logicalHeight =
+        physicalOverlap / FLMKeyboardCardVisualScale +
+        8.0 / FLMKeyboardCardVisualScale;
+    return MIN(CGRectGetHeight(logicalBounds) * 0.72, logicalHeight);
+}
 
-%hook _UIKeyboardLayerHostView
+%hook UITextEffectsWindow
 
-- (void)scene:(id)scene
-    didUpdateClientSettingsWithDiff:(id)diff
-                  oldClientSettings:(id)oldClientSettings
-                  transitionContext:(id)transitionContext {
-    %orig;
-    (void)diff;
-    (void)oldClientSettings;
-    (void)transitionContext;
+- (CGSize)keyboardScreenReferenceSize {
+    UIWindowScene *scene = ((UIWindow *)self).windowScene;
+    if (!FLMSceneMatchesKeyboardRoute(scene)) {
+        return %orig;
+    }
+    CGSize size = FLMPhysicalReferenceBoundsForScene(scene).size;
+    FLMPublishDiagnosticEvent(
+        FLMKeyboardTargetApplication ? FLMDiagnosticRoleApplication
+                                     : FLMDiagnosticRoleKeyboardExtension,
+        FLMDiagnosticEventFrameCorrected,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(size.width),
+        FLMDiagnosticUnsignedValue(size.height));
+    return size;
+}
 
-    // UIKit must finish its private keyboard Scene transaction before the host
-    // changes superviews.  Moving it synchronously is what leaves the remote
-    // keyboard half-paired and makes keys or the collapse control stop routing.
-    FLMWheelController *controller = [FLMWheelController sharedController];
-    NSUInteger sessionGeneration =
-        controller.floatingKeyboardSessionGeneration;
-    FLMEnqueueDiagnosticLine(
-        @"sb host-hook callback host=%p updatedScene=%@ session=%lu",
-        (__bridge void *)self, FLMSceneIdentifier(scene) ?: @"<none>",
-        (unsigned long)sessionGeneration);
-    __weak UIView *weakHostView = (UIView *)self;
-    __weak id weakUpdatedScene = scene;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *hostView = weakHostView;
-        id updatedScene = weakUpdatedScene;
-        if (!hostView) {
-            FLMEnqueueDiagnosticLine(
-                @"sb host-hook expired updatedScene=%@ session=%lu",
-                FLMSceneIdentifier(updatedScene) ?: @"<none>",
-                (unsigned long)sessionGeneration);
-            return;
-        }
-        [controller keyboardLayerHostView:hostView
-                        didUpdateForScene:updatedScene
-                        sessionGeneration:sessionGeneration];
-    });
+%end
+
+%group FLMRemoteKeyboardGeometry
+
+%hook _UIRemoteKeyboards
+
+- (CGFloat)intersectionHeightForWindowScene:(UIWindowScene *)windowScene
+                    isLocalMinimumHeightOut:(BOOL *)isLocalMinimumHeightOut
+                     ignoreHorizontalOffset:(BOOL)ignoreHorizontalOffset {
+    CGFloat originalHeight = %orig(windowScene,
+                                   isLocalMinimumHeightOut,
+                                   ignoreHorizontalOffset);
+    if (!FLMKeyboardTargetApplication ||
+        !FLMSceneMatchesKeyboardRoute(windowScene) ||
+        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        return originalHeight;
+    }
+
+    CGFloat mappedHeight = 0.0;
+    if (FLMExternalKeyboardAvoidanceGeneration ==
+            FLMKeyboardSessionGeneration &&
+        FLMExternalKeyboardAvoidanceHeight > 1.0) {
+        mappedHeight = FLMExternalKeyboardAvoidanceHeight;
+    } else {
+        CGRect logicalBounds = FLMTargetApplicationLogicalBounds();
+        CGSize physicalSize = FLMFullPhysicalScreenSize();
+        mappedHeight = FLMLogicalAvoidanceForPhysicalKeyboardTop(
+            physicalSize.height - MAX(0.0, originalHeight), logicalBounds);
+    }
+    if (mappedHeight <= 1.0) {
+        mappedHeight = originalHeight;
+    }
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventIntersection,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(originalHeight),
+        FLMDiagnosticUnsignedValue(mappedHeight));
+    return mappedHeight;
 }
 
 %end
 
-%hook SpringBoard
-
-- (void)applicationDidFinishLaunching:(id)application {
-    %orig;
-    (void)application;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-                       [[FLMWheelController sharedController] start];
-                   });
-    // Diagnostics are deliberately initialized after SpringBoard launch and
-    // away from keyboard host callbacks. UIKit clients only publish compact
-    // Darwin events; this process is the sole asynchronous file writer.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-                       FLMStartDiagnosticWriter();
-                       FLMPublishDiagnosticEvent(
-                           FLMDiagnosticRoleSpringBoard,
-                           FLMDiagnosticEventProcessReady,
-                           0,
-                           (uint16_t)(getpid() & 0xFFFF),
-                           0);
-                   });
-}
-
 %end
+
+static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
+    if (FLMRemoteKeyboardGeometryInstalled ||
+        !NSClassFromString(@"_UIRemoteKeyboards")) {
+        return;
+    }
+    %init(FLMRemoteKeyboardGeometry);
+    FLMRemoteKeyboardGeometryInstalled = YES;
+}
 
 %ctor {
-    if (notify_register_check(FLYME_RUNTIME_NOTIFICATION, &FlymeRuntimeToken) ==
-        NOTIFY_STATUS_OK) {
-        uint64_t state = (FLYME_RUNTIME_MAGIC << 32) | (uint32_t)getpid();
-        notify_set_state(FlymeRuntimeToken, state);
-        notify_post(FLYME_RUNTIME_NOTIFICATION);
+    @autoreleasepool {
+        %init;
+        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
+                                 &FLMKeyboardRouteToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                                 &FLMKeyboardSceneToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                                 &FLMKeyboardSessionToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardRoute();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
+                                 &FLMKeyboardAvoidanceToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardAvoidance();
+        });
+        notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
+                                 &FLMKeyboardCardGeometryToken,
+                                 dispatch_get_main_queue(),
+                                 ^(__unused int token) {
+            FLMReloadKeyboardCardGeometry();
+        });
+        FLMInstallRemoteKeyboardGeometryIfAvailable();
+        FLMReloadKeyboardRoute();
     }
 }
