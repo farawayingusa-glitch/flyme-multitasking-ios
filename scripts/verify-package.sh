@@ -79,12 +79,12 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 # directly, then enforce the same non-CS_ADHOC flags as the working reference.
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtime"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
-strings "$keyboard" | grep -q "keyboard-app-ctor-v44"
-strings "$keyboard" | grep -q "keyboard-app-ready-v44"
+strings "$keyboard" | grep -q "keyboard-app-ctor-v45"
+strings "$keyboard" | grep -q "keyboard-app-ready-v45"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.44" "$workspace/control/control"
+grep -qx "Version: 0.8.45" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "WeChat" "$workspace/control/postinst"
@@ -100,3 +100,4 @@ if grep -Riq "dpkg-divert" "$workspace/control"; then
 fi
 
 echo "package verification passed"
+
