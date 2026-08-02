@@ -25,11 +25,11 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v44"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v44"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF144ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF244ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 44ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v45"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v45"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF145ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF245ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 45ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.44 schema=15");
+                    @"logger-ready build=0.8.45 schema=16");
             }
         });
     });
@@ -4199,6 +4199,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
+    // Centered mode is a uniform fit of the complete display-sized Scene into
+    // the card. This is a visual transform only; the app's logical Scene
+    // remains full-screen so UIKit can place its input bar above the keyboard.
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
                         : MIN(widthScale, heightScale);
@@ -4707,7 +4710,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRectNull;
     [self endFloatingKeyboardInteractionSession];
     FLMEnqueueDiagnosticLine(
-        @"sb frame-hidden protection=cleared policy=touch-origin previousInteraction=%d session=%lu hidden=%d docked=%d",
+        @"sb frame-hidden protection=cleared policy=touch-origin centered-preserved=%d previousInteraction=%d session=%lu hidden=%d docked=%d",
+        !self.floatingWindow.hidden && !self.floatingDocked,
         wasKeyboardInteraction,
         (unsigned long)self.floatingKeyboardSessionGeneration,
         self.floatingWindow.hidden, self.floatingDocked);
@@ -4918,20 +4922,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingSceneReferenceSize {
-    CGSize screenSize = self.floatingWindow.bounds.size;
-    CGSize containerSize = self.floatingContainer.bounds.size;
-    if (screenSize.width < 1.0 || screenSize.height < 1.0 ||
-        containerSize.width < 1.0 || containerSize.height < 1.0) {
-        return CGSizeZero;
+    // The hosted application Scene is always a real display-sized foreground
+    // Scene.  The centered card is only a presentation transform applied by
+    // layoutFloatingHostView; it must never become the Scene's logical frame.
+    // Keeping this value independent from floatingContainer is what lets
+    // UIKit and third-party keyboard extensions compute input avoidance in
+    // full-screen coordinates.
+    CGRect displayBounds = FLMVisualScreenBounds();
+    CGSize size = displayBounds.size;
+    if (size.width < 1.0 || size.height < 1.0) {
+        size = self.floatingWindow.bounds.size;
     }
-    CGFloat logicalWidth =
-        screenSize.width > screenSize.height ? screenSize.height : screenSize.width;
-    CGFloat visualScale = containerSize.width / logicalWidth;
-    if (visualScale <= 0.0) {
-        return CGSizeZero;
-    }
-    return CGSizeMake(logicalWidth,
-                      containerSize.height / visualScale);
+    return size.width > 1.0 && size.height > 1.0 ? size : CGSizeZero;
 }
 
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier {
@@ -5061,14 +5063,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
             [mutableSettings setBackgrounded:NO];
         }
-        CGSize referenceSize = [self floatingSceneReferenceSize];
-        if (referenceSize.width > 0.0 && referenceSize.height > 0.0 &&
+        CGSize logicalSceneSize = [self floatingSceneReferenceSize];
+        if (logicalSceneSize.width > 0.0 && logicalSceneSize.height > 0.0 &&
             [mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings
                 setFrame:CGRectMake(0.0,
                                     0.0,
-                                    referenceSize.width,
-                                    referenceSize.height)];
+                                    logicalSceneSize.width,
+                                    logicalSceneSize.height)];
+            FLMEnqueueDiagnosticLine(
+                @"sb scene-frame policy=fullscreen logical={%.1f,%.1f} card=%@",
+                logicalSceneSize.width, logicalSceneSize.height,
+                NSStringFromCGRect(self.floatingContainer.frame));
         }
         BOOL landscapeWindow =
             CGRectGetWidth(self.floatingWindow.bounds) >
@@ -5226,7 +5232,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = presenter;
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
-    host.clipsToBounds = YES;
+    // The host represents the complete full-screen application Scene. It is
+    // uniformly scaled into the card; do not crop its bounds here.
+    host.clipsToBounds = NO;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
     FLMEnqueueDiagnosticLine(
         @"sb presenter-attached host=%p frame=%@ scene=%@",
