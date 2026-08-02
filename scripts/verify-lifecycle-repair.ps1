@@ -79,7 +79,12 @@ foreach ($Removed in @(
     'consumeOutsideTapForKeyboardDismissal',
     'applyFloatingKeyboardContainerOffsetForFrame:',
     'floatingKeyboardContainerOffsetY',
-    'setFloatingSceneUsesFullscreenKeyboardHost'
+    'setFloatingSceneUsesFullscreenKeyboardHost',
+    'widthCompletion',
+    'verticalRevealStart',
+    'widthProgress',
+    'verticalProgress',
+    'fillScale'
 )) {
     Reject-Text $Source $Removed
 }
@@ -121,6 +126,9 @@ Require-Text $Source 'adapterReady=%d adapterPID=%d'
 Require-Text $Source 'filter=UIKit-framework target-gated'
 Require-Text $Source 'scene-frame policy=fullscreen'
 Require-Text $Source 'uniformly scaled into the card'
+Require-Text $Source 'display aspect ratio too'
+Require-Text $Source 'single proportional recovery'
+Require-Text $Source 'geometryProgress'
 Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
