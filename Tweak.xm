@@ -190,7 +190,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.33 schema=6");
+                    @"logger-ready build=0.8.36 schema=7");
             }
         });
     });
@@ -980,6 +980,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
 - (void)keyboardDidHide:(NSNotification *)notification;
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
+- (void)finalizeKeyboardDismissalProtection;
 - (void)prepareKeyboardForwardingWindowIfNeeded;
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id)scene
@@ -4575,6 +4576,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(@"sb notification=%@ did-hide",
                              notification.name);
     [self applyKeyboardFrame:CGRectNull visible:NO];
+    [self finalizeKeyboardDismissalProtection];
+}
+
+- (void)finalizeKeyboardDismissalProtection {
+    // WillChangeFrame owns the protection for the physical keyboard-dismiss
+    // touch. DidHide arrives after that touch and the keyboard animation have
+    // completed, so it must finish the protection instead of extending it for
+    // another half second. The outside recognizers already preserve each
+    // touch's begin-domain classification.
+    self.floatingKeyboardInteractionGeneration += 1;
+    NSUInteger finalizedGeneration =
+        self.floatingKeyboardInteractionGeneration;
+    self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
+    ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+        CGRectNull;
+    [self endFloatingKeyboardInteractionSession];
+    FLMEnqueueDiagnosticLine(
+        @"sb frame-hidden protection=finalized generation=%lu",
+        (unsigned long)finalizedGeneration);
 }
 
 - (CGSize)floatingSceneReferenceSize {

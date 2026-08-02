@@ -65,6 +65,29 @@ static BOOL FLMProcessIsKeyboardExtension(void) {
                NSNotFound;
 }
 
+static uint16_t FLMWeChatProcessIdentityFlags(void) {
+    static NSString *const bundleIdentifier = @"com.tencent.xin";
+    BOOL containsBundle = NO;
+    for (NSBundle *bundle in [NSBundle allBundles]) {
+        if ([bundle.bundleIdentifier isEqualToString:bundleIdentifier]) {
+            containsBundle = YES;
+            break;
+        }
+    }
+    if (!containsBundle &&
+        [[NSBundle mainBundle].bundleIdentifier isEqualToString:bundleIdentifier]) {
+        containsBundle = YES;
+    }
+
+    NSString *processName = [NSProcessInfo processInfo].processName;
+    NSString *executableName =
+        [NSBundle mainBundle].executablePath.lastPathComponent;
+    BOOL executableMatches =
+        [processName isEqualToString:@"WeChat"] ||
+        [executableName isEqualToString:@"WeChat"];
+    return (containsBundle ? 1U : 0U) | (executableMatches ? 2U : 0U);
+}
+
 static CGSize FLMFullPhysicalScreenSize(void) {
     UIScreen *screen = [UIScreen mainScreen];
     CGRect nativeBounds = screen.nativeBounds;
@@ -270,10 +293,16 @@ static void FLMReloadKeyboardRoute(void) {
     uint64_t previousGeneration = FLMKeyboardSessionGeneration;
     uint64_t currentHash =
         FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier);
+    uint16_t weChatIdentityFlags = FLMWeChatProcessIdentityFlags();
+    BOOL explicitWeChatTarget =
+        targetHash == FLMIdentifierHash(@"com.tencent.xin") &&
+        (weChatIdentityFlags & 1U) != 0 &&
+        (weChatIdentityFlags & 2U) != 0;
     FLMKeyboardExtensionProcess = FLMProcessIsKeyboardExtension();
     FLMKeyboardTargetApplication =
-        sessionGeneration != 0 && targetHash != 0 && currentHash != 0 &&
-        targetHash == currentHash;
+        sessionGeneration != 0 && targetHash != 0 &&
+        ((currentHash != 0 && targetHash == currentHash) ||
+         explicitWeChatTarget);
     FLMKeyboardRouteActive =
         FLMKeyboardTargetApplication ||
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
@@ -310,9 +339,12 @@ static void FLMReloadKeyboardRoute(void) {
         uint16_t flags =
             (FLMKeyboardRouteActive ? 1U : 0U) |
             (FLMKeyboardTargetApplication ? 2U : 0U) |
-            (FLMKeyboardExtensionProcess ? 4U : 0U) |
-            (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
-            (sceneHash != 0 ? 16U : 0U);
+             (FLMKeyboardExtensionProcess ? 4U : 0U) |
+             (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
+             (sceneHash != 0 ? 16U : 0U) |
+             (explicitWeChatTarget ? 32U : 0U) |
+             ((weChatIdentityFlags & 1U) != 0 ? 64U : 0U) |
+             ((weChatIdentityFlags & 2U) != 0 ? 128U : 0U);
         FLMPublishDiagnosticEvent(
             role,
             FLMDiagnosticEventRouteReload,

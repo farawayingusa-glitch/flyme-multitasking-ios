@@ -49,7 +49,9 @@ foreach ($Marker in @(
     'FLMPublishKeyboardState',
     'FLMPublishKeyboardAvoidance',
     'FLMPublishKeyboardCardGeometry',
-    '0.24 * NSEC_PER_SEC'
+    '0.24 * NSEC_PER_SEC',
+    'finalizeKeyboardDismissalProtection',
+    'sb frame-hidden protection=finalized'
 )) {
     Require-Text $Source $Marker
 }
@@ -96,5 +98,8 @@ foreach ($Marker in @(
 }
 Require-Text $KeyboardSource 'FLMSuppressRestoredApplicationResponder'
 Require-Text $KeyboardSource 'startingTargetSession'
+Require-Text $KeyboardSource 'FLMWeChatProcessIdentityFlags'
+Require-Text $KeyboardSource 'explicitWeChatTarget'
+Require-Text $KeyboardSource '[NSBundle allBundles]'
 Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Write-Output 'scene lifecycle and fixed-scene UIKit keyboard architecture verified'
