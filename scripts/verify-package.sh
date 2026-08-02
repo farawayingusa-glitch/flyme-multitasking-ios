@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ $# -ne 1 ]]; then
     echo "usage: verify-package.sh PACKAGE.deb" >&2
     exit 2
@@ -74,15 +76,17 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 
 codesign --verify --verbose=4 --all-architectures --strict "$runtime"
 codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
-strings "$keyboard" | grep -q "keyboard-app-ctor-v42"
-strings "$keyboard" | grep -q "keyboard-app-ready-v42"
+python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtime"
+python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
+strings "$keyboard" | grep -q "keyboard-app-ctor-v43"
+strings "$keyboard" | grep -q "keyboard-app-ready-v43"
 # PreferenceLoader loads this Mach-O from a jailbreak resource directory, not
 # from an Apple app bundle. Verify every code page and architecture while
 # deliberately excluding the app-only resource envelope.
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.42" "$workspace/control/control"
+grep -qx "Version: 0.8.43" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "WeChat" "$workspace/control/postinst"

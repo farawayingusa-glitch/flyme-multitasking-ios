@@ -33,6 +33,7 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
         run: |
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          test -x "$THEOS/bin/ldid"
 
       - name: Build package
         env:
@@ -47,11 +48,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/Flyme-Multitasking_0.8.42_iphoneos-arm64.deb
+          cp "$package" artifacts/Flyme-Multitasking_0.8.43_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Flyme-Multitasking-0.8.42
-          path: artifacts/Flyme-Multitasking_0.8.42_iphoneos-arm64.deb
+          name: Flyme-Multitasking-0.8.43
+          path: artifacts/Flyme-Multitasking_0.8.43_iphoneos-arm64.deb
           if-no-files-found: error

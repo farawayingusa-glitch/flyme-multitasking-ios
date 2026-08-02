@@ -1,8 +1,11 @@
 ARCHS = arm64 arm64e
 TARGET = iphone:clang:latest:16.0
 THEOS_PACKAGE_SCHEME = rootless
-TARGET_CODESIGN = codesign
-TARGET_CODESIGN_FLAGS = --force --sign - --timestamp=none
+
+# Keep Theos' jailbreak-native signer. Overriding this with Apple's
+# `codesign -s -` produces a macOS ad-hoc CodeDirectory (CS_ADHOC) that can be
+# accepted in SpringBoard while being rejected before our constructor runs in
+# a sandboxed application process under NathanLR.
 
 include $(THEOS)/makefiles/common.mk
 

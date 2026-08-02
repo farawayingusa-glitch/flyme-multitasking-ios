@@ -25,11 +25,11 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v42"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v42"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF142ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF242ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 42ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v43"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v43"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF143ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF243ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 43ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.42 schema=13");
+                    @"logger-ready build=0.8.43 schema=14");
             }
         });
     });
