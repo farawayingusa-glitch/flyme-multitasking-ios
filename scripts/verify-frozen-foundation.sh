@@ -78,7 +78,9 @@ required_keyboard_source=(
     "FLMEndPreviousApplicationKeyboardSession"
     "FLMDiagnosticEventIntersection"
     "FLMReadKeyboardSharedState"
-    "FLMPublishKeyboardAppReady"
+    "FLMPublishKeyboardAppLifecycleStage"
+    "FLMDiagnosticEventAdapterCtor"
+    "FLMDiagnosticEventAdapterReady"
 )
 
 for marker in "${required_keyboard_source[@]}"; do

@@ -25,9 +25,11 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v39"
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF139ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 39ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v40"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v40"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF140ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF240ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 40ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -75,6 +77,8 @@ static const char *FLMDiagnosticEventName(uint8_t event) {
         case FLMDiagnosticEventRouteReady: return "route-ready";
         case FLMDiagnosticEventDismissAck: return "dismiss-ack";
         case FLMDiagnosticEventAdapterLoaded: return "adapter-loaded";
+        case FLMDiagnosticEventAdapterCtor: return "adapter-ctor";
+        case FLMDiagnosticEventAdapterReady: return "adapter-ready";
         default: return "unknown-event";
     }
 }
@@ -212,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.39 schema=10");
+                    @"logger-ready build=0.8.40 schema=11");
             }
         });
     });
@@ -576,6 +580,24 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, weak) UIView *floatingSecondaryControlView;
 @end
 
+static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
+                                  CGPoint point,
+                                  UIEvent *event,
+                                  UIView *hitView,
+                                  NSString *route) {
+    UITouch *touch = [event.allTouches anyObject];
+    FLMEnqueueDiagnosticLine(
+        @"sb touch-hit touch=%p timestamp=%.6f phase=%ld route=%@ point={%.1f,%.1f} hit=%@ hitPtr=%p key=%d keyboardPass=%@ card=%@ handle=%@",
+        (__bridge void *)touch, touch ? touch.timestamp : 0.0,
+        (long)(touch ? touch.phase : UITouchPhaseCancelled),
+        route ?: @"<none>", point.x, point.y,
+        hitView ? NSStringFromClass([hitView class]) : @"<nil>",
+        (__bridge void *)hitView, window.isKeyWindow,
+        NSStringFromCGRect(window.keyboardPassThroughFrame),
+        NSStringFromCGRect(window.floatingContentView.frame),
+        NSStringFromCGRect(window.floatingPrimaryControlView.frame));
+}
+
 @implementation FLMFloatingWindow
 
 - (BOOL)canBecomeKeyWindow {
@@ -592,11 +614,13 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
         CGPoint primaryPoint = [self convertPoint:point toView:primaryControl];
         UIView *primaryHit = [primaryControl hitTest:primaryPoint withEvent:event];
         if (primaryHit) {
+            FLMLogFloatingHitTest(self, point, event, primaryHit, @"handle");
             return primaryHit;
         }
     }
     if (!CGRectIsNull(self.keyboardPassThroughFrame) &&
         CGRectContainsPoint(self.keyboardPassThroughFrame, point)) {
+        FLMLogFloatingHitTest(self, point, event, nil, @"keyboard-pass");
         return nil;
     }
     if (self.passesTouchesOutsideFloatingContent) {
@@ -619,10 +643,16 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                             -12.0),
                                 point);
         if (!insideContent && !insidePrimaryControl && !insideSecondaryControl) {
+            FLMLogFloatingHitTest(self, point, event, nil, @"docked-pass");
             return nil;
         }
     }
-    return [super hitTest:point withEvent:event];
+    UIView *hitView = [super hitTest:point withEvent:event];
+    BOOL insideCard = self.floatingContentView &&
+                      CGRectContainsPoint(self.floatingContentView.frame, point);
+    FLMLogFloatingHitTest(self, point, event, hitView,
+                          insideCard ? @"card" : @"backdrop");
+    return hitView;
 }
 
 @end
@@ -652,6 +682,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @interface FLMCornerGestureRecognizer : UILongPressGestureRecognizer
 @property(nonatomic, assign) NSTimeInterval flmFirstTouchTimestamp;
 @property(nonatomic, assign) BOOL flmOutsideCloseAuthorized;
+@property(nonatomic, assign) CGPoint flmAuthorizedStartPoint;
 @end
 
 @implementation FLMCornerGestureRecognizer
@@ -668,6 +699,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
     [super reset];
     self.flmFirstTouchTimestamp = 0.0;
     self.flmOutsideCloseAuthorized = NO;
+    self.flmAuthorizedStartPoint = CGPointZero;
 }
 
 - (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)preventingGestureRecognizer {
@@ -701,6 +733,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, strong) NSMutableDictionary<NSValue *, NSValue *> *startPoints;
 @property(nonatomic, assign) NSTimeInterval firstTouchTimestamp;
 @property(nonatomic, assign) BOOL outsideCloseAuthorized;
+@property(nonatomic, assign) NSUInteger touchSequence;
 @end
 
 @implementation FLMOutsideTapGestureRecognizer
@@ -723,6 +756,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     (void)event;
+    static NSUInteger nextTouchSequence = 0;
+    self.touchSequence = ++nextTouchSequence;
     self.outsideCloseAuthorized = NO;
     if (self.startPoints.count + touches.count > 1) {
         self.state = UIGestureRecognizerStateFailed;
@@ -734,24 +769,37 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
     }
     for (UITouch *touch in touches) {
         CGPoint point = [touch locationInView:self.view];
-        if (self.protectedView &&
-            CGRectContainsPoint(self.protectedView.frame, point)) {
+        BOOL inCard = self.protectedView &&
+                      CGRectContainsPoint(self.protectedView.frame, point);
+        BOOL inHandle = self.secondaryProtectedView &&
+                        CGRectContainsPoint(self.secondaryProtectedView.frame,
+                                            point);
+        BOOL inKeyboard = !CGRectIsNull(self.additionalProtectedFrame) &&
+                          CGRectContainsPoint(self.additionalProtectedFrame,
+                                              point);
+        FLMEnqueueDiagnosticLine(
+            @"sb touch-backdrop-began sequence=%lu touch=%p timestamp=%.6f point={%.1f,%.1f} inCard=%d inHandle=%d inKeyboard=%d keyboardFrame=%@",
+            (unsigned long)self.touchSequence, (__bridge void *)touch,
+            touch.timestamp, point.x, point.y, inCard, inHandle, inKeyboard,
+            NSStringFromCGRect(self.additionalProtectedFrame));
+        if (inCard) {
             self.state = UIGestureRecognizerStateFailed;
             return;
         }
-        if (self.secondaryProtectedView &&
-            CGRectContainsPoint(self.secondaryProtectedView.frame, point)) {
+        if (inHandle) {
             self.state = UIGestureRecognizerStateFailed;
             return;
         }
-        if (!CGRectIsNull(self.additionalProtectedFrame) &&
-            CGRectContainsPoint(self.additionalProtectedFrame, point)) {
+        if (inKeyboard) {
             self.state = UIGestureRecognizerStateFailed;
             return;
         }
         self.startPoints[[self keyForTouch:touch]] = [NSValue valueWithCGPoint:point];
     }
     self.outsideCloseAuthorized = self.startPoints.count == 1;
+    FLMEnqueueDiagnosticLine(
+        @"sb touch-backdrop-authorized sequence=%lu authorized=%d",
+        (unsigned long)self.touchSequence, self.outsideCloseAuthorized);
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -785,6 +833,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
         lastTimestamp - self.firstTouchTimestamp <= 0.35
             ? UIGestureRecognizerStateRecognized
             : UIGestureRecognizerStateFailed;
+    FLMEnqueueDiagnosticLine(
+        @"sb touch-backdrop-ended sequence=%lu authorized=%d duration=%.4f state=%ld",
+        (unsigned long)self.touchSequence, self.outsideCloseAuthorized,
+        lastTimestamp - self.firstTouchTimestamp, (long)self.state);
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -798,6 +850,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
     [self.startPoints removeAllObjects];
     self.firstTouchTimestamp = 0.0;
     self.outsideCloseAuthorized = NO;
+    self.touchSequence = 0;
 }
 
 - (BOOL)canBePreventedByGestureRecognizer:
@@ -1080,6 +1133,7 @@ static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
 static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
+static int FlymeKeyboardAppCtorToken = -1;
 static int FlymeKeyboardAppReadyToken = -1;
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -1155,38 +1209,85 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
     return value ?: 1;
 }
 
-static BOOL FLMKeyboardAppAdapterReadyForIdentifier(NSString *identifier,
-                                                     pid_t *readyPID) {
+typedef struct {
+    int registerStatus;
+    int readStatus;
+    uint64_t rawState;
+    uint16_t magic;
+    uint16_t build;
+    pid_t pid;
+    BOOL processAlive;
+    BOOL valid;
+} FLMKeyboardLifecycleEvidence;
+
+static FLMKeyboardLifecycleEvidence FLMReadKeyboardLifecycleEvidence(
+    const char *notificationName,
+    int *token,
+    uint16_t expectedMagic) {
+    FLMKeyboardLifecycleEvidence evidence = {
+        .registerStatus = NOTIFY_STATUS_OK,
+        .readStatus = -1,
+    };
+    if (*token < 0) {
+        evidence.registerStatus =
+            notify_register_check(notificationName, token);
+        if (evidence.registerStatus != NOTIFY_STATUS_OK) {
+            *token = -1;
+            return evidence;
+        }
+    }
+    evidence.readStatus = notify_get_state(*token, &evidence.rawState);
+    if (evidence.readStatus != NOTIFY_STATUS_OK) {
+        return evidence;
+    }
+    evidence.magic = (uint16_t)((evidence.rawState >> 48) & 0xFFFFULL);
+    evidence.build = (uint16_t)((evidence.rawState >> 32) & 0xFFFFULL);
+    evidence.pid = (pid_t)(evidence.rawState & 0xFFFFFFFFULL);
+    errno = 0;
+    evidence.processAlive =
+        evidence.pid > 1 &&
+        (kill(evidence.pid, 0) == 0 || errno == EPERM);
+    evidence.valid = evidence.magic == expectedMagic &&
+                     evidence.build == FLYME_KEYBOARD_APP_ADAPTER_BUILD &&
+                     evidence.processAlive;
+    return evidence;
+}
+
+static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
+                                           NSString *identifier,
+                                           pid_t *readyPID) {
     if (readyPID) {
         *readyPID = 0;
     }
-    if (![identifier isEqualToString:@"com.tencent.xin"]) {
-        return NO;
+    FLMKeyboardLifecycleEvidence ctor = FLMReadKeyboardLifecycleEvidence(
+        FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
+        &FlymeKeyboardAppCtorToken,
+        FLYME_KEYBOARD_APP_CTOR_MAGIC);
+    FLMKeyboardLifecycleEvidence ready = FLMReadKeyboardLifecycleEvidence(
+        FLYME_KEYBOARD_APP_READY_NOTIFICATION,
+        &FlymeKeyboardAppReadyToken,
+        FLYME_KEYBOARD_APP_READY_MAGIC);
+    BOOL targetMatches = [identifier isEqualToString:@"com.tencent.xin"];
+    BOOL accepted = targetMatches && ctor.valid && ready.valid &&
+                    ctor.pid == ready.pid;
+    if (accepted && readyPID) {
+        *readyPID = ready.pid;
     }
-    if (FlymeKeyboardAppReadyToken < 0 &&
-        notify_register_check(FLYME_KEYBOARD_APP_READY_NOTIFICATION,
-                              &FlymeKeyboardAppReadyToken) !=
-            NOTIFY_STATUS_OK) {
-        FlymeKeyboardAppReadyToken = -1;
-        return NO;
-    }
-    uint64_t state = 0;
-    if (FlymeKeyboardAppReadyToken < 0 ||
-        notify_get_state(FlymeKeyboardAppReadyToken, &state) !=
-            NOTIFY_STATUS_OK) {
-        return NO;
-    }
-    uint64_t magic = (state >> 48) & 0xFFFFULL;
-    uint64_t build = (state >> 32) & 0xFFFFULL;
-    pid_t pid = (pid_t)(state & 0xFFFFFFFFULL);
-    BOOL processAlive =
-        pid > 1 && (kill(pid, 0) == 0 || errno == EPERM);
-    BOOL ready = magic == FLYME_KEYBOARD_APP_READY_MAGIC &&
-                 build == FLYME_KEYBOARD_APP_ADAPTER_BUILD && processAlive;
-    if (ready && readyPID) {
-        *readyPID = pid;
-    }
-    return ready;
+    FLMEnqueueDiagnosticLine(
+        @"sb adapter-handshake context=%@ app=%@ accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
+        context ?: @"<none>", identifier ?: @"<none>", accepted,
+        ctor.registerStatus, ctor.readStatus,
+        (unsigned long long)ctor.rawState, ctor.magic, ctor.build, ctor.pid,
+        ctor.processAlive, ctor.valid,
+        ready.registerStatus, ready.readStatus,
+        (unsigned long long)ready.rawState, ready.magic, ready.build, ready.pid,
+        ready.processAlive, ready.valid);
+    return accepted;
+}
+
+static BOOL FLMKeyboardAppAdapterReadyForIdentifier(NSString *identifier,
+                                                     pid_t *readyPID) {
+    return FLMLogKeyboardAdapterHandshake(@"avoidance", identifier, readyPID);
 }
 
 static void FLMScheduleKeyboardSharedStateWrite(void) {
@@ -1313,6 +1414,9 @@ static void FLMPublishKeyboardState(NSString *identifier,
         (unsigned long long)sessionGeneration,
         (unsigned long long)routeHash,
         (unsigned long long)sceneHash);
+    if (identifier.length > 0 && sessionGeneration != 0) {
+        FLMLogKeyboardAdapterHandshake(@"route-publish", identifier, NULL);
+    }
 }
 
 static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
@@ -1324,7 +1428,12 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
     pid_t adapterPID = 0;
     BOOL adapterReady = FLMKeyboardAppAdapterReadyForIdentifier(
         FLMKeyboardSharedIdentifier, &adapterPID);
-    BOOL effectiveVisible = visible && adapterReady;
+    // Readiness is evidence, never a publishing gate. In 0.8.39 the first
+    // keyboard frame could beat the WeChat ctor by one run-loop turn, causing
+    // a zero avoidance value that was never republished after ready arrived.
+    // The atomically stored state is safe without a consumer; a late adapter
+    // simply reads the latest real value during its initial route reload.
+    BOOL effectiveVisible = visible;
     CGFloat height = effectiveVisible ? MAX(0.0, keyboardHeight) : 0.0;
     FLMKeyboardSharedAvoidanceVisible = effectiveVisible;
     FLMKeyboardSharedAvoidanceHeight = height;
@@ -1969,13 +2078,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                CGRectContainsPoint(self.floatingContainer.frame, point);
     }
     if (gestureRecognizer == self.floatingBackdropTap) {
-        return !self.floatingWindow.hidden;
+        BOOL accepted = !self.floatingWindow.hidden;
+        CGPoint point = [touch locationInView:self.floatingWindow.rootViewController.view];
+        FLMEnqueueDiagnosticLine(
+            @"sb touch-delegate recognizer=backdrop touch=%p timestamp=%.6f accepted=%d point={%.1f,%.1f} view=%@",
+            (__bridge void *)touch, touch.timestamp, accepted, point.x, point.y,
+            touch.view ? NSStringFromClass([touch.view class]) : @"<nil>");
+        return accepted;
     }
     if (gestureRecognizer == self.floatingExclusiveGesture) {
         FLMCornerGestureRecognizer *exclusiveGesture =
             (FLMCornerGestureRecognizer *)gestureRecognizer;
         exclusiveGesture.flmOutsideCloseAuthorized = NO;
         if (self.floatingWindow.hidden || FLMDeviceIsLocked()) {
+            FLMEnqueueDiagnosticLine(
+                @"sb touch-delegate recognizer=exclusive touch=%p timestamp=%.6f accepted=0 gate=%@",
+                (__bridge void *)touch, touch.timestamp,
+                self.floatingWindow.hidden ? @"window-hidden" : @"device-locked");
             return NO;
         }
         UIView *touchView = touch.view;
@@ -1983,12 +2102,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [touchView isDescendantOfView:self.floatingContainer] ||
             touchView == self.floatingHandle ||
             [touchView isDescendantOfView:self.floatingHandle]) {
+            FLMEnqueueDiagnosticLine(
+                @"sb touch-delegate recognizer=exclusive touch=%p timestamp=%.6f accepted=0 gate=protected-view view=%@ viewPtr=%p",
+                (__bridge void *)touch, touch.timestamp,
+                touchView ? NSStringFromClass([touchView class]) : @"<nil>",
+                (__bridge void *)touchView);
             return NO;
         }
         CGPoint rawPoint = [touch locationInView:nil];
         CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
         BOOL outside = ![self pointIsInsideFloatingInteractionDomain:point];
         exclusiveGesture.flmOutsideCloseAuthorized = outside;
+        exclusiveGesture.flmAuthorizedStartPoint = point;
+        FLMEnqueueDiagnosticLine(
+            @"sb touch-delegate recognizer=exclusive touch=%p timestamp=%.6f accepted=%d point={%.1f,%.1f} view=%@ keyboardVisible=%d interaction=%d keyboardFrame=%@ card=%@",
+            (__bridge void *)touch, touch.timestamp, outside, point.x, point.y,
+            touchView ? NSStringFromClass([touchView class]) : @"<nil>",
+            self.floatingKeyboardVisible,
+            self.floatingKeyboardInteractionSessionActive,
+            NSStringFromCGRect([self floatingKeyboardInteractionFrame]),
+            NSStringFromCGRect(self.floatingContainer.frame));
         return outside;
     }
     if (gestureRecognizer == self.modalGesture) {
@@ -2397,18 +2530,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
-            self.floatingExclusiveStartPoint = point;
+            self.floatingExclusiveStartPoint =
+                ((FLMCornerGestureRecognizer *)gesture)
+                    .flmAuthorizedStartPoint;
             self.floatingExclusiveStartTimestamp = CACurrentMediaTime();
             self.floatingExclusiveTapEligible =
                 ((FLMCornerGestureRecognizer *)gesture)
                     .flmOutsideCloseAuthorized &&
                 ((FLMCornerGestureRecognizer *)gesture)
-                        .flmFirstTouchTimestamp > 0.0 &&
-                ![self pointIsInsideFloatingInteractionDomain:point];
+                        .flmFirstTouchTimestamp > 0.0;
             FLMEnqueueDiagnosticLine(
-                @"sb exclusive-began authorized=%d eligible=%d point={%.1f,%.1f} keyboardVisible=%d interaction=%d domain=%d",
+                @"sb exclusive-began authorized=%d eligible=%d delegatePoint={%.1f,%.1f} callbackPoint={%.1f,%.1f} keyboardVisible=%d interaction=%d currentDomain=%d",
                 ((FLMCornerGestureRecognizer *)gesture).flmOutsideCloseAuthorized,
-                self.floatingExclusiveTapEligible, point.x, point.y,
+                self.floatingExclusiveTapEligible,
+                self.floatingExclusiveStartPoint.x,
+                self.floatingExclusiveStartPoint.y, point.x, point.y,
                 self.floatingKeyboardVisible,
                 self.floatingKeyboardInteractionSessionActive,
                 [self pointIsInsideFloatingInteractionDomain:point]);
@@ -4483,6 +4619,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (unsigned long)self.floatingKeyboardSessionGeneration,
         (__bridge void *)self.floatingKeyboardLayerHostView);
     if (visible) {
+        pid_t adapterPID = 0;
+        BOOL adapterAccepted = FLMLogKeyboardAdapterHandshake(
+            @"frame-visible", self.floatingIdentifier, &adapterPID);
+        FLMEnqueueDiagnosticLine(
+            @"sb keyboard-relation target=%@ frontmost=%@ appScene=%@ appSceneClass=%@ keyboardScene=%@ keyboardSceneClass=%@ preferredHostClass=%@ preferredHost=%p nativeHostClass=%@ nativeHost=%p adapterAccepted=%d adapterPID=%d sbPID=%d",
+            self.floatingIdentifier ?: @"<none>",
+            FLMFrontmostApplicationIdentifier() ?: @"<none>",
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
+            self.floatingScene
+                ? NSStringFromClass([self.floatingScene class])
+                : @"<none>",
+            FLMSceneIdentifier(self.floatingKeyboardScene) ?: @"<none>",
+            self.floatingKeyboardScene
+                ? NSStringFromClass([self.floatingKeyboardScene class])
+                : @"<none>",
+            self.floatingKeyboardPreferredHostIdentity
+                ? NSStringFromClass(
+                      [self.floatingKeyboardPreferredHostIdentity class])
+                : @"<none>",
+            (__bridge void *)self.floatingKeyboardPreferredHostIdentity,
+            self.floatingKeyboardLayerHostView
+                ? NSStringFromClass([self.floatingKeyboardLayerHostView class])
+                : @"<none>",
+            (__bridge void *)self.floatingKeyboardLayerHostView,
+            adapterAccepted, adapterPID, getpid());
         [self beginFloatingKeyboardInteractionSession];
         CGFloat reportedHeight = CGRectGetHeight(frame);
         if (reportedHeight < 180.0) {
@@ -4529,7 +4690,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingWindow.windowLevel);
         return;
     }
-    BOOL protectKeyboardDismissal =
+    BOOL wasKeyboardInteraction =
         self.floatingKeyboardVisible || self.floatingKeyboardInteractionSessionActive;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
@@ -4537,51 +4698,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
                                 0.0,
                                 NO);
-    if (protectKeyboardDismissal && self.floatingKeyboardSessionGeneration != 0 &&
-        !self.floatingWindow.hidden && !self.floatingDocked) {
-        // UIKeyboardDidHide can arrive before the touch that pressed the
-        // keyboard's dismiss key has completely left the system gesture path.
-        // Keep the former keyboard area protected briefly so that one physical
-        // touch can only dismiss the keyboard, never the centered card too.
-        self.floatingKeyboardInteractionSessionActive = YES;
-        self.floatingKeyboardInteractionGeneration += 1;
-        NSUInteger protectionGeneration =
-            self.floatingKeyboardInteractionGeneration;
-        CGRect protectedFrame = [self floatingKeyboardInteractionFrame];
-        self.floatingBackdropTap.additionalProtectedFrame = protectedFrame;
-        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
-            protectedFrame;
-        FLMEnqueueDiagnosticLine(
-            @"sb frame-hidden protection=armed generation=%lu frame=%@",
-            (unsigned long)protectionGeneration,
-            NSStringFromCGRect(protectedFrame));
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.50 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (protectionGeneration != self.floatingKeyboardInteractionGeneration ||
-                self.floatingKeyboardVisible || self.floatingWindow.hidden ||
-                self.floatingDocked) {
-                return;
-            }
-            self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
-            ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
-                CGRectNull;
-            [self endFloatingKeyboardInteractionSession];
-            FLMEnqueueDiagnosticLine(
-                @"sb frame-hidden protection=expired generation=%lu",
-                (unsigned long)protectionGeneration);
-        });
-    } else {
-        self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
-        ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
-            CGRectNull;
-        [self endFloatingKeyboardInteractionSession];
-        FLMEnqueueDiagnosticLine(
-            @"sb frame-hidden protection=not-armed protect=%d session=%lu hidden=%d docked=%d",
-            protectKeyboardDismissal,
-            (unsigned long)self.floatingKeyboardSessionGeneration,
-            self.floatingWindow.hidden, self.floatingDocked);
-    }
+    // Closing behavior is tied to the touch's immutable begin-domain snapshot,
+    // not a guessed post-dismissal time window. A touch that began in the
+    // keyboard remains a keyboard-only touch even after this state is cleared;
+    // the next genuine outside touch is immediately eligible to close.
+    self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
+    ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
+        CGRectNull;
+    [self endFloatingKeyboardInteractionSession];
+    FLMEnqueueDiagnosticLine(
+        @"sb frame-hidden protection=cleared policy=touch-origin previousInteraction=%d session=%lu hidden=%d docked=%d",
+        wasKeyboardInteraction,
+        (unsigned long)self.floatingKeyboardSessionGeneration,
+        self.floatingWindow.hidden, self.floatingDocked);
 }
 
 - (void)endFloatingKeyboardSession {

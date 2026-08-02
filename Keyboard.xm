@@ -16,10 +16,12 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v39"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v40"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v40"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF139ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 39ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF140ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF240ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 40ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -44,25 +46,29 @@ static BOOL FLMKeyboardCardGeometryActive = NO;
 static uint64_t FLMKeyboardCardGeometryGeneration = 0;
 static CGFloat FLMKeyboardCardBottom = 0.0;
 static CGFloat FLMKeyboardCardVisualScale = 0.0;
+static int FLMKeyboardAppCtorToken = -1;
+static int FLMKeyboardAppReadyToken = -1;
 
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
 
-static void FLMPublishKeyboardAppReady(void) {
-    static int readyToken = -1;
-    if (notify_register_check(FLYME_KEYBOARD_APP_READY_NOTIFICATION,
-                              &readyToken) != NOTIFY_STATUS_OK) {
-        readyToken = -1;
+static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
+                                                int *token,
+                                                uint64_t magic,
+                                                FLMDiagnosticEvent event) {
+    if (*token < 0 &&
+        notify_register_check(notificationName, token) != NOTIFY_STATUS_OK) {
+        *token = -1;
         return;
     }
-    uint64_t state = (FLYME_KEYBOARD_APP_READY_MAGIC << 48) |
+    uint64_t state = (magic << 48) |
                      (FLYME_KEYBOARD_APP_ADAPTER_BUILD << 32) |
                      (uint32_t)getpid();
-    notify_set_state(readyToken, state);
-    notify_post(FLYME_KEYBOARD_APP_READY_NOTIFICATION);
+    notify_set_state(*token, state);
+    notify_post(notificationName);
     FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
-                              FLMDiagnosticEventAdapterLoaded,
+                              event,
                               0,
                               (uint16_t)FLYME_KEYBOARD_APP_ADAPTER_BUILD,
                               (uint16_t)(getpid() & 0xFFFF));
@@ -618,7 +624,16 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
 
 %ctor {
     @autoreleasepool {
-        FLMPublishKeyboardAppReady();
+        // The two independent notify states make a failed device run
+        // unambiguous: no ctor token means no injection; ctor without ready
+        // means initialization did not complete; both mean SpringBoard can
+        // validate the exact build and live process without relying on logs
+        // written from the sandboxed application.
+        FLMPublishKeyboardAppLifecycleStage(
+            FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
+            &FLMKeyboardAppCtorToken,
+            FLYME_KEYBOARD_APP_CTOR_MAGIC,
+            FLMDiagnosticEventAdapterCtor);
         %init;
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                                  &FLMKeyboardRouteToken,
@@ -658,5 +673,10 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
         });
         FLMInstallRemoteKeyboardGeometryIfAvailable();
         FLMReloadKeyboardRoute();
+        FLMPublishKeyboardAppLifecycleStage(
+            FLYME_KEYBOARD_APP_READY_NOTIFICATION,
+            &FLMKeyboardAppReadyToken,
+            FLYME_KEYBOARD_APP_READY_MAGIC,
+            FLMDiagnosticEventAdapterReady);
     }
 }
