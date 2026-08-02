@@ -17,6 +17,9 @@ required_source=(
     "static const CGFloat FLMDefaultWheelIconSize = 56.0;"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
+    "single proportional recovery"
+    "display aspect ratio too"
+    "geometryProgress"
     "displayCommitted = targetIsFrontmost && attempt >= 1"
     "keyboardPassThroughFrame"
     "floatingKeyboardSessionGeneration"
@@ -61,6 +64,11 @@ removed_source=(
     "consumeOutsideTapForKeyboardDismissal"
     "floatingKeyboardContainerOffsetY"
     "setFloatingSceneUsesFullscreenKeyboardHost"
+    "widthCompletion"
+    "verticalRevealStart"
+    "widthProgress"
+    "verticalProgress"
+    "fillScale"
 )
 
 for marker in "${removed_source[@]}"; do
