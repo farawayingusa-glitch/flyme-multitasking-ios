@@ -3,6 +3,8 @@ set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
 keyboard_source="${2:-Keyboard.xm}"
+keyboard_bootstrap_source="${3:-KeyboardBootstrap.c}"
+keyboard_bootstrap_filter="${4:-FlymeKeyboardBootstrap.plist}"
 
 required_source=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -90,6 +92,32 @@ for marker in "${required_keyboard_source[@]}"; do
     }
 done
 
+required_keyboard_bootstrap_source=(
+    "FLMProcessIsWeChat"
+    "getprogname()"
+    "_NSGetExecutablePath"
+    "dlopen(adapterPath, RTLD_NOW | RTLD_LOCAL)"
+    "keyboard-bootstrap-v41"
+)
+
+for marker in "${required_keyboard_bootstrap_source[@]}"; do
+    grep -Fq -- "$marker" "$keyboard_bootstrap_source" || {
+        echo "safe WeChat keyboard bootstrap marker missing: $marker" >&2
+        exit 1
+    }
+done
+
+if grep -Eq 'Foundation/Foundation.h|UIApplication' "$keyboard_bootstrap_source"; then
+    echo "keyboard bootstrap must remain pure C and process-gated" >&2
+    exit 1
+fi
+grep -Fq -- '<key>Bundles</key>' "$keyboard_bootstrap_filter"
+grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_bootstrap_filter"
+if grep -Eq 'UIApplication|com.tencent.xin|<key>Classes</key>' "$keyboard_bootstrap_filter"; then
+    echo "keyboard bootstrap filter must use only the UIKit bundle" >&2
+    exit 1
+fi
+
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
 wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
@@ -97,4 +125,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and executable-scoped app keyboard architecture verified"
+echo "frozen gesture foundation and process-gated UIKit bootstrap architecture verified"

@@ -2,7 +2,9 @@ param(
     [string]$Source = 'Tweak.xm',
     [string]$LifecycleSource = 'SceneLifecycle.xm',
     [string]$KeyboardSource = 'Keyboard.xm',
-    [string]$KeyboardFilter = 'FlymeKeyboard.plist'
+    [string]$KeyboardFilter = 'FlymeKeyboard.plist',
+    [string]$KeyboardBootstrapSource = 'KeyboardBootstrap.c',
+    [string]$KeyboardBootstrapFilter = 'FlymeKeyboardBootstrap.plist'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,10 +120,20 @@ Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
+Require-Text $Source 'FLYME_KEYBOARD_BOOTSTRAP_NOTIFICATION'
+Require-Text $Source 'bootstrap={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Executables</key>'
 Require-Text $KeyboardFilter '<string>WeChat</string>'
 Reject-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
+Require-Text $KeyboardBootstrapSource 'FLMProcessIsWeChat'
+Require-Text $KeyboardBootstrapSource 'dlopen(adapterPath, RTLD_NOW | RTLD_LOCAL)'
+Require-Text $KeyboardBootstrapSource 'keyboard-bootstrap-v41'
+Reject-Text $KeyboardBootstrapSource 'Foundation/Foundation.h'
+Reject-Text $KeyboardBootstrapSource 'UIApplication'
+Require-Text $KeyboardBootstrapFilter '<key>Bundles</key>'
+Require-Text $KeyboardBootstrapFilter '<string>com.apple.UIKit</string>'
+Reject-Text $KeyboardBootstrapFilter '<key>Classes</key>'
 Write-Output 'scene lifecycle and executable-scoped keyboard app adapter verified'

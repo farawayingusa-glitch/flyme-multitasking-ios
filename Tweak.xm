@@ -25,11 +25,13 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v40"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v40"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF140ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF240ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 40ULL
+#define FLYME_KEYBOARD_BOOTSTRAP_NOTIFICATION "com.codex.flymemultitasking.keyboard-bootstrap-v41"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v41"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v41"
+#define FLYME_KEYBOARD_BOOTSTRAP_SUCCESS_MAGIC 0xF341ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF141ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF241ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 41ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -216,7 +218,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.40 schema=11");
+                    @"logger-ready build=0.8.41 schema=12");
             }
         });
     });
@@ -1133,6 +1135,7 @@ static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
 static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
+static int FlymeKeyboardBootstrapToken = -1;
 static int FlymeKeyboardAppCtorToken = -1;
 static int FlymeKeyboardAppReadyToken = -1;
 static NSString *const FLMKeyboardSharedStatePath =
@@ -1259,6 +1262,10 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
     if (readyPID) {
         *readyPID = 0;
     }
+    FLMKeyboardLifecycleEvidence bootstrap = FLMReadKeyboardLifecycleEvidence(
+        FLYME_KEYBOARD_BOOTSTRAP_NOTIFICATION,
+        &FlymeKeyboardBootstrapToken,
+        FLYME_KEYBOARD_BOOTSTRAP_SUCCESS_MAGIC);
     FLMKeyboardLifecycleEvidence ctor = FLMReadKeyboardLifecycleEvidence(
         FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
         &FlymeKeyboardAppCtorToken,
@@ -1268,14 +1275,19 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
         &FlymeKeyboardAppReadyToken,
         FLYME_KEYBOARD_APP_READY_MAGIC);
     BOOL targetMatches = [identifier isEqualToString:@"com.tencent.xin"];
-    BOOL accepted = targetMatches && ctor.valid && ready.valid &&
+    BOOL accepted = targetMatches && bootstrap.valid && ctor.valid &&
+                    ready.valid && bootstrap.pid == ctor.pid &&
                     ctor.pid == ready.pid;
     if (accepted && readyPID) {
         *readyPID = ready.pid;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb adapter-handshake context=%@ app=%@ accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
+        @"sb adapter-handshake context=%@ app=%@ accepted=%d bootstrap={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
         context ?: @"<none>", identifier ?: @"<none>", accepted,
+        bootstrap.registerStatus, bootstrap.readStatus,
+        (unsigned long long)bootstrap.rawState, bootstrap.magic,
+        bootstrap.build, bootstrap.pid, bootstrap.processAlive,
+        bootstrap.valid,
         ctor.registerStatus, ctor.readStatus,
         (unsigned long long)ctor.rawState, ctor.magic, ctor.build, ctor.pid,
         ctor.processAlive, ctor.valid,
