@@ -4,9 +4,9 @@
 <dict>
     <key>Filter</key>
     <dict>
-        <key>Executables</key>
+        <key>Bundles</key>
         <array>
-            <string>WeChat</string>
+            <string>com.tencent.xin</string>
         </array>
     </dict>
 </dict>

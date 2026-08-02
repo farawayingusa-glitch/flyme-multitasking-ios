@@ -3,8 +3,7 @@ set -euo pipefail
 
 source_file="${1:-Tweak.xm}"
 keyboard_source="${2:-Keyboard.xm}"
-keyboard_bootstrap_source="${3:-KeyboardBootstrap.c}"
-keyboard_bootstrap_filter="${4:-FlymeKeyboardBootstrap.plist}"
+keyboard_filter="${3:-FlymeKeyboard.plist}"
 
 required_source=(
     "const CGFloat horizontalRadius = 58.0;"
@@ -92,29 +91,10 @@ for marker in "${required_keyboard_source[@]}"; do
     }
 done
 
-required_keyboard_bootstrap_source=(
-    "FLMProcessIsWeChat"
-    "getprogname()"
-    "_NSGetExecutablePath"
-    "dlopen(adapterPath, RTLD_NOW | RTLD_LOCAL)"
-    "keyboard-bootstrap-v41"
-)
-
-for marker in "${required_keyboard_bootstrap_source[@]}"; do
-    grep -Fq -- "$marker" "$keyboard_bootstrap_source" || {
-        echo "safe WeChat keyboard bootstrap marker missing: $marker" >&2
-        exit 1
-    }
-done
-
-if grep -Eq 'Foundation/Foundation.h|UIApplication' "$keyboard_bootstrap_source"; then
-    echo "keyboard bootstrap must remain pure C and process-gated" >&2
-    exit 1
-fi
-grep -Fq -- '<key>Bundles</key>' "$keyboard_bootstrap_filter"
-grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_bootstrap_filter"
-if grep -Eq 'UIApplication|com.tencent.xin|<key>Classes</key>' "$keyboard_bootstrap_filter"; then
-    echo "keyboard bootstrap filter must use only the UIKit bundle" >&2
+grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
+grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
+if grep -Eq 'com.apple.UIKit|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard adapter filter must contain only the WeChat bundle" >&2
     exit 1
 fi
 
@@ -125,4 +105,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and process-gated UIKit bootstrap architecture verified"
+echo "frozen gesture foundation and bundle-only WeChat adapter architecture verified"
