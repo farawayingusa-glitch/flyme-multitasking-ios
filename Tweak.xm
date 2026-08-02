@@ -25,6 +25,9 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v39"
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF139ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 39ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -71,6 +74,7 @@ static const char *FLMDiagnosticEventName(uint8_t event) {
         case FLMDiagnosticEventLayoutRefresh: return "layout-refresh";
         case FLMDiagnosticEventRouteReady: return "route-ready";
         case FLMDiagnosticEventDismissAck: return "dismiss-ack";
+        case FLMDiagnosticEventAdapterLoaded: return "adapter-loaded";
         default: return "unknown-event";
     }
 }
@@ -208,7 +212,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.38 schema=9");
+                    @"logger-ready build=0.8.39 schema=10");
             }
         });
     });
@@ -1076,6 +1080,7 @@ static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
 static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
+static int FlymeKeyboardAppReadyToken = -1;
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 static NSString *const FLMKeyboardSharedStateRootlessPath =
@@ -1148,6 +1153,40 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
+}
+
+static BOOL FLMKeyboardAppAdapterReadyForIdentifier(NSString *identifier,
+                                                     pid_t *readyPID) {
+    if (readyPID) {
+        *readyPID = 0;
+    }
+    if (![identifier isEqualToString:@"com.tencent.xin"]) {
+        return NO;
+    }
+    if (FlymeKeyboardAppReadyToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_APP_READY_NOTIFICATION,
+                              &FlymeKeyboardAppReadyToken) !=
+            NOTIFY_STATUS_OK) {
+        FlymeKeyboardAppReadyToken = -1;
+        return NO;
+    }
+    uint64_t state = 0;
+    if (FlymeKeyboardAppReadyToken < 0 ||
+        notify_get_state(FlymeKeyboardAppReadyToken, &state) !=
+            NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    uint64_t magic = (state >> 48) & 0xFFFFULL;
+    uint64_t build = (state >> 32) & 0xFFFFULL;
+    pid_t pid = (pid_t)(state & 0xFFFFFFFFULL);
+    BOOL processAlive =
+        pid > 1 && (kill(pid, 0) == 0 || errno == EPERM);
+    BOOL ready = magic == FLYME_KEYBOARD_APP_READY_MAGIC &&
+                 build == FLYME_KEYBOARD_APP_ADAPTER_BUILD && processAlive;
+    if (ready && readyPID) {
+        *readyPID = pid;
+    }
+    return ready;
 }
 
 static void FLMScheduleKeyboardSharedStateWrite(void) {
@@ -1282,8 +1321,12 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
     if (sessionGeneration == 0) {
         return;
     }
-    CGFloat height = visible ? MAX(0.0, keyboardHeight) : 0.0;
-    FLMKeyboardSharedAvoidanceVisible = visible;
+    pid_t adapterPID = 0;
+    BOOL adapterReady = FLMKeyboardAppAdapterReadyForIdentifier(
+        FLMKeyboardSharedIdentifier, &adapterPID);
+    BOOL effectiveVisible = visible && adapterReady;
+    CGFloat height = effectiveVisible ? MAX(0.0, keyboardHeight) : 0.0;
+    FLMKeyboardSharedAvoidanceVisible = effectiveVisible;
     FLMKeyboardSharedAvoidanceHeight = height;
     FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardAvoidanceToken < 0 &&
@@ -1295,16 +1338,16 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
         MIN(0xFFFFFFULL, (uint64_t)llround(height * 100.0));
     uint64_t encodedGeneration =
         (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
-    uint64_t state = (visible ? (1ULL << 63) : 0) |
+    uint64_t state = (effectiveVisible ? (1ULL << 63) : 0) |
                      encodedGeneration | encodedHeight;
     if (FlymeKeyboardAvoidanceToken >= 0) {
         notify_set_state(FlymeKeyboardAvoidanceToken, state);
         notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
     }
     FLMEnqueueDiagnosticLine(
-        @"sb avoidance-publish session=%llu visible=%d height=%.2f state=0x%llx",
-        (unsigned long long)sessionGeneration, visible, height,
-        (unsigned long long)state);
+        @"sb avoidance-publish session=%llu requested=%d visible=%d height=%.2f adapterReady=%d adapterPID=%d state=0x%llx",
+        (unsigned long long)sessionGeneration, visible, effectiveVisible,
+        height, adapterReady, adapterPID, (unsigned long long)state);
 }
 
 static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,

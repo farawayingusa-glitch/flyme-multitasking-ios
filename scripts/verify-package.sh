@@ -53,9 +53,10 @@ test -f "$preferences"
 test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
-grep -q "com.apple.UIKit" "$keyboard_filter"
-if grep -q "com.tencent.xin" "$keyboard_filter"; then
-    echo "keyboard adapter must use the UIKit process filter" >&2
+grep -q "Executables" "$keyboard_filter"
+grep -q "WeChat" "$keyboard_filter"
+if grep -Eq "com.apple.UIKit|com.tencent.xin" "$keyboard_filter"; then
+    echo "keyboard adapter must use the explicit WeChat executable filter" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -79,8 +80,10 @@ codesign --verify --verbose=4 --all-architectures --strict "$keyboard"
 codesign --verify --verbose=4 --all-architectures --strict --ignore-resources "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.38" "$workspace/control/control"
+grep -qx "Version: 0.8.39" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
+test -x "$workspace/control/postinst"
+grep -q "WeChat" "$workspace/control/postinst"
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then
     echo "package unexpectedly contains TrollOpen files" >&2

@@ -16,7 +16,10 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v39"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF139ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 39ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -45,6 +48,25 @@ static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+
+static void FLMPublishKeyboardAppReady(void) {
+    static int readyToken = -1;
+    if (notify_register_check(FLYME_KEYBOARD_APP_READY_NOTIFICATION,
+                              &readyToken) != NOTIFY_STATUS_OK) {
+        readyToken = -1;
+        return;
+    }
+    uint64_t state = (FLYME_KEYBOARD_APP_READY_MAGIC << 48) |
+                     (FLYME_KEYBOARD_APP_ADAPTER_BUILD << 32) |
+                     (uint32_t)getpid();
+    notify_set_state(readyToken, state);
+    notify_post(FLYME_KEYBOARD_APP_READY_NOTIFICATION);
+    FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
+                              FLMDiagnosticEventAdapterLoaded,
+                              0,
+                              (uint16_t)FLYME_KEYBOARD_APP_ADAPTER_BUILD,
+                              (uint16_t)(getpid() & 0xFFFF));
+}
 
 static NSDictionary *FLMReadKeyboardSharedState(void) {
     NSDictionary *state =
@@ -596,6 +618,7 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
 
 %ctor {
     @autoreleasepool {
+        FLMPublishKeyboardAppReady();
         %init;
         notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                                  &FLMKeyboardRouteToken,

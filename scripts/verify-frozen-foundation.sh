@@ -30,6 +30,7 @@ required_source=(
     "FLMPublishKeyboardAvoidance"
     "FLMPublishKeyboardCardGeometry"
     "FLMScheduleKeyboardSharedStateWrite"
+    "FLMKeyboardAppAdapterReadyForIdentifier"
 )
 
 for marker in "${required_source[@]}"; do
@@ -77,6 +78,7 @@ required_keyboard_source=(
     "FLMEndPreviousApplicationKeyboardSession"
     "FLMDiagnosticEventIntersection"
     "FLMReadKeyboardSharedState"
+    "FLMPublishKeyboardAppReady"
 )
 
 for marker in "${required_keyboard_source[@]}"; do
@@ -93,4 +95,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and shared-state UIKit keyboard architecture verified"
+echo "frozen gesture foundation and executable-scoped app keyboard architecture verified"

@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# This application-side adapter is injected only when WeChat starts. A
+# SpringBoard respring does not terminate suspended applications, so close
+# exactly this process once during upgrade. The next launch then loads the
+# newly installed adapter instead of reusing a prewarmed process.
+for killall_tool in /usr/bin/killall /var/jb/usr/bin/killall; do
+    if [ -x "$killall_tool" ]; then
+        "$killall_tool" -9 WeChat >/dev/null 2>&1 || true
+        break
+    fi
+done
+
+exit 0
