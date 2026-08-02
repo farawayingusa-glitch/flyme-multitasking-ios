@@ -106,4 +106,3 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
 fi
 
 echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
-

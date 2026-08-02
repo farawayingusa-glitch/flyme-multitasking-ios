@@ -692,4 +692,3 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
             FLMDiagnosticEventAdapterReady);
     }
 }
-

@@ -1,8 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme 澶氫换鍔?Description: Flyme 澶氫换鍔＄嫭绔嬬増锛屾彁渚涘弻渚у簲鐢ㄨ疆鐩樹笌灞呬腑灏忕獥锛岄€傞厤 iOS 16 涓?NathanLR 鏃犳牴鐜銆?Maintainer: Codex build for local testing
+Name: Flyme 多任务
+Description: Flyme 多任务独立版，提供双侧应用轮盘与居中小窗，适配 iOS 16 与 NathanLR 无根环境。
+Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
 Version: 0.8.44
-

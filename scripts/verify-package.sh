@@ -100,4 +100,3 @@ if grep -Riq "dpkg-divert" "$workspace/control"; then
 fi
 
 echo "package verification passed"
-
