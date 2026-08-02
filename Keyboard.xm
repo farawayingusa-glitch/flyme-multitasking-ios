@@ -233,6 +233,25 @@ static void FLMEndPreviousApplicationKeyboardSession(uint64_t generation) {
         0);
 }
 
+static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
+    if (generation == 0) {
+        return;
+    }
+    FLMEndPreviousApplicationKeyboardSession(generation);
+    // The hosted Scene may restore its saved first responder shortly after the
+    // route becomes active.  Clear exactly once after that restore window but
+    // before SpringBoard exposes the centered card for user interaction.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.22 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive ||
+            FLMKeyboardSessionGeneration != generation) {
+            return;
+        }
+        FLMEndPreviousApplicationKeyboardSession(generation);
+    });
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
@@ -261,8 +280,13 @@ static void FLMReloadKeyboardRoute(void) {
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
 
-    if (previousTargetApplication && previousGeneration != 0 &&
-        previousGeneration != sessionGeneration) {
+    BOOL startingTargetSession =
+        FLMKeyboardTargetApplication && sessionGeneration != 0 &&
+        (!previousTargetApplication || previousGeneration != sessionGeneration);
+    if (startingTargetSession) {
+        FLMSuppressRestoredApplicationResponder(sessionGeneration);
+    } else if (previousTargetApplication && previousGeneration != 0 &&
+               previousGeneration != sessionGeneration) {
         FLMEndPreviousApplicationKeyboardSession(previousGeneration);
     }
     if (FLMKeyboardTargetApplication) {

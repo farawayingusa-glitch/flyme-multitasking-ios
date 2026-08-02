@@ -2,8 +2,7 @@ param(
     [string]$Source = 'Tweak.xm',
     [string]$LifecycleSource = 'SceneLifecycle.xm',
     [string]$KeyboardSource = 'Keyboard.xm',
-    [string]$KeyboardBootstrapSource = 'KeyboardBootstrap.m',
-    [string]$KeyboardBootstrapFilter = 'FlymeKeyboardBootstrap.plist'
+    [string]$KeyboardFilter = 'FlymeKeyboard.plist'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,12 +94,7 @@ foreach ($Marker in @(
 )) {
     Require-Text $KeyboardSource $Marker
 }
-foreach ($Marker in @(
-    'dlopen(adapterPath.fileSystemRepresentation',
-    'FlymeKeyboard.dylib',
-    'FLMDiagnosticEventRouteReady'
-)) {
-    Require-Text $KeyboardBootstrapSource $Marker
-}
-Require-Text $KeyboardBootstrapFilter '<string>UIApplication</string>'
+Require-Text $KeyboardSource 'FLMSuppressRestoredApplicationResponder'
+Require-Text $KeyboardSource 'startingTargetSession'
+Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Write-Output 'scene lifecycle and fixed-scene UIKit keyboard architecture verified'
