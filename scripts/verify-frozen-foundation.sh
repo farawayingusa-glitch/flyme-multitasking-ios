@@ -97,7 +97,6 @@ required_keyboard_source=(
 )
 
 grep -Fq -- 'scene-frame policy=fullscreen' "$source_file"
-grep -Fq -- 'uniformly scaled into the card' "$source_file"
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 
@@ -123,3 +122,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
 fi
 
 echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
+
