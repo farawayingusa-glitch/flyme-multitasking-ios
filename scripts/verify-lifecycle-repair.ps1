@@ -24,6 +24,8 @@ foreach ($Marker in @(
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.18',
     'FLMFloatingSceneGenerationDelay = 0.75',
+    'FLMCenteredCardWidth = 300.3',
+    'FLMCenteredCardHeight = 520.0',
     'failFloatingLaunchForIdentifier:',
     'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
     'restoreFloatingHandleInteraction',
@@ -51,7 +53,16 @@ foreach ($Marker in @(
     'FLMPublishKeyboardCardGeometry',
     '0.24 * NSEC_PER_SEC',
     'finalizeKeyboardDismissalProtection',
-    'sb frame-hidden protection=finalized'
+    'sb frame-hidden protection=finalized',
+    'floatingSceneUsesCardGeometry',
+    'floatingSceneCardGeometryPending',
+    'floatingSceneCardGeometryCommitted',
+    'scene-card commit-request',
+    'scene-card committed',
+    'frame-deferred waiting=scene-host',
+    'host-deferred waiting=application-host',
+    'frame-deferred replay=1',
+    'card-restore keyboard-session-restored'
 )) {
     Require-Text $Source $Marker
 }
@@ -124,10 +135,9 @@ Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
 Require-Text $Source 'filter=UIKit-framework target-gated'
-Require-Text $Source 'scene-frame policy=fullscreen'
-Require-Text $Source 'content-scale policy=card-fit'
-Require-Text $Source 'logicalScene=fullscreen'
-Require-Text $Source 'card-fit=1'
+Require-Text $Source 'scene-frame policy=%@'
+Require-Text $Source 'content-scale policy=%@'
+Require-Text $Source 'logicalScene=%@'
 Require-Text $Source 'floatingHostReferenceSize'
 Require-Text $Source 'applyFloatingSceneLogicalFrameForCurrentPresentation'
 Require-Text $Source 'floatingFullscreenProgress'
@@ -137,16 +147,12 @@ Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
 Require-Text $Source 'centered-preserved=%d'
-Reject-Text $Source 'scene-frame policy=card'
-Reject-Text $Source 'scene-card commit-request'
-Reject-Text $Source 'scene-card committed'
-Reject-Text $Source 'card-commit-fallback'
-Reject-Text $Source 'floatingSceneCardGeometryPending'
-Reject-Text $Source 'floatingSceneCardGeometryCommitted'
+Reject-Text $Source 'content-scale policy=card-fit'
+Reject-Text $Source 'card-fit=1'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
 Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
-Write-Output 'scene lifecycle, display-sized card-fit content, and target-gated UIKit keyboard adapter verified'
+Write-Output 'scene lifecycle, fixed card Scene geometry, preserved keyboard route, and target-gated UIKit adapter verified'

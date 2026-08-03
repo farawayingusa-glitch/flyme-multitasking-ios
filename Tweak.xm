@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.50 schema=17");
+                    @"logger-ready build=0.8.51 schema=17");
             }
         });
     });
@@ -233,6 +233,11 @@ static const CGFloat FLMMinimumDockWidth = 156.0;
 static const CGFloat FLMMaximumDockWidth = 270.0;
 static const CGFloat FLMDockSideMargin = 10.0;
 static const CGFloat FLMDockTopMargin = 8.0;
+// The centered card is deliberately fixed for the target device.  Keep this
+// geometry independent from the display-sized Scene used during activation so
+// the application can relayout at the same dimensions as its visual card.
+static const CGFloat FLMCenteredCardWidth = 300.3;
+static const CGFloat FLMCenteredCardHeight = 520.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
@@ -986,6 +991,10 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, assign) BOOL floatingExclusiveTapEligible;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
+@property(nonatomic, assign) BOOL floatingSceneUsesCardGeometry;
+@property(nonatomic, assign) BOOL floatingSceneCardGeometryPending;
+@property(nonatomic, assign) BOOL floatingSceneCardGeometryCommitted;
+@property(nonatomic, assign) NSUInteger floatingSceneGeometryCommitGeneration;
 @property(nonatomic, assign) CGFloat floatingFullscreenProgress;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshotBackground;
@@ -1011,6 +1020,12 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, strong) id floatingKeyboardScene;
 @property(nonatomic, strong) id floatingKeyboardPreferredHostIdentity;
 @property(nonatomic, assign) NSUInteger floatingKeyboardPairingSessionGeneration;
+@property(nonatomic, assign) BOOL floatingKeyboardFramePending;
+@property(nonatomic, assign) CGRect floatingKeyboardPendingFrame;
+@property(nonatomic, assign) NSUInteger floatingKeyboardPendingSessionGeneration;
+@property(nonatomic, weak) UIView *floatingKeyboardDeferredHostView;
+@property(nonatomic, strong) id floatingKeyboardDeferredScene;
+@property(nonatomic, assign) NSUInteger floatingKeyboardDeferredSessionGeneration;
 @property(nonatomic, assign) CGPoint cornerGestureStartPoint;
 @property(nonatomic, copy) NSString *floatingIdentifier;
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
@@ -1061,6 +1076,10 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id)scene
             sessionGeneration:(NSUInteger)sessionGeneration;
+- (BOOL)floatingKeyboardPresentationReady;
+- (BOOL)floatingApplicationHostReadyForKeyboardRoute;
+- (void)flushDeferredFloatingKeyboardHostIfReady;
+- (void)flushPendingFloatingKeyboardFrameIfReady;
 - (void)restoreFloatingKeyboardLayerHost;
 - (void)discardFloatingKeyboardLayerHost;
 - (void)deactivateKeyboardForwardingWindow;
@@ -1104,6 +1123,12 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)attachFloatingIdentifier:(NSString *)identifier
                        generation:(NSUInteger)generation
                           attempt:(NSUInteger)attempt;
+- (void)commitFloatingCardSceneGeometryForIdentifier:(NSString *)identifier
+                                           generation:(NSUInteger)generation
+                                              attempt:(NSUInteger)attempt;
+- (void)finishFloatingCardSceneGeometryCommitForIdentifier:(NSString *)identifier
+                                                  generation:(NSUInteger)generation
+                                                     attempt:(NSUInteger)attempt;
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
                               generation:(NSUInteger)generation;
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
@@ -1118,6 +1143,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)layoutFloatingHostView;
 - (CGSize)floatingSceneReferenceSize;
 - (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy;
+- (BOOL)floatingSceneLogicalFrameMatchesCard;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -3114,9 +3140,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingContainer.alpha = 0.0;
     [self updateFloatingFullscreenSnapshotForProgress:0.0];
 
-    // The live Scene is now covered by the same card snapshot. Give the
-    // application its real fullscreen bounds before SpringBoard promotes it,
-    // so the final handoff does not expose a stale compact layout.
+    // The live compact Scene is now covered by the same card snapshot. Keep
+    // the application-style activation/keyboard identity, but temporarily
+    // restore display geometry for the fullscreen handoff. The cover hides
+    // this transaction from the user and the route/session is not reset here.
+    self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = NO;
+    self.floatingSceneCardGeometryCommitted = NO;
     [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"fullscreen-handoff"];
     [self layoutFloatingHostView];
 }
@@ -3133,10 +3163,36 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingFullscreenProgress = 0.0;
-    // A cancelled fullscreen transition returns to the visual card, but the
-    // remote Scene must remain display-sized so its content keeps the same
-    // coordinate space and is uniformly scaled by the card viewport.
-    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"fullscreen"];
+    // A cancelled fullscreen transition returns to the real compact Scene.
+    // Restore the card frame without clearing the current keyboard route; the
+    // same target Scene/session remains the owner of input.
+    self.floatingSceneUsesCardGeometry = YES;
+    self.floatingSceneCardGeometryPending = NO;
+    self.floatingSceneCardGeometryCommitted = YES;
+    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"card-restore"];
+    if (self.floatingKeyboardSessionGeneration == 0 &&
+        self.floatingIdentifier.length > 0 && self.floatingScene &&
+        !self.floatingWindow.hidden && !self.floatingDocked) {
+        // Fullscreen handoff intentionally ends the old keyboard interaction.
+        // If that handoff is cancelled, create a fresh generation for the same
+        // target Scene so the next responder can request the external keyboard
+        // without inheriting the ended route.
+        [self discardFloatingKeyboardLayerHost];
+        self.floatingKeyboardSessionCounter += 1;
+        if (self.floatingKeyboardSessionCounter == 0) {
+            self.floatingKeyboardSessionCounter = 1;
+        }
+        self.floatingKeyboardSessionGeneration =
+            self.floatingKeyboardSessionCounter;
+        FLMPublishKeyboardState(self.floatingIdentifier,
+                                self.floatingScene,
+                                self.floatingKeyboardSessionGeneration);
+        FLMEnqueueDiagnosticLine(
+            @"sb card-restore keyboard-session-restored session=%lu app=%@ scene=%@",
+            (unsigned long)self.floatingKeyboardSessionGeneration,
+            self.floatingIdentifier,
+            FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
+    }
     self.floatingContainer.alpha = 1.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
     if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
@@ -3546,6 +3602,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingLaunchState = FLMFloatingLaunchStatePrewarming;
     self.floatingLaunchStartedAt = CACurrentMediaTime();
     self.floatingScenePreparedAt = 0.0;
+    self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = YES;
+    self.floatingSceneCardGeometryCommitted = NO;
+    self.floatingSceneGeometryCommitGeneration = generation;
+    self.floatingKeyboardFramePending = NO;
+    self.floatingKeyboardPendingFrame = CGRectNull;
+    self.floatingKeyboardPendingSessionGeneration = 0;
     id presenter = self.floatingPresenter;
     [self.floatingHostView removeFromSuperview];
     self.floatingHostView = nil;
@@ -3586,13 +3649,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIEdgeInsets safeInsets =
         self.floatingWindow.rootViewController.view.safeAreaInsets;
-    CGFloat containerWidth = width * 0.77;
-    CGFloat containerHeight = 520.0;
+    CGFloat containerWidth = FLMCenteredCardWidth;
+    CGFloat containerHeight = FLMCenteredCardHeight;
     CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
     BOOL landscape = width > height;
     CGFloat originX = 0.0;
     if (landscape) {
-        CGFloat portraitRatio = (390.0 * 0.77) / 520.0;
+        CGFloat portraitRatio = FLMCenteredCardWidth / FLMCenteredCardHeight;
         CGFloat verticalMargin = 16.0;
         containerHeight = MAX(240.0, height - verticalMargin * 2.0);
         containerWidth = containerHeight * portraitRatio;
@@ -3999,6 +4062,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self restoreFloatingHandleInteraction];
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
+    self.floatingSceneUsesCardGeometry = YES;
+    self.floatingSceneCardGeometryPending = NO;
+    self.floatingSceneCardGeometryCommitted = YES;
+    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"card-restore"];
     [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
     if (self.floatingKeyboardSessionCounter == 0) {
@@ -4221,13 +4288,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // The Scene always keeps the complete display-sized logical coordinate
-    // space. The card is only a visual viewport, so fit the whole host
-    // uniformly inside it. This scales text and every other descendant
-    // together instead of relaying out the Scene at compact card dimensions.
+    BOOL cardGeometry = self.floatingSceneUsesCardGeometry &&
+                        !self.floatingInteractiveFullscreenTransition &&
+                        self.floatingSceneCardGeometryCommitted &&
+                        !self.floatingSceneCardGeometryPending;
+    // During launch and fullscreen handoff the Scene keeps the complete
+    // display-sized logical coordinate space so the current application-style
+    // activation and keyboard owner remain stable. Once the card transaction
+    // is acknowledged, the same Scene becomes a real 300.3x520 card Scene;
+    // the host is then 1:1 with the card and UIKit relayouts the app naturally.
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
-                        : MIN(widthScale, heightScale);
+                        : (cardGeometry ? MIN(widthScale, heightScale)
+                                         : MIN(widthScale, heightScale));
     scale = MAX(0.05, scale);
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0.0,
@@ -4239,18 +4312,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.clipsToBounds = NO;
     host.transform = CGAffineTransformMakeScale(scale, scale);
     FLMEnqueueDiagnosticLine(
-        @"sb content-scale policy=card-fit reference={%.1f,%.1f} target={%.1f,%.1f} scale=%.5f logicalScene=fullscreen",
+        @"sb content-scale policy=%@ reference={%.1f,%.1f} target={%.1f,%.1f} scale=%.5f logicalScene=%@",
+        cardGeometry ? @"card-1to1" : @"fullscreen-fit",
         referenceSize.width,
         referenceSize.height,
         targetSize.width,
         targetSize.height,
-        scale);
+        scale,
+        cardGeometry ? @"card" : @"fullscreen");
     FLMPublishKeyboardCardGeometry(
         self.floatingKeyboardSessionGeneration,
         CGRectGetMaxY(self.floatingContainer.frame),
         scale,
         !self.floatingWindow.hidden && !self.floatingDocked &&
-            self.floatingKeyboardSessionGeneration != 0);
+            self.floatingKeyboardSessionGeneration != 0 && cardGeometry);
 }
 
 - (BOOL)propagateFloatingKeyboardScenePairing:(id)keyboardScene
@@ -4466,6 +4541,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMEnqueueDiagnosticLine(@"sb host-update rejected=inactive");
         return;
     }
+    if (![self floatingApplicationHostReadyForKeyboardRoute]) {
+        self.floatingKeyboardDeferredHostView = hostView;
+        self.floatingKeyboardDeferredScene = scene;
+        self.floatingKeyboardDeferredSessionGeneration = sessionGeneration;
+        FLMEnqueueDiagnosticLine(
+            @"sb host-deferred waiting=application-host session=%lu host=%p scene=%@ cardPending=%d cardCommitted=%d launch=%lu",
+            (unsigned long)sessionGeneration, (__bridge void *)hostView,
+            FLMSceneIdentifier(scene) ?: @"<none>",
+            self.floatingSceneCardGeometryPending,
+            self.floatingSceneCardGeometryCommitted,
+            (unsigned long)self.floatingLaunchState);
+        return;
+    }
 
     id owningScene = nil;
     id keyboardScene = nil;
@@ -4567,6 +4655,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardVisible, NSStringFromCGRect(hostView.frame),
         self.keyboardForwardingWindow.windowLevel,
         self.keyboardForwardingWindow.isKeyWindow);
+    [self flushDeferredFloatingKeyboardHostIfReady];
+    [self flushPendingFloatingKeyboardFrameIfReady];
 }
 
 - (void)deactivateKeyboardForwardingWindow {
@@ -4611,6 +4701,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
+    self.floatingKeyboardDeferredHostView = nil;
+    self.floatingKeyboardDeferredScene = nil;
+    self.floatingKeyboardDeferredSessionGeneration = 0;
     [self deactivateKeyboardForwardingWindow];
     FLMEnqueueDiagnosticLine(
         @"sb host-restore host=%p originalSuperview=%p",
@@ -4627,9 +4720,111 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardOriginalSuperview = nil;
     self.floatingKeyboardOriginalSubviewIndex = NSNotFound;
     self.floatingKeyboardHostSessionGeneration = 0;
+    self.floatingKeyboardDeferredHostView = nil;
+    self.floatingKeyboardDeferredScene = nil;
+    self.floatingKeyboardDeferredSessionGeneration = 0;
     [self deactivateKeyboardForwardingWindow];
     FLMEnqueueDiagnosticLine(@"sb host-discard host=%p",
                              (__bridge void *)hostView);
+}
+
+- (BOOL)floatingApplicationHostReadyForKeyboardRoute {
+    if (self.floatingWindow.hidden || self.floatingDocked ||
+        self.floatingKeyboardSessionGeneration == 0 ||
+        !self.floatingIdentifier.length || !self.floatingScene ||
+        !self.floatingHostView ||
+        self.floatingLaunchState != FLMFloatingLaunchStateAttached) {
+        return NO;
+    }
+    if (self.floatingInteractiveFullscreenTransition) {
+        return YES;
+    }
+    if (self.floatingSceneCardGeometryPending) {
+        return NO;
+    }
+    if (self.floatingSceneUsesCardGeometry &&
+        !self.floatingSceneCardGeometryCommitted) {
+        return NO;
+    }
+    return YES;
+}
+
+- (void)flushDeferredFloatingKeyboardHostIfReady {
+    UIView *deferredHost = self.floatingKeyboardDeferredHostView;
+    NSUInteger deferredSession =
+        self.floatingKeyboardDeferredSessionGeneration;
+    id deferredScene = self.floatingKeyboardDeferredScene;
+    if (!deferredHost) {
+        self.floatingKeyboardDeferredScene = nil;
+        self.floatingKeyboardDeferredSessionGeneration = 0;
+        return;
+    }
+    if (deferredSession == 0 ||
+        deferredSession != self.floatingKeyboardSessionGeneration) {
+        FLMEnqueueDiagnosticLine(
+            @"sb host-deferred discard=stale pendingSession=%lu current=%lu host=%p",
+            (unsigned long)deferredSession,
+            (unsigned long)self.floatingKeyboardSessionGeneration,
+            (__bridge void *)deferredHost);
+        self.floatingKeyboardDeferredHostView = nil;
+        self.floatingKeyboardDeferredScene = nil;
+        self.floatingKeyboardDeferredSessionGeneration = 0;
+        return;
+    }
+    if (![self floatingApplicationHostReadyForKeyboardRoute]) {
+        return;
+    }
+    self.floatingKeyboardDeferredHostView = nil;
+    self.floatingKeyboardDeferredScene = nil;
+    self.floatingKeyboardDeferredSessionGeneration = 0;
+    FLMEnqueueDiagnosticLine(
+        @"sb host-deferred replay=1 session=%lu host=%p scene=%@",
+        (unsigned long)deferredSession, (__bridge void *)deferredHost,
+        FLMSceneIdentifier(deferredScene) ?: @"<none>");
+    [self keyboardLayerHostView:deferredHost
+              didUpdateForScene:deferredScene
+              sessionGeneration:deferredSession];
+}
+
+- (BOOL)floatingKeyboardPresentationReady {
+    if (![self floatingApplicationHostReadyForKeyboardRoute] ||
+        !self.floatingKeyboardLayerHostView ||
+        self.floatingKeyboardHostSessionGeneration !=
+            self.floatingKeyboardSessionGeneration) {
+        return NO;
+    }
+    return YES;
+}
+
+- (void)flushPendingFloatingKeyboardFrameIfReady {
+    if (!self.floatingKeyboardFramePending) {
+        return;
+    }
+    NSUInteger pendingSession = self.floatingKeyboardPendingSessionGeneration;
+    if (pendingSession == 0 ||
+        pendingSession != self.floatingKeyboardSessionGeneration) {
+        FLMEnqueueDiagnosticLine(
+            @"sb frame-deferred discard=stale pendingSession=%lu current=%lu",
+            (unsigned long)pendingSession,
+            (unsigned long)self.floatingKeyboardSessionGeneration);
+        self.floatingKeyboardFramePending = NO;
+        self.floatingKeyboardPendingFrame = CGRectNull;
+        self.floatingKeyboardPendingSessionGeneration = 0;
+        return;
+    }
+    if (![self floatingKeyboardPresentationReady]) {
+        return;
+    }
+    CGRect pendingFrame = self.floatingKeyboardPendingFrame;
+    self.floatingKeyboardFramePending = NO;
+    self.floatingKeyboardPendingFrame = CGRectNull;
+    self.floatingKeyboardPendingSessionGeneration = 0;
+    FLMEnqueueDiagnosticLine(
+        @"sb frame-deferred replay=1 session=%lu frame=%@ host=%p cardCommitted=%d",
+        (unsigned long)pendingSession, NSStringFromCGRect(pendingFrame),
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        self.floatingSceneCardGeometryCommitted);
+    [self applyKeyboardFrame:pendingFrame visible:YES];
 }
 
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible {
@@ -4644,6 +4839,42 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             (unsigned long)self.floatingKeyboardSessionGeneration,
             FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
             NSStringFromCGRect(frame));
+        return;
+    }
+    if (visible && ![self floatingKeyboardPresentationReady]) {
+        self.floatingKeyboardFramePending = YES;
+        self.floatingKeyboardPendingFrame = frame;
+        self.floatingKeyboardPendingSessionGeneration =
+            self.floatingKeyboardSessionGeneration;
+        FLMEnqueueDiagnosticLine(
+            @"sb frame-deferred waiting=scene-host session=%lu frame=%@ appHost=%p keyboardHost=%p cardPending=%d cardCommitted=%d launch=%lu",
+            (unsigned long)self.floatingKeyboardSessionGeneration,
+            NSStringFromCGRect(frame), (__bridge void *)self.floatingHostView,
+            (__bridge void *)self.floatingKeyboardLayerHostView,
+            self.floatingSceneCardGeometryPending,
+            self.floatingSceneCardGeometryCommitted,
+            (unsigned long)self.floatingLaunchState);
+        return;
+    }
+    if (!visible && !self.floatingKeyboardVisible &&
+        !self.floatingKeyboardInteractionSessionActive &&
+        ![self floatingKeyboardPresentationReady]) {
+        if (self.floatingKeyboardFramePending) {
+            FLMEnqueueDiagnosticLine(
+                @"sb frame-deferred hide=1 pendingSession=%lu current=%lu",
+                (unsigned long)self.floatingKeyboardPendingSessionGeneration,
+                (unsigned long)self.floatingKeyboardSessionGeneration);
+        }
+        self.floatingKeyboardFramePending = NO;
+        self.floatingKeyboardPendingFrame = CGRectNull;
+        self.floatingKeyboardPendingSessionGeneration = 0;
+        return;
+    }
+    if (!visible && ![self floatingKeyboardPresentationReady] &&
+        !self.floatingKeyboardVisible) {
+        self.floatingKeyboardFramePending = NO;
+        self.floatingKeyboardPendingFrame = CGRectNull;
+        self.floatingKeyboardPendingSessionGeneration = 0;
         return;
     }
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
@@ -4759,9 +4990,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (__bridge void *)self.floatingKeyboardLayerHostView,
         self.floatingIdentifier ?: @"<none>",
         FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
+    self.floatingKeyboardFramePending = NO;
+    self.floatingKeyboardPendingFrame = CGRectNull;
+    self.floatingKeyboardPendingSessionGeneration = 0;
+    self.floatingKeyboardDeferredHostView = nil;
+    self.floatingKeyboardDeferredScene = nil;
+    self.floatingKeyboardDeferredSessionGeneration = 0;
     if (endingSession == 0) {
         [self deactivateKeyboardForwardingWindow];
         [self endFloatingKeyboardInteractionSession];
+        self.floatingKeyboardMaximumVisibleHeight = 0.0;
         return;
     }
     [self.floatingHostView endEditing:YES];
@@ -4954,10 +5192,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingSceneReferenceSize {
-    // Keep the remote Scene at the complete display-sized logical coordinate
-    // space in every presentation state. The centered card scales this host
-    // visually in layoutFloatingHostView, which keeps all text and controls
-    // proportional and prevents a compact Scene from cropping its contents.
+    // Launch and fullscreen handoff use display-sized coordinates so the
+    // application is promoted with the same full-screen-like identity that
+    // made external keyboard routing reliable. After the presenter is ready,
+    // the centered card commits its real fixed Scene geometry and UIKit lays
+    // out the app at the card dimensions.
+    if (self.floatingSceneUsesCardGeometry &&
+        !self.floatingInteractiveFullscreenTransition) {
+        CGSize cardSize = self.floatingContainer.bounds.size;
+        if (cardSize.width > 1.0 && cardSize.height > 1.0) {
+            return cardSize;
+        }
+    }
     CGRect displayBounds = FLMVisualScreenBounds();
     CGSize size = displayBounds.size;
     if (size.width < 1.0 || size.height < 1.0) {
@@ -4995,15 +5241,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [scene updateSettings:mutableSettings withTransitionContext:nil];
         self.floatingHostReferenceSize = logicalSize;
         FLMEnqueueDiagnosticLine(
-            @"sb scene-frame policy=fullscreen logical={%.1f,%.1f} card=%@ requested=%@",
+            @"sb scene-frame policy=%@ logical={%.1f,%.1f} card=%@ requested=%@",
+            (self.floatingSceneUsesCardGeometry &&
+             !self.floatingInteractiveFullscreenTransition)
+                ? @"card"
+                : @"fullscreen",
             logicalSize.width, logicalSize.height,
             NSStringFromCGRect(self.floatingContainer.frame),
             policy ?: @"unknown");
         return YES;
     } @catch (__unused NSException *exception) {
         FLMEnqueueDiagnosticLine(
-            @"sb scene-frame policy=fullscreen rejected=exception card=%@ requested=%@",
-            NSStringFromCGRect(self.floatingContainer.frame), policy ?: @"unknown");
+            @"sb scene-frame policy=%@ rejected=exception card=%@ requested=%@",
+            (self.floatingSceneUsesCardGeometry &&
+             !self.floatingInteractiveFullscreenTransition)
+                ? @"card"
+                : @"fullscreen",
+            NSStringFromCGRect(self.floatingContainer.frame),
+            policy ?: @"unknown");
         return NO;
     }
 }
@@ -5136,9 +5391,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [mutableSettings setBackgrounded:NO];
         }
         CGSize logicalSceneSize = [self floatingSceneReferenceSize];
-        // The remote Scene deliberately stays at display-sized logical bounds
-        // for both centered-card presentation and fullscreen handoff. Only the
-        // local card viewport changes, so the content can be uniformly scaled.
+        NSString *sceneFramePolicy =
+            (self.floatingSceneUsesCardGeometry &&
+             !self.floatingInteractiveFullscreenTransition)
+                ? @"card"
+                : @"fullscreen";
         if (logicalSceneSize.width > 0.0 && logicalSceneSize.height > 0.0 &&
             [mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings
@@ -5147,11 +5404,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                     logicalSceneSize.width,
                                     logicalSceneSize.height)];
             FLMEnqueueDiagnosticLine(
-                @"sb scene-frame policy=fullscreen logical={%.1f,%.1f} card=%@ requested=%@",
+                @"sb scene-frame policy=%@ logical={%.1f,%.1f} card=%@ requested=%@",
+                sceneFramePolicy,
                 logicalSceneSize.width,
                 logicalSceneSize.height,
                 NSStringFromCGRect(self.floatingContainer.frame),
-                @"fullscreen");
+                sceneFramePolicy);
         }
         BOOL landscapeWindow =
             CGRectGetWidth(self.floatingWindow.bounds) >
@@ -5353,6 +5611,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL alreadyPrewarmed =
         [self.prewarmedIdentifier isEqualToString:identifier];
     self.prewarmedIdentifier = nil;
+    if (self.floatingKeyboardSessionGeneration != 0) {
+        // End the old route while its original Scene/host are still retained;
+        // assigning the new target first would make stale cleanup operate on
+        // the wrong application generation.
+        [self endFloatingKeyboardSession];
+    }
 
     self.floatingDockWidth = FLMMinimumDockWidth;
     self.floatingReconnectSuppressed = NO;
@@ -5361,9 +5625,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
-    // Keep the remote Scene display-sized for the complete lifetime of the
-    // card. The card viewport performs the visual uniform fit after the host
-    // is attached, so text and controls scale with the card as one surface.
+    // Promote the target with the display-sized Scene first so it retains the
+    // full-screen application-style activation and keyboard ownership. The
+    // fixed card Scene is committed only after the presenter is attached;
+    // this separates route establishment from geometry/layout.
+    self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = YES;
+    self.floatingSceneCardGeometryCommitted = NO;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
@@ -5393,6 +5661,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardFramePending = NO;
+    self.floatingKeyboardPendingFrame = CGRectNull;
+    self.floatingKeyboardPendingSessionGeneration = 0;
     self.floatingExclusiveTapEligible = NO;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
@@ -5417,6 +5688,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingKeyboardSessionGeneration =
         self.floatingKeyboardSessionCounter;
+    self.floatingSceneGeometryCommitGeneration = generation;
     FLMEnqueueDiagnosticLine(
         @"sb centered-open app=%@ launchGen=%lu session=%lu prewarmed=%d previousHost=%p",
         identifier, (unsigned long)generation,
@@ -5602,18 +5874,155 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
     [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
-    // Do not run the old compact-Scene commit here. It changed the host
-    // bounds to the card size and then reset the keyboard route, which is the
-    // source of both the missing content and intermittent input avoidance in
-    // 0.8.49. The host is already attached at the display-sized logical frame;
-    // layoutFloatingHostView has applied the card-fit transform above.
+    if (self.floatingSceneCardGeometryPending) {
+        // The current application-style Scene/keyboard route is already
+        // established. Commit only the card geometry now, without clearing or
+        // republishing the route; the launch cover stays above the host until
+        // UIKit acknowledges the compact frame.
+        [self commitFloatingCardSceneGeometryForIdentifier:identifier
+                                                 generation:generation
+                                                    attempt:0];
+    } else {
+        [self flushDeferredFloatingKeyboardHostIfReady];
+        [self flushPendingFloatingKeyboardFrameIfReady];
+        [self revealFloatingContentForGeneration:generation];
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f} cardCommitted=%d",
+            identifier, (unsigned long)generation, (unsigned long)attempt,
+            (__bridge void *)host, NSStringFromCGRect(host.bounds),
+            self.floatingHostReferenceSize.width,
+            self.floatingHostReferenceSize.height,
+            self.floatingSceneCardGeometryCommitted);
+    }
+}
+
+- (BOOL)floatingSceneLogicalFrameMatchesCard {
+    id scene = self.floatingScene;
+    CGSize cardSize = self.floatingContainer.bounds.size;
+    if (!scene || cardSize.width <= 1.0 || cardSize.height <= 1.0) {
+        return NO;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id frameValue = [settings respondsToSelector:@selector(valueForKey:)]
+                            ? [settings valueForKey:@"frame"]
+                            : nil;
+        if (![frameValue isKindOfClass:[NSValue class]]) {
+            return NO;
+        }
+        CGRect frame = [frameValue CGRectValue];
+        return fabs(CGRectGetWidth(frame) - cardSize.width) <= 1.0 &&
+               fabs(CGRectGetHeight(frame) - cardSize.height) <= 1.0;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+- (void)commitFloatingCardSceneGeometryForIdentifier:(NSString *)identifier
+                                           generation:(NSUInteger)generation
+                                              attempt:(NSUInteger)attempt {
+    if (generation != self.floatingLaunchGeneration ||
+        ![identifier isEqualToString:self.floatingIdentifier] ||
+        self.floatingWindow.hidden || !self.floatingHostView ||
+        !self.floatingSceneCardGeometryPending) {
+        return;
+    }
+    self.floatingSceneGeometryCommitGeneration = generation;
+    CGSize displayReference = self.floatingHostReferenceSize;
+    if (displayReference.width <= 1.0 || displayReference.height <= 1.0) {
+        displayReference = [self floatingSceneReferenceSize];
+    }
+    self.floatingSceneUsesCardGeometry = YES;
+    BOOL applied =
+        [self applyFloatingSceneLogicalFrameForCurrentPresentation:
+                  @"card-commit-request"];
+    // Keep the attached display-sized host in the existing route until the
+    // Scene settings transaction is observable. This prevents a partial
+    // relayout from being exposed and keeps the keyboard owner unchanged.
+    self.floatingHostReferenceSize = displayReference;
+    [self layoutFloatingHostView];
+    FLMEnqueueDiagnosticLine(
+        @"sb scene-card commit-request generation=%lu attempt=%lu applied=%d logical={%.1f,%.1f} host=%@ routeSession=%lu",
+        (unsigned long)generation, (unsigned long)attempt, applied,
+        CGRectGetWidth(self.floatingContainer.bounds),
+        CGRectGetHeight(self.floatingContainer.bounds),
+        NSStringFromCGRect(self.floatingHostView.bounds),
+        (unsigned long)self.floatingKeyboardSessionGeneration);
+
+    if (!applied && attempt >= 8) {
+        [self finishFloatingCardSceneGeometryCommitForIdentifier:identifier
+                                                         generation:generation
+                                                            attempt:attempt];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(FLMFloatingSceneSettleDelay *
+                                           NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self finishFloatingCardSceneGeometryCommitForIdentifier:identifier
+                                                         generation:generation
+                                                            attempt:attempt + 1];
+    });
+}
+
+- (void)finishFloatingCardSceneGeometryCommitForIdentifier:(NSString *)identifier
+                                                  generation:(NSUInteger)generation
+                                                     attempt:(NSUInteger)attempt {
+    if (generation != self.floatingLaunchGeneration ||
+        ![identifier isEqualToString:self.floatingIdentifier] ||
+        self.floatingWindow.hidden || !self.floatingHostView ||
+        !self.floatingSceneCardGeometryPending) {
+        return;
+    }
+    BOOL committed = [self floatingSceneLogicalFrameMatchesCard];
+    if (!committed && attempt < 8) {
+        [self commitFloatingCardSceneGeometryForIdentifier:identifier
+                                                 generation:generation
+                                                    attempt:attempt];
+        return;
+    }
+    if (!committed) {
+        // A private Scene may reject a compact frame during lifecycle churn.
+        // Keep the proven full-screen route as a bounded fallback rather than
+        // exposing a half-laid-out card or leaving the launch cover forever.
+        self.floatingSceneUsesCardGeometry = NO;
+        self.floatingSceneCardGeometryPending = NO;
+        self.floatingSceneCardGeometryCommitted = NO;
+        [self applyFloatingSceneLogicalFrameForCurrentPresentation:
+                  @"card-commit-fallback-fullscreen"];
+        [self layoutFloatingHostView];
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-card commit-fallback=fullscreen generation=%lu attempt=%lu host=%@",
+            (unsigned long)generation, (unsigned long)attempt,
+            NSStringFromCGRect(self.floatingHostView.bounds));
+    } else {
+        self.floatingSceneCardGeometryPending = NO;
+        self.floatingSceneCardGeometryCommitted = YES;
+        self.floatingHostReferenceSize = self.floatingContainer.bounds.size;
+        [self layoutFloatingHostView];
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-card committed generation=%lu attempt=%lu logical={%.1f,%.1f} host=%@ routeSession=%lu",
+            (unsigned long)generation, (unsigned long)attempt,
+            CGRectGetWidth(self.floatingContainer.bounds),
+            CGRectGetHeight(self.floatingContainer.bounds),
+            NSStringFromCGRect(self.floatingHostView.bounds),
+            (unsigned long)self.floatingKeyboardSessionGeneration);
+    }
+
+    [self flushDeferredFloatingKeyboardHostIfReady];
+    [self flushPendingFloatingKeyboardFrameIfReady];
     [self revealFloatingContentForGeneration:generation];
     FLMEnqueueDiagnosticLine(
-        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f} card-fit=1",
+        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f} cardCommitted=%d routeSession=%lu",
         identifier, (unsigned long)generation, (unsigned long)attempt,
-        (__bridge void *)host, NSStringFromCGRect(host.bounds),
+        (__bridge void *)self.floatingHostView,
+        NSStringFromCGRect(self.floatingHostView.bounds),
         self.floatingHostReferenceSize.width,
-        self.floatingHostReferenceSize.height);
+        self.floatingHostReferenceSize.height,
+        self.floatingSceneCardGeometryCommitted,
+        (unsigned long)self.floatingKeyboardSessionGeneration);
 }
 
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
@@ -5646,6 +6055,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
     self.floatingLaunchStartedAt = 0.0;
     self.floatingScenePreparedAt = 0.0;
+    self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = NO;
+    self.floatingSceneCardGeometryCommitted = NO;
     [self.floatingInteractiveSnapshot removeFromSuperview];
     self.floatingInteractiveSnapshot = nil;
     self.floatingInteractiveSnapshotBackground = nil;
@@ -5960,4 +6372,3 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         notify_post(FLYME_RUNTIME_NOTIFICATION);
     }
 }
-

@@ -18,10 +18,19 @@ required_source=(
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
     "floatingFullscreenProgress"
-    "scene-frame policy=fullscreen"
-    "content-scale policy=card-fit"
-    "logicalScene=fullscreen"
-    "card-fit=1"
+    "scene-frame policy=%@"
+    "content-scale policy=%@"
+    "logicalScene=%@"
+    "floatingSceneUsesCardGeometry"
+    "floatingSceneCardGeometryPending"
+    "floatingSceneCardGeometryCommitted"
+    "scene-card commit-request"
+    "scene-card committed"
+    "floatingKeyboardFramePending"
+    "frame-deferred waiting=scene-host"
+    "host-deferred waiting=application-host"
+    "frame-deferred replay=1"
+    "card-restore keyboard-session-restored"
     "floatingHostReferenceSize"
     "applyFloatingSceneLogicalFrameForCurrentPresentation"
     "geometryProgress"
@@ -76,12 +85,8 @@ removed_source=(
     "widthProgress"
     "verticalProgress"
     "fillScale"
-    "scene-frame policy=card"
-    "scene-card commit-request"
-    "scene-card committed"
-    "card-commit-fallback"
-    "floatingSceneCardGeometryPending"
-    "floatingSceneCardGeometryCommitted"
+    "content-scale policy=card-fit"
+    "card-fit=1"
 )
 
 for marker in "${removed_source[@]}"; do
@@ -130,4 +135,3 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
 fi
 
 echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
-

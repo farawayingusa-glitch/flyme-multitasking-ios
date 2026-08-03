@@ -5,11 +5,12 @@
 
 #import "FLMDiagnostics.h"
 
-// SpringBoard owns the real keyboard Scene and its touch routing.  This UIKit
-// client never resizes the application Scene or moves the floating card.  It
-// only tells UIKit the full-screen keyboard reference size and the logical
-// overlap seen by the active floating application, allowing the application to
-// perform its normal responder/input-bar avoidance.
+// SpringBoard owns the real keyboard Scene and its touch routing. This UIKit
+// client does not resize the card or the system keyboard; SpringBoard changes
+// the target application Scene geometry and publishes the current logical
+// overlap. UIKit keeps the physical keyboard reference full-screen while the
+// application performs its normal responder/input-bar avoidance in its active
+// card Scene.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
