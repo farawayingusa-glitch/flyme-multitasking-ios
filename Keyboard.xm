@@ -10,10 +10,9 @@
 // only after the shared route identifies the current card target. The card is
 // a presentation transform; it must never become the keyboard's coordinate
 // system. UIKit therefore receives the display-sized reference (390x844 on
-// the target device), while the app-side content adapter uses
-// the locked physical card viewport (300.3x520). The card is already the
-// presentation viewport; do not introduce a second 390x675.3247 logical
-// canvas or a second content transform here.
+// the target device), while the app-side content adapter uses the content
+// viewport (390x675.324675). SpringBoard then applies the single uniform
+// 0.77 presentation transform, producing the locked 300.3x520 physical card.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -65,10 +64,10 @@ static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
 static const CGSize FLMContentLogicalViewportSize = {
-    300.3,
-    520.0,
+    390.0,
+    675.3246753246753,
 };
-static const CGFloat FLMContentExternalScale = 1.0;
+static const CGFloat FLMContentExternalScale = 0.77;
 static const CGSize FLMPhysicalCardSize = {
     300.3,
     520.0,
@@ -317,8 +316,9 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
             continue;
         }
         // Never use the hosted window/card bounds here. The hosted content
-        // view is 300.3x520 in centered presentation, but keyboard avoidance
-        // must remain in the application's display-sized 390x844 space.
+        // view is 390x675.324675 before the single 0.77 card transform, but
+        // keyboard avoidance must remain in the application's display-sized
+        // 390x844 space.
         return FLMPhysicalReferenceBoundsForScene(windowScene);
     }
     CGSize size = FLMFullPhysicalScreenSize();

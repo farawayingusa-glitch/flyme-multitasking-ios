@@ -8,6 +8,7 @@ on:
       - main
       - codex/0.8.54-fullscreen-scene-content-viewport
       - codex/0.8.55-locked-card-content-viewport
+      - codex/0.8.56-card-scale-077
 
 jobs:
   build:
@@ -51,11 +52,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/Flyme-Multitasking_0.8.55_iphoneos-arm64.deb
+          cp "$package" artifacts/Flyme-Multitasking_0.8.56_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Flyme-Multitasking-0.8.55
-          path: artifacts/Flyme-Multitasking_0.8.55_iphoneos-arm64.deb
+          name: Flyme-Multitasking-0.8.56
+          path: artifacts/Flyme-Multitasking_0.8.56_iphoneos-arm64.deb
           if-no-files-found: error

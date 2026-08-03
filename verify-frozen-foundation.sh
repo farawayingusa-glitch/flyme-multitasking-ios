@@ -35,9 +35,9 @@ required_source=(
     "floatingQueuedIdentifier"
     "sb centered-close cleanup-once"
     "sb presenter-stale-retry"
-    "FLMVirtualViewportWidth = 300.3"
-    "FLMVirtualViewportScale = 1.0"
-    "FLMVirtualViewportHeight = 520.0"
+    "FLMVirtualViewportWidth = 390.0"
+    "FLMVirtualViewportScale = 0.77"
+    "FLMVirtualViewportHeight = 675.3246753246753"
     "keyboardPassThroughFrame"
     "floatingKeyboardSessionGeneration"
     "sb frame-apply rejected=inactive-session"
@@ -108,7 +108,7 @@ required_keyboard_source=(
     "FLMDiagnosticEventAdapterReady"
     "FLMApplicationProcessIdentityFlags"
     "FLMContentLogicalViewportSize"
-    "FLMContentExternalScale = 1.0"
+    "FLMContentExternalScale = 0.77"
     "FLMContentViewportAdapter"
     "FLMHandleKeyboardRouteNotification"
 )
@@ -140,4 +140,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation, locked 300.3x520 content viewport, generic keyboard route, and serialized close verified"
+echo "frozen gesture foundation, 390x675.324675 logical viewport at 0.77 to 300.3x520, generic keyboard route, and serialized close verified"
