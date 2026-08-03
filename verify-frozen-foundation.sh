@@ -85,7 +85,8 @@ required_keyboard_source=(
 )
 
 grep -Fq -- 'scene-frame policy=fullscreen' "$source_file"
-grep -Fq -- 'uniformly scaled into the card' "$source_file"
+grep -Fq -- 'virtual-viewport-fit' "$source_file"
+grep -Fq -- 'FLMVirtualViewportHeight' "$source_file"
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 
@@ -97,9 +98,9 @@ for marker in "${required_keyboard_source[@]}"; do
 done
 
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
-grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
-if grep -Eq 'com.apple.UIKit|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard adapter filter must target the exact WeChat bundle" >&2
+grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
+if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard adapter filter must use UIKit injection with in-process WeChat gating" >&2
     exit 1
 fi
 

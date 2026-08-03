@@ -49,10 +49,17 @@ static CGFloat FLMKeyboardCardBottom = 0.0;
 static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static int FLMKeyboardAppCtorToken = -1;
 static int FLMKeyboardAppReadyToken = -1;
+static BOOL FLMKeyboardHooksInstalled = NO;
+static BOOL FLMKeyboardIdentityRetryScheduled = NO;
+static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
+static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
+static NSUInteger FLMKeyboardIdentityRetryCount = 0;
+static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+static void FLMAttemptKeyboardInitialization(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -119,25 +126,32 @@ static BOOL FLMProcessIsKeyboardExtension(void) {
 
 static uint16_t FLMWeChatProcessIdentityFlags(void) {
     static NSString *const bundleIdentifier = @"com.tencent.xin";
-    BOOL containsBundle = NO;
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    NSString *mainBundleIdentifier = mainBundle.bundleIdentifier;
+    BOOL mainBundleMatches =
+        [mainBundleIdentifier isEqualToString:bundleIdentifier];
+    BOOL containsBundle = mainBundleMatches;
     for (NSBundle *bundle in [NSBundle allBundles]) {
         if ([bundle.bundleIdentifier isEqualToString:bundleIdentifier]) {
             containsBundle = YES;
             break;
         }
     }
-    if (!containsBundle &&
-        [[NSBundle mainBundle].bundleIdentifier isEqualToString:bundleIdentifier]) {
-        containsBundle = YES;
-    }
 
     NSString *processName = [NSProcessInfo processInfo].processName;
-    NSString *executableName =
-        [NSBundle mainBundle].executablePath.lastPathComponent;
-    BOOL executableMatches =
-        [processName isEqualToString:@"WeChat"] ||
-        [executableName isEqualToString:@"WeChat"];
-    return (containsBundle ? 1U : 0U) | (executableMatches ? 2U : 0U);
+    NSString *executableName = mainBundle.executablePath.lastPathComponent;
+    BOOL processMatches = [processName isEqualToString:@"WeChat"];
+    BOOL executableMatches = [executableName isEqualToString:@"WeChat"];
+
+    // Bits 0 and 1 retain the v47 meaning used by SpringBoard diagnostics:
+    // a matching loaded bundle and a matching process/executable.  The high
+    // bits make the next log distinguish a strict main-bundle match from a
+    // merely loaded WeChat bundle, and process-name from executable matches.
+    return (containsBundle ? 1U : 0U) |
+           ((processMatches || executableMatches) ? 2U : 0U) |
+           (mainBundleMatches ? 4U : 0U) |
+           (processMatches ? 8U : 0U) |
+           (executableMatches ? 16U : 0U);
 }
 
 // The original TrollOpen keyboard adapter is filtered through UIKit, not the
@@ -146,7 +160,34 @@ static uint16_t FLMWeChatProcessIdentityFlags(void) {
 // Do not initialise hooks, notify state, or UI access unless both independent
 // checks prove that this is WeChat's main process.
 static BOOL FLMIsTargetWeChatProcess(void) {
-    return (FLMWeChatProcessIdentityFlags() & 3U) == 3U;
+    uint16_t flags = FLMWeChatProcessIdentityFlags();
+    // Do not treat a WeChat framework loaded into another process as the app.
+    // The main bundle must identify WeChat and the current process must carry
+    // the WeChat executable identity.  A temporary failure is retried below.
+    return (flags & 4U) != 0 && (flags & 2U) != 0;
+}
+
+static void FLMPublishKeyboardRawLoadDiagnostic(void) {
+    uint16_t flags = FLMWeChatProcessIdentityFlags();
+    if (FLMKeyboardRawLoadDiagnosticPublished &&
+        flags == FLMKeyboardLastIdentityFlags) {
+        return;
+    }
+    FLMKeyboardRawLoadDiagnosticPublished = YES;
+    FLMKeyboardLastIdentityFlags = flags;
+
+    // This is deliberately the only pre-gate side effect.  It contains no
+    // UI access, hook installation, route registration, or shared-state read.
+    // A raw adapter-loaded event proves that the dylib reached this process;
+    // its identity bits show whether the later target gate was premature.
+    FLMDiagnosticRole role = (flags & 3U) == 3U
+                                 ? FLMDiagnosticRoleApplication
+                                 : FLMDiagnosticRoleUIKitOther;
+    FLMPublishDiagnosticEvent(role,
+                              FLMDiagnosticEventAdapterLoaded,
+                              0,
+                              flags,
+                              (uint16_t)(getpid() & 0xFFFF));
 }
 
 static CGSize FLMFullPhysicalScreenSize(void) {
@@ -632,64 +673,106 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
     FLMRemoteKeyboardGeometryInstalled = YES;
 }
 
+static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
+    if (FLMKeyboardHooksInstalled || !FLMIsTargetWeChatProcess()) {
+        return;
+    }
+    FLMKeyboardHooksInstalled = YES;
+
+    // The two independent notify states make a failed device run
+    // unambiguous: no ctor token means no target-gated initialization; ctor
+    // without ready means initialization did not complete.  The raw-loaded
+    // diagnostic published before this function additionally distinguishes a
+    // missing injection from a constructor that ran before identity settled.
+    FLMPublishKeyboardAppLifecycleStage(
+        FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
+        &FLMKeyboardAppCtorToken,
+        FLYME_KEYBOARD_APP_CTOR_MAGIC,
+        FLMDiagnosticEventAdapterCtor);
+    %init;
+    notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
+                             &FLMKeyboardRouteToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardRoute();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                             &FLMKeyboardSceneToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardRoute();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                             &FLMKeyboardSessionToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardRoute();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
+                             &FLMKeyboardAvoidanceToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardAvoidance();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
+                             &FLMKeyboardCardGeometryToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardCardGeometry();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
+                             &FLMKeyboardSharedStateToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMReloadKeyboardRoute();
+                             });
+    FLMInstallRemoteKeyboardGeometryIfAvailable();
+    FLMReloadKeyboardRoute();
+    FLMPublishKeyboardAppLifecycleStage(
+        FLYME_KEYBOARD_APP_READY_NOTIFICATION,
+        &FLMKeyboardAppReadyToken,
+        FLYME_KEYBOARD_APP_READY_MAGIC,
+        FLMDiagnosticEventAdapterReady);
+}
+
+static void FLMScheduleKeyboardIdentityRetry(void) {
+    if (FLMKeyboardHooksInstalled || FLMKeyboardIdentityRetryScheduled ||
+        FLMKeyboardIdentityRetryCount >= FLMKeyboardIdentityRetryLimit) {
+        return;
+    }
+    FLMKeyboardIdentityRetryScheduled = YES;
+    NSUInteger attempt = ++FLMKeyboardIdentityRetryCount;
+    NSTimeInterval delay = MIN(2.0, 0.10 * pow(2.0, (double)attempt));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       FLMKeyboardIdentityRetryScheduled = NO;
+                       FLMPublishKeyboardRawLoadDiagnostic();
+                       FLMAttemptKeyboardInitialization();
+                   });
+}
+
+static void FLMAttemptKeyboardInitialization(void) {
+    if (FLMKeyboardHooksInstalled) {
+        return;
+    }
+    FLMPublishKeyboardRawLoadDiagnostic();
+    if (!FLMIsTargetWeChatProcess()) {
+        // Constructor-time identity can be incomplete.  Keep the pre-gate
+        // path diagnostic-only and retry on the main queue; non-target
+        // processes never install Logos groups or register route observers.
+        FLMScheduleKeyboardIdentityRetry();
+        return;
+    }
+    FLMRegisterKeyboardNotificationsAndInitialize();
+}
+
 %ctor {
     @autoreleasepool {
-        if (!FLMIsTargetWeChatProcess()) {
-            return;
-        }
-        // The two independent notify states make a failed device run
-        // unambiguous: no ctor token means no injection; ctor without ready
-        // means initialization did not complete; both mean SpringBoard can
-        // validate the exact build and live process without relying on logs
-        // written from the sandboxed application.
-        FLMPublishKeyboardAppLifecycleStage(
-            FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
-            &FLMKeyboardAppCtorToken,
-            FLYME_KEYBOARD_APP_CTOR_MAGIC,
-            FLMDiagnosticEventAdapterCtor);
-        %init;
-        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
-                                 &FLMKeyboardRouteToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardRoute();
-        });
-        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
-                                 &FLMKeyboardSceneToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardRoute();
-        });
-        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
-                                 &FLMKeyboardSessionToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardRoute();
-        });
-        notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
-                                 &FLMKeyboardAvoidanceToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardAvoidance();
-        });
-        notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
-                                 &FLMKeyboardCardGeometryToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardCardGeometry();
-        });
-        notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
-                                 &FLMKeyboardSharedStateToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-            FLMReloadKeyboardRoute();
-        });
-        FLMInstallRemoteKeyboardGeometryIfAvailable();
-        FLMReloadKeyboardRoute();
-        FLMPublishKeyboardAppLifecycleStage(
-            FLYME_KEYBOARD_APP_READY_NOTIFICATION,
-            &FLMKeyboardAppReadyToken,
-            FLYME_KEYBOARD_APP_READY_MAGIC,
-            FLMDiagnosticEventAdapterReady);
+        // This first call is intentionally safe even when the filter injects
+        // the dylib into UIKit clients before WeChat has a complete bundle
+        // identity.  All functional setup remains behind the strict gate.
+        FLMPublishKeyboardRawLoadDiagnostic();
+        FLMAttemptKeyboardInitialization();
     }
 }
