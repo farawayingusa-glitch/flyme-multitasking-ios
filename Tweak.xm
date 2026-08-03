@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.56 schema=17");
+                    @"logger-ready build=0.8.57 schema=17");
             }
         });
     });
@@ -233,18 +233,19 @@ static const CGFloat FLMMinimumDockWidth = 156.0;
 static const CGFloat FLMMaximumDockWidth = 270.0;
 static const CGFloat FLMDockSideMargin = 10.0;
 static const CGFloat FLMDockTopMargin = 8.0;
-// The centered card is deliberately fixed for the target device. Keep this
-// physical geometry independent from Scene, keyboard, safe-area, application,
-// and orientation changes.
-static const CGFloat FLMCenteredCardWidth = 300.3;
-static const CGFloat FLMCenteredCardHeight = 520.0;
-// The app content viewport is a logical 390x675.324675 canvas. The single
-// presentation transform maps it to the locked 300.3x520 physical card at
-// 0.77. The Scene itself remains display-sized for activation, responder
-// ownership, and keyboard semantics.
+// The centered card keeps the full-screen application's aspect ratio while
+// using a simple 300 pt width. 300 * 844 / 390 = 649.2307692307692.
+// Keep this physical geometry independent from Scene, keyboard, safe-area,
+// application, and orientation changes.
+static const CGFloat FLMCenteredCardWidth = 300.0;
+static const CGFloat FLMCenteredCardHeight = 649.2307692307692;
+// The app content viewport is the display-sized 390x844 canvas. The single
+// proportional presentation transform maps it to the 300x649.230769 physical
+// card at 0.769230769. The Scene and keyboard keep the same full-screen
+// coordinate system as the application.
 static const CGFloat FLMVirtualViewportWidth = 390.0;
-static const CGFloat FLMVirtualViewportScale = 0.77;
-static const CGFloat FLMVirtualViewportHeight = 675.3246753246753;
+static const CGFloat FLMVirtualViewportScale = 0.7692307692307693;
+static const CGFloat FLMVirtualViewportHeight = 844.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
@@ -4276,10 +4277,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // The real application Scene remains display-sized for the complete
-    // centered-card lifetime. Only this presentation host adopts the
-    // 390x675.324675 content viewport and applies the single 0.77 transform
-    // to the fixed physical card (300.3x520).
+    // The real application Scene and the presentation host both use the
+    // display-sized 390x844 reference. One proportional transform maps it to
+    // the fixed physical card (300x649.230769), so the bottom is not clipped.
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
                         : MIN(widthScale, heightScale);
@@ -5194,9 +5194,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingContentViewportReferenceSize {
-    // This reference belongs only to the app content/presentation host. It
-    // is the pre-transform logical viewport; the target container remains the
-    // locked 300.3x520 physical card without changing the app Scene.
+    // This reference belongs to the app content/presentation host. It is the
+    // full-screen logical viewport; the target container remains the locked
+    // 300x649.230769 physical card without changing the app Scene.
     if (self.floatingSceneUsesCardGeometry &&
         !self.floatingInteractiveFullscreenTransition) {
         return CGSizeMake(FLMVirtualViewportWidth,
@@ -5632,8 +5632,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.userInteractionEnabled = YES;
     // The host starts with the display-sized Scene reference while the route
     // is being established. Once the card presentation commits, this host
-    // uses the 390x675.324675 pre-transform content viewport; the real Scene
-    // remains display-sized and the physical card remains fixed at 300.3x520.
+    // uses the 390x844 display-sized content viewport; the real Scene and the
+    // physical card keep the same aspect ratio, with the card fixed at
+    // 300x649.230769.
     host.clipsToBounds = NO;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
     FLMEnqueueDiagnosticLine(
