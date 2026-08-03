@@ -17,7 +17,7 @@ required_source=(
     "static const CGFloat FLMDefaultWheelIconSize = 56.0;"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
-    "single proportional recovery"
+    "floatingFullscreenProgress"
     "scene-frame policy=card"
     "floatingSceneUsesCardGeometry"
     "floatingSceneCardGeometryPending"
