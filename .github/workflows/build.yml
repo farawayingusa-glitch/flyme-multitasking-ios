@@ -48,11 +48,12 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/Flyme-Multitasking_0.8.48_iphoneos-arm64.deb
+          cp "$package" artifacts/Flyme-Multitasking_0.8.49_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Flyme-Multitasking-0.8.48
-          path: artifacts/Flyme-Multitasking_0.8.48_iphoneos-arm64.deb
+          name: Flyme-Multitasking-0.8.49
+          path: artifacts/Flyme-Multitasking_0.8.49_iphoneos-arm64.deb
           if-no-files-found: error
+
