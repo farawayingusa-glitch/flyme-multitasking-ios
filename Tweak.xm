@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 68428)
+Total output lines: 6143
+
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
@@ -216,7 +219,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.48 schema=16");
+                    @"logger-ready build=0.8.49 schema=17");
             }
         });
     });
@@ -987,6 +990,9 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
 @property(nonatomic, assign) BOOL floatingSceneUsesCardGeometry;
+@property(nonatomic, assign) BOOL floatingSceneCardGeometryPending;
+@property(nonatomic, assign) BOOL floatingSceneCardGeometryCommitted;
+@property(nonatomic, assign) NSUInteger floatingSceneGeometryCommitGeneration;
 @property(nonatomic, assign) CGFloat floatingFullscreenProgress;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshot;
 @property(nonatomic, strong) UIView *floatingInteractiveSnapshotBackground;
@@ -1103,8 +1109,14 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)protectedSceneDidDisappear:(NSNotification *)notification;
 - (void)openFloatingIdentifier:(NSString *)identifier;
 - (void)attachFloatingIdentifier:(NSString *)identifier
-                      generation:(NSUInteger)generation
-                           attempt:(NSUInteger)attempt;
+                       generation:(NSUInteger)generation
+                          attempt:(NSUInteger)attempt;
+- (void)commitFloatingCardSceneGeometryForIdentifier:(NSString *)identifier
+                                           generation:(NSUInteger)generation
+                                              attempt:(NSUInteger)attempt;
+- (void)finishFloatingCardSceneGeometryCommitForIdentifier:(NSString *)identifier
+                                                  generation:(NSUInteger)generation
+                                                     attempt:(NSUInteger)attempt;
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
                               generation:(NSUInteger)generation;
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
@@ -1119,6 +1131,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)layoutFloatingHostView;
 - (CGSize)floatingSceneReferenceSize;
 - (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy;
+- (BOOL)floatingSceneLogicalFrameMatchesCard;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -1788,7 +1801,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingWindow.rootViewController.view addSubview:self.floatingContainer];
 
     self.floatingStatusLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.floatingStatusLabel.text = @"正在打开…";
+    self.floatingStatusLabel.text = @"姝ｅ湪鎵撳紑鈥?;
     self.floatingStatusLabel.textAlignment = NSTextAlignmentCenter;
     self.floatingStatusLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
@@ -2294,1644 +2307,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
     self.overlayWindow.userInteractionEnabled = NO;
-    NSMutableArray<FLMWheelItemView *> *views = [NSMutableArray array];
-    CGRect bounds = FLMVisualScreenBounds();
-    CGFloat width = CGRectGetWidth(bounds);
-    CGFloat height = CGRectGetHeight(bounds);
-    CGPoint anchor = CGPointMake(fromRight ? width - 4.0 : 4.0, height - 4.0);
-    NSArray<NSNumber *> *ringCounts =
-        [self itemCountsByRingForCount:self.itemIdentifiers.count];
-    CGFloat fullStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullAngleSpan = fullEndAngle - fullStartAngle;
-    CGFloat safeCenterMargin = self.wheelIconSize * 0.5 + 10.0;
-    CGFloat maximumRadiusByWidth =
-        (width - 4.0 - safeCenterMargin) / cos(fullEndAngle);
-    CGFloat maximumRadiusByHeight =
-        (height - 4.0 - safeCenterMargin) / fabs(sin(fullStartAngle));
-    CGFloat maximumRadius = MAX(120.0, MIN(maximumRadiusByWidth,
-                                           maximumRadiusByHeight));
-    CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);
-    CGFloat ringSpacing = 0.0;
-    if (ringCounts.count > 1) {
-        CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
-        CGFloat desiredSpacing = self.wheelIconSize + 20.0;
-        CGFloat minimumSpacing = self.wheelIconSize + 6.0;
-        CGFloat desiredOuterRadius = firstRadius + desiredSpacing * ringIntervals;
-        if (desiredOuterRadius <= maximumRadius) {
-            ringSpacing = desiredSpacing;
-        } else {
-            firstRadius =
-                MIN(firstRadius,
-                    MAX(132.0, maximumRadius - minimumSpacing * ringIntervals));
-            ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
-        }
-    }
-
-    NSUInteger itemIndex = 0;
-    for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
-        NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
-        CGFloat radius = firstRadius + (CGFloat)ring * ringSpacing;
-        for (NSUInteger position = 0; position < ringCount; position++) {
-            CGFloat fraction = ringCount == 1
-                                   ? 0.5
-                                   : (CGFloat)position / (CGFloat)(ringCount - 1);
-            CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
-            CGFloat leftX = 4.0 + radius * cos(angle);
-            CGFloat centerX = fromRight ? width - leftX : leftX;
-            CGFloat centerY = anchor.y + radius * sin(angle);
-            NSString *identifier = self.itemIdentifiers[itemIndex++];
-            FLMWheelItemView *item =
-                [[FLMWheelItemView alloc] initWithIdentifier:identifier
-                                                       image:FLMApplicationIcon(identifier)
-                                                        size:self.wheelIconSize];
-            item.center = CGPointMake(centerX, centerY);
-            item.alpha = 0.0;
-            item.transform = CGAffineTransformMakeScale(0.42, 0.42);
-            [self.wheelContainer addSubview:item];
-            [views addObject:item];
-        }
-    }
-    self.itemViews = views;
-
-    self.overlayWindow.hidden = NO;
-    self.wheelContainer.alpha = 1.0;
-    [self.itemViews enumerateObjectsUsingBlock:^(
-                        FLMWheelItemView *item, NSUInteger index, BOOL *stop) {
-        (void)stop;
-        [UIView animateWithDuration:0.44
-                              delay:MIN((NSTimeInterval)index * 0.018, 0.12)
-             usingSpringWithDamping:0.72
-              initialSpringVelocity:0.55
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:^{
-                             item.alpha = 1.0;
-                             item.transform = CGAffineTransformIdentity;
-                         }
-                         completion:nil];
-    }];
-}
-
-- (void)updateHighlightForPoint:(CGPoint)point {
-    FLMWheelItemView *nearest =
-        [self itemNearPoint:point
-            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
-    if (nearest == self.highlightedItem) {
-        return;
-    }
-    self.highlightedItem.highlighted = NO;
-    self.highlightedItem = nearest;
-    self.highlightedItem.highlighted = YES;
-    if (@available(iOS 10.0, *)) {
-        if (nearest) {
-            UISelectionFeedbackGenerator *feedback =
-                [[UISelectionFeedbackGenerator alloc] init];
-            [feedback selectionChanged];
-        }
-    }
-}
-
-- (FLMWheelItemView *)itemNearPoint:(CGPoint)point maximumDistance:(CGFloat)distance {
-    FLMWheelItemView *nearest = nil;
-    CGFloat nearestDistance = CGFLOAT_MAX;
-    for (FLMWheelItemView *item in self.itemViews) {
-        CGFloat itemDistance = hypot(point.x - item.center.x, point.y - item.center.y);
-        if (itemDistance < nearestDistance) {
-            nearestDistance = itemDistance;
-            nearest = item;
-        }
-    }
-    return nearestDistance <= distance ? nearest : nil;
-}
-
-- (void)pinWheel {
-    if (self.overlayWindow.hidden) {
-        return;
-    }
-    self.highlightedItem.highlighted = NO;
-    self.highlightedItem = nil;
-    self.wheelPinned = YES;
-    self.overlayWindow.userInteractionEnabled = YES;
-    if (self.usesSystemGestureManager) {
-        self.modalGesture.enabled = YES;
-        self.wheelTapGesture.enabled = NO;
-    } else {
-        self.wheelTapGesture.enabled = YES;
-    }
-    [self beginLockMonitoring];
-    [UIView animateWithDuration:0.32
-                          delay:0.0
-         usingSpringWithDamping:0.76
-          initialSpringVelocity:0.25
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction
-                     animations:^{
-                         for (FLMWheelItemView *item in self.itemViews) {
-                             item.transform = CGAffineTransformIdentity;
-                             item.alpha = 1.0;
-                         }
-                     }
-                     completion:nil];
-}
-
-- (void)handleWheelTap:(UITapGestureRecognizer *)gesture {
-    if (!self.wheelPinned) {
-        return;
-    }
-    CGPoint point = [gesture locationInView:self.wheelContainer];
-    FLMWheelItemView *item =
-        [self itemNearPoint:point
-            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
-    [self dismissWheelLaunchingItem:item];
-}
-
-- (void)dismissWheelLaunchingItem:(FLMWheelItemView *)item {
-    NSString *selectedIdentifier = [item.identifier copy];
-    BOOL selectedIsCurrentFloating =
-        !self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
-        [selectedIdentifier isEqualToString:self.floatingIdentifier];
-    BOOL selectedIsFrontmost =
-        selectedIdentifier.length > 0 &&
-        [selectedIdentifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    if (selectedIdentifier.length > 0 && !selectedIsCurrentFloating &&
-        !selectedIsFrontmost &&
-        ![selectedIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM] &&
-        FLMPrewarmApplicationIdentifier(selectedIdentifier)) {
-        // Start the suspended scene while the wheel is completing its existing
-        // dismissal animation. This gives scene creation a 240 ms head start.
-        self.prewarmedIdentifier = selectedIdentifier;
-    } else {
-        self.prewarmedIdentifier = nil;
-    }
-    self.highlightedItem.highlighted = NO;
-    self.highlightedItem = nil;
-    self.wheelPinned = NO;
-    self.modalGesture.enabled = NO;
-    self.wheelTapGesture.enabled = YES;
-    self.overlayWindow.userInteractionEnabled = NO;
-    [self stopLockMonitoringIfIdle];
-    if (self.overlayWindow.hidden) {
-        if (item) {
-            [self activateIdentifier:item.identifier];
-        }
-        return;
-    }
-
-    [UIView animateWithDuration:0.24
-                          delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionCurveEaseIn
-                     animations:^{
-                         self.wheelContainer.alpha = 0.0;
-                         for (FLMWheelItemView *itemView in self.itemViews) {
-                             itemView.transform = CGAffineTransformMakeScale(0.78, 0.78);
-                             itemView.alpha = 0.0;
-                         }
-                     }
-                     completion:^(BOOL finished) {
-                         (void)finished;
-                         self.overlayWindow.hidden = YES;
-                         self.wheelContainer.alpha = 1.0;
-                         [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-                         self.itemViews = @[];
-                         if (item) {
-                             [self activateIdentifier:item.identifier];
-                         }
-                     }];
-}
-
-- (void)handleFloatingBackdropTap:(UIGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateEnded ||
-        self.floatingWindow.hidden) {
-        return;
-    }
-    FLMOutsideTapGestureRecognizer *outsideGesture =
-        (FLMOutsideTapGestureRecognizer *)gesture;
-    CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
-    FLMEnqueueDiagnosticLine(
-        @"sb backdrop-ended authorized=%d point={%.1f,%.1f} keyboardVisible=%d interaction=%d keyboardFrame=%@ card=%@",
-        outsideGesture.outsideCloseAuthorized, point.x, point.y,
-        self.floatingKeyboardVisible,
-        self.floatingKeyboardInteractionSessionActive,
-        NSStringFromCGRect([self floatingKeyboardInteractionFrame]),
-        NSStringFromCGRect(self.floatingContainer.frame));
-    if (outsideGesture.outsideCloseAuthorized) {
-        FLMEnqueueDiagnosticLine(@"sb close-reason=backdrop-tap");
-        [self closeFloatingWindowKeepingApplication:YES];
-    }
-}
-
-- (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
-    if (self.floatingWindow.hidden || self.floatingDocked) {
-        self.floatingExclusiveTapEligible = NO;
-        return;
-    }
-
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
-    switch (gesture.state) {
-        case UIGestureRecognizerStateBegan:
-            self.floatingExclusiveStartPoint =
-                ((FLMCornerGestureRecognizer *)gesture)
-                    .flmAuthorizedStartPoint;
-            self.floatingExclusiveStartTimestamp = CACurrentMediaTime();
-            self.floatingExclusiveTapEligible =
-                ((FLMCornerGestureRecognizer *)gesture)
-                    .flmOutsideCloseAuthorized &&
-                ((FLMCornerGestureRecognizer *)gesture)
-                        .flmFirstTouchTimestamp > 0.0;
-            FLMEnqueueDiagnosticLine(
-                @"sb exclusive-began authorized=%d eligible=%d delegatePoint={%.1f,%.1f} callbackPoint={%.1f,%.1f} keyboardVisible=%d interaction=%d currentDomain=%d",
-                ((FLMCornerGestureRecognizer *)gesture).flmOutsideCloseAuthorized,
-                self.floatingExclusiveTapEligible,
-                self.floatingExclusiveStartPoint.x,
-                self.floatingExclusiveStartPoint.y, point.x, point.y,
-                self.floatingKeyboardVisible,
-                self.floatingKeyboardInteractionSessionActive,
-                [self pointIsInsideFloatingInteractionDomain:point]);
-            break;
-        case UIGestureRecognizerStateChanged:
-            if (self.floatingExclusiveTapEligible &&
-                hypot(point.x - self.floatingExclusiveStartPoint.x,
-                      point.y - self.floatingExclusiveStartPoint.y) > 12.0) {
-                self.floatingExclusiveTapEligible = NO;
-            }
-            break;
-        case UIGestureRecognizerStateEnded: {
-            BOOL shouldClose =
-                self.floatingExclusiveTapEligible &&
-                CACurrentMediaTime() - self.floatingExclusiveStartTimestamp <= 0.35 &&
-                hypot(point.x - self.floatingExclusiveStartPoint.x,
-                      point.y - self.floatingExclusiveStartPoint.y) <= 12.0;
-            self.floatingExclusiveTapEligible = NO;
-            if (shouldClose && !self.floatingWindow.hidden && !self.floatingDocked &&
-                ((FLMCornerGestureRecognizer *)gesture)
-                    .flmOutsideCloseAuthorized) {
-                FLMEnqueueDiagnosticLine(
-                    @"sb close-reason=exclusive-tap point={%.1f,%.1f}",
-                    point.x, point.y);
-                [self closeFloatingWindowKeepingApplication:YES];
-            }
-            break;
-        }
-        case UIGestureRecognizerStateCancelled:
-        case UIGestureRecognizerStateFailed:
-            self.floatingExclusiveTapEligible = NO;
-            break;
-        default:
-            break;
-    }
-}
-
-- (void)activateFloatingDockDragForGeneration:(NSUInteger)generation {
-    if (generation != self.floatingDockInputGeneration ||
-        !self.floatingDocked || self.floatingWindow.hidden ||
-        self.floatingDockInputTargetsResize ||
-        (self.floatingDockInputGesture.state != UIGestureRecognizerStateBegan &&
-         self.floatingDockInputGesture.state != UIGestureRecognizerStateChanged)) {
-        return;
-    }
-    self.floatingDockGlobalDragActivated = YES;
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    [rootView bringSubviewToFront:self.floatingContainer];
-    [rootView bringSubviewToFront:self.floatingResizeHandle];
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *feedback =
-            [[UIImpactFeedbackGenerator alloc]
-                initWithStyle:UIImpactFeedbackStyleMedium];
-        [feedback impactOccurred];
-    }
-}
-
-- (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture {
-    if (!self.floatingDocked || self.floatingWindow.hidden) {
-        return;
-    }
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
-    self.floatingDockInputLatestPoint = point;
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        self.floatingDockInputGeneration += 1;
-        NSUInteger generation = self.floatingDockInputGeneration;
-        self.floatingDockInputTargetsResize =
-            [self floatingResizeControlContainsPoint:point];
-        self.floatingDockGlobalDragActivated = NO;
-        if (self.floatingDockInputTargetsResize) {
-            self.floatingResizeStartPoint = point;
-            self.floatingResizeInitialFrame = self.floatingContainer.frame;
-            self.floatingResizeCenterReady = NO;
-            if (@available(iOS 10.0, *)) {
-                UIImpactFeedbackGenerator *feedback =
-                    [[UIImpactFeedbackGenerator alloc]
-                        initWithStyle:UIImpactFeedbackStyleMedium];
-                [feedback impactOccurred];
-            }
-            [UIView animateWithDuration:0.14
-                             animations:^{
-                                 self.floatingResizeHandle.transform =
-                                     CGAffineTransformMakeScale(1.16, 1.16);
-                                 self.floatingResizeShapeLayer.opacity = 1.0;
-                             }];
-            return;
-        }
-
-        self.floatingDockDragStartPoint = point;
-        self.floatingDockDragInitialCenter = self.floatingContainer.center;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.10 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self activateFloatingDockDragForGeneration:generation];
-        });
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateChanged) {
-        if (self.floatingDockInputTargetsResize) {
-            CGFloat horizontalOutward =
-                self.floatingDockedOnRight
-                    ? self.floatingResizeStartPoint.x - point.x
-                    : point.x - self.floatingResizeStartPoint.x;
-            CGFloat verticalOutward = point.y - self.floatingResizeStartPoint.y;
-            CGFloat delta = (horizontalOutward + verticalOutward) * 0.5;
-            CGFloat requestedWidth =
-                CGRectGetWidth(self.floatingResizeInitialFrame) + delta;
-            CGFloat width = requestedWidth;
-            if (requestedWidth > FLMMaximumDockWidth) {
-                width =
-                    FLMMaximumDockWidth +
-                    MIN(16.0,
-                        (requestedWidth - FLMMaximumDockWidth) * 0.60);
-            }
-            width = MAX(FLMMinimumDockWidth, width);
-            if (!self.floatingResizeCenterReady && requestedWidth >= 286.0) {
-                self.floatingResizeCenterReady = YES;
-                if (@available(iOS 10.0, *)) {
-                    UIImpactFeedbackGenerator *feedback =
-                        [[UIImpactFeedbackGenerator alloc]
-                            initWithStyle:UIImpactFeedbackStyleMedium];
-                    [feedback impactOccurred];
-                }
-            } else if (self.floatingResizeCenterReady &&
-                       requestedWidth <= 278.0) {
-                self.floatingResizeCenterReady = NO;
-            }
-            CGRect centeredFrame = [self centeredFloatingFrame];
-            CGFloat aspectRatio =
-                CGRectGetWidth(centeredFrame) /
-                MAX(1.0, CGRectGetHeight(centeredFrame));
-            CGFloat height = width / MAX(0.1, aspectRatio);
-            CGFloat top = CGRectGetMinY(self.floatingResizeInitialFrame);
-            CGFloat anchorX =
-                self.floatingDockedOnRight
-                    ? CGRectGetMaxX(self.floatingResizeInitialFrame)
-                    : CGRectGetMinX(self.floatingResizeInitialFrame);
-            CGRect visualFrame =
-                CGRectMake(self.floatingDockedOnRight ? anchorX - width
-                                                      : anchorX,
-                           top,
-                           width,
-                           height);
-            CGFloat scale =
-                width / MAX(1.0, CGRectGetWidth(self.floatingResizeInitialFrame));
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            [UIView performWithoutAnimation:^{
-                self.floatingContainer.center =
-                    CGPointMake(CGRectGetMidX(visualFrame),
-                                CGRectGetMidY(visualFrame));
-                self.floatingContainer.transform =
-                    CGAffineTransformMakeScale(scale, scale);
-                self.floatingDockWidth = width;
-                [self updateFloatingDockAccessoryPositions];
-            }];
-            [CATransaction commit];
-            return;
-        }
-
-        CGFloat movement =
-            hypot(point.x - self.floatingDockDragStartPoint.x,
-                  point.y - self.floatingDockDragStartPoint.y);
-        if (!self.floatingDockGlobalDragActivated && movement >= 5.0) {
-            [self activateFloatingDockDragForGeneration:
-                      self.floatingDockInputGeneration];
-        }
-        if (self.floatingDockGlobalDragActivated) {
-            CGPoint delta =
-                CGPointMake(point.x - self.floatingDockDragStartPoint.x,
-                            point.y - self.floatingDockDragStartPoint.y);
-            CGRect bounds = rootView.bounds;
-            UIEdgeInsets safeInsets = rootView.safeAreaInsets;
-            CGFloat halfWidth =
-                CGRectGetWidth(self.floatingContainer.bounds) * 0.5;
-            CGFloat halfHeight =
-                CGRectGetHeight(self.floatingContainer.bounds) * 0.5;
-            CGPoint center =
-                CGPointMake(self.floatingDockDragInitialCenter.x + delta.x,
-                            self.floatingDockDragInitialCenter.y + delta.y);
-            center.x = MAX(halfWidth,
-                           MIN(CGRectGetWidth(bounds) - halfWidth, center.x));
-            center.y =
-                MAX(safeInsets.top + halfHeight,
-                    MIN(CGRectGetHeight(bounds) - safeInsets.bottom - halfHeight,
-                        center.y));
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            [UIView performWithoutAnimation:^{
-                self.floatingContainer.center = center;
-                [self updateFloatingDockAccessoryPositions];
-            }];
-            [CATransaction commit];
-        }
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateEnded ||
-        gesture.state == UIGestureRecognizerStateCancelled ||
-        gesture.state == UIGestureRecognizerStateFailed) {
-        self.floatingDockInputGeneration += 1;
-        if (self.floatingDockInputTargetsResize) {
-            [self normalizeFloatingContainerTransform];
-            BOOL restoreCentered =
-                gesture.state == UIGestureRecognizerStateEnded &&
-                self.floatingResizeCenterReady;
-            self.floatingResizeCenterReady = NO;
-            if (restoreCentered) {
-                self.floatingDockInputTargetsResize = NO;
-                self.floatingResizeHandle.transform =
-                    CGAffineTransformIdentity;
-                self.floatingResizeShapeLayer.opacity = 0.72;
-                [self transitionFloatingWindowToCentered];
-                return;
-            }
-            self.floatingDockWidth =
-                MAX(FLMMinimumDockWidth,
-                    MIN(FLMMaximumDockWidth, self.floatingDockWidth));
-            [self saveFloatingDockWidth];
-            CGRect target =
-                [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
-                                           width:self.floatingDockWidth];
-            [UIView animateWithDuration:0.18
-                                  delay:0.0
-                                options:UIViewAnimationOptionBeginFromCurrentState |
-                                        UIViewAnimationOptionCurveEaseOut |
-                                        UIViewAnimationOptionAllowUserInteraction
-                             animations:^{
-                                 self.floatingContainer.frame = target;
-                                 self.floatingResizeHandle.transform =
-                                     CGAffineTransformIdentity;
-                                 self.floatingResizeShapeLayer.opacity = 0.72;
-                                 [self layoutFloatingHostView];
-                                 [self layoutFloatingDockShadow];
-                                 [self layoutFloatingResizeHandle];
-                             }
-                             completion:nil];
-            self.floatingDockInputTargetsResize = NO;
-            return;
-        }
-
-        if (self.floatingDockGlobalDragActivated) {
-            self.floatingDockGlobalDragActivated = NO;
-            [self snapDockedFloatingWindowUsingTouchPoint:point];
-            return;
-        }
-        CGFloat movement =
-            hypot(point.x - self.floatingDockDragStartPoint.x,
-                  point.y - self.floatingDockDragStartPoint.y);
-        if (gesture.state == UIGestureRecognizerStateEnded && movement < 5.0) {
-            if (@available(iOS 10.0, *)) {
-                UIImpactFeedbackGenerator *feedback =
-                    [[UIImpactFeedbackGenerator alloc]
-                        initWithStyle:UIImpactFeedbackStyleLight];
-                [feedback impactOccurred];
-            }
-            [self transitionFloatingWindowToCentered];
-        }
-    }
-}
-
-- (void)handleFloatingHandleTap:(UITapGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateEnded ||
-        self.floatingWindow.hidden) {
-        return;
-    }
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *feedback =
-            [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [feedback impactOccurred];
-    }
-    [UIView animateWithDuration:0.10
-                     animations:^{
-                         self.floatingHandleBar.alpha = 1.0;
-                         self.floatingHandleBar.transform =
-                             CGAffineTransformMakeScale(1.10, 1.28);
-                     }
-                     completion:^(BOOL finished) {
-                         (void)finished;
-                         [UIView animateWithDuration:0.18
-                                          animations:^{
-                                              self.floatingHandleBar.alpha = 1.0;
-                                              self.floatingHandleBar.transform =
-                                                  CGAffineTransformIdentity;
-                                          }];
-                     }];
-}
-
-- (void)handleFloatingDockTap:(UITapGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateEnded ||
-        !self.floatingDocked || self.floatingWindow.hidden) {
-        return;
-    }
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *feedback =
-            [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [feedback impactOccurred];
-    }
-    [self transitionFloatingWindowToCentered];
-}
-
-- (void)handleFloatingDockDragPress:(UILongPressGestureRecognizer *)gesture {
-    if (!self.floatingDocked || self.floatingWindow.hidden) {
-        return;
-    }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGPoint point = [gesture locationInView:rootView];
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        self.floatingDockDragStartPoint = point;
-        self.floatingDockDragInitialCenter = self.floatingContainer.center;
-        [rootView bringSubviewToFront:self.floatingContainer];
-        [rootView bringSubviewToFront:self.floatingResizeHandle];
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *feedback =
-                [[UIImpactFeedbackGenerator alloc]
-                    initWithStyle:UIImpactFeedbackStyleMedium];
-            [feedback impactOccurred];
-        }
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateChanged) {
-        CGPoint delta =
-            CGPointMake(point.x - self.floatingDockDragStartPoint.x,
-                        point.y - self.floatingDockDragStartPoint.y);
-        CGRect bounds = rootView.bounds;
-        UIEdgeInsets safeInsets = rootView.safeAreaInsets;
-        CGFloat halfWidth = CGRectGetWidth(self.floatingContainer.bounds) * 0.5;
-        CGFloat halfHeight = CGRectGetHeight(self.floatingContainer.bounds) * 0.5;
-        CGPoint center =
-            CGPointMake(self.floatingDockDragInitialCenter.x + delta.x,
-                        self.floatingDockDragInitialCenter.y + delta.y);
-        center.x = MAX(halfWidth,
-                       MIN(CGRectGetWidth(bounds) - halfWidth, center.x));
-        center.y = MAX(safeInsets.top + halfHeight,
-                       MIN(CGRectGetHeight(bounds) - safeInsets.bottom - halfHeight,
-                           center.y));
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        [UIView performWithoutAnimation:^{
-            self.floatingContainer.center = center;
-            [self updateFloatingDockAccessoryPositions];
-        }];
-        [CATransaction commit];
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateEnded ||
-        gesture.state == UIGestureRecognizerStateCancelled ||
-        gesture.state == UIGestureRecognizerStateFailed) {
-        [self snapDockedFloatingWindowUsingTouchPoint:point];
-    }
-}
-
-- (void)handleFloatingResizePress:(UILongPressGestureRecognizer *)gesture {
-    if (!self.floatingDocked || self.floatingWindow.hidden) {
-        return;
-    }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGPoint point = [gesture locationInView:rootView];
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        self.floatingResizeStartPoint = point;
-        self.floatingResizeInitialFrame = self.floatingContainer.frame;
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *feedback =
-                [[UIImpactFeedbackGenerator alloc]
-                    initWithStyle:UIImpactFeedbackStyleMedium];
-            [feedback impactOccurred];
-        }
-        [UIView animateWithDuration:0.14
-                         animations:^{
-                             self.floatingResizeHandle.transform =
-                                 CGAffineTransformMakeScale(1.16, 1.16);
-                             self.floatingResizeShapeLayer.opacity = 1.0;
-                         }];
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateChanged) {
-        CGFloat horizontalOutward =
-            self.floatingDockedOnRight
-                ? self.floatingResizeStartPoint.x - point.x
-                : point.x - self.floatingResizeStartPoint.x;
-        CGFloat verticalOutward = point.y - self.floatingResizeStartPoint.y;
-        CGFloat delta = (horizontalOutward + verticalOutward) * 0.5;
-        CGFloat width =
-            MAX(FLMMinimumDockWidth,
-                MIN(FLMMaximumDockWidth,
-                    CGRectGetWidth(self.floatingResizeInitialFrame) + delta));
-        CGRect centeredFrame = [self centeredFloatingFrame];
-        CGFloat aspectRatio =
-            CGRectGetWidth(centeredFrame) / MAX(1.0, CGRectGetHeight(centeredFrame));
-        CGFloat height = width / MAX(0.1, aspectRatio);
-        CGFloat top = CGRectGetMinY(self.floatingResizeInitialFrame);
-        CGFloat anchorX =
-            self.floatingDockedOnRight
-                ? CGRectGetMaxX(self.floatingResizeInitialFrame)
-                : CGRectGetMinX(self.floatingResizeInitialFrame);
-        CGRect visualFrame =
-            CGRectMake(self.floatingDockedOnRight ? anchorX - width : anchorX,
-                       top,
-                       width,
-                       height);
-        CGFloat scale =
-            width / MAX(1.0, CGRectGetWidth(self.floatingResizeInitialFrame));
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        [UIView performWithoutAnimation:^{
-            self.floatingContainer.center =
-                CGPointMake(CGRectGetMidX(visualFrame), CGRectGetMidY(visualFrame));
-            self.floatingContainer.transform =
-                CGAffineTransformMakeScale(scale, scale);
-            self.floatingDockWidth = width;
-            [self updateFloatingDockAccessoryPositions];
-        }];
-        [CATransaction commit];
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateEnded ||
-        gesture.state == UIGestureRecognizerStateCancelled ||
-        gesture.state == UIGestureRecognizerStateFailed) {
-        [self normalizeFloatingContainerTransform];
-        [self saveFloatingDockWidth];
-        [UIView animateWithDuration:0.28
-                              delay:0.0
-             usingSpringWithDamping:0.72
-              initialSpringVelocity:0.35
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:^{
-                             self.floatingResizeHandle.transform =
-                                 CGAffineTransformIdentity;
-                             self.floatingResizeShapeLayer.opacity = 0.72;
-                         }
-                         completion:nil];
-    }
-}
-
-- (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
-    if (self.floatingDocked) {
-        return;
-    }
-    self.floatingHostView.userInteractionEnabled = !blocked;
-    self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-    self.floatingDockInteractionShield.hidden = !blocked;
-    self.floatingDockInteractionShield.userInteractionEnabled = blocked;
-    if (blocked) {
-        [self.floatingContainer
-            bringSubviewToFront:self.floatingDockInteractionShield];
-    }
-}
-
-- (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress {
-    UIView *wrapper = self.floatingInteractiveSnapshot;
-    UIView *background = self.floatingInteractiveSnapshotBackground;
-    UIView *content = self.floatingInteractiveSnapshotContent;
-    if (!wrapper || !content) {
-        return;
-    }
-    progress = MIN(1.0, MAX(0.0, progress));
-    CGRect start = self.floatingHandleInitialContainerFrame;
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    if (CGRectGetWidth(start) < 1.0 || CGRectGetHeight(start) < 1.0) {
-        return;
-    }
-    self.floatingFullscreenProgress = progress;
-
-    // The card and the display now share one aspect ratio, so fullscreen is a
-    // single proportional recovery: every edge moves continuously from the
-    // card frame to the display frame.  The previous width-stage/height-stage
-    // reveal made the finger-driven gesture look like two separate animations.
-    CGFloat geometryProgress = progress;
-    CGFloat minX = CGRectGetMinX(start) +
-                   (CGRectGetMinX(bounds) - CGRectGetMinX(start)) *
-                       geometryProgress;
-    CGFloat minY = CGRectGetMinY(start) +
-                   (CGRectGetMinY(bounds) - CGRectGetMinY(start)) *
-                       geometryProgress;
-    CGFloat width = CGRectGetWidth(start) +
-                    (CGRectGetWidth(bounds) - CGRectGetWidth(start)) *
-                        geometryProgress;
-    CGFloat height = CGRectGetHeight(start) +
-                     (CGRectGetHeight(bounds) - CGRectGetHeight(start)) *
-                         geometryProgress;
-    CGRect frame = CGRectMake(minX, minY, width, height);
-    wrapper.transform = CGAffineTransformIdentity;
-    wrapper.frame = frame;
-    wrapper.layer.cornerRadius = 18.0 * (1.0 - progress);
-
-    CGFloat uniformScale = CGRectGetWidth(frame) /
-                           MAX(1.0, CGRectGetWidth(start));
-    CGPoint localCenter =
-        CGPointMake(CGRectGetMidX(wrapper.bounds), CGRectGetMidY(wrapper.bounds));
-    content.center = localCenter;
-    content.transform = CGAffineTransformMakeScale(uniformScale, uniformScale);
-    if (background) {
-        background.center = localCenter;
-        background.transform =
-            CGAffineTransformMakeScale(uniformScale, uniformScale);
-    }
-    // The proportional foreground remains visible for the complete gesture.
-    // The optional duplicate is kept only as a snapshot fallback and follows
-    // the same transform; it must never aspect-fill or create a second stage.
-    content.alpha = 1.0;
-    background.alpha = 0.0;
-
-    // The real container remains hidden but tracks exactly the same bounded
-    // geometry, which keeps the handle and final handoff spatially continuous.
-    self.floatingContainer.transform = CGAffineTransformIdentity;
-    self.floatingContainer.frame = frame;
-}
-
-- (void)prepareFloatingSceneForInteractiveFullscreen {
-    if (self.floatingInteractiveScenePrepared) {
-        return;
-    }
-    self.floatingInteractiveScenePrepared = YES;
-    self.floatingInteractiveFullscreenTransition = YES;
-    self.floatingFullscreenProgress = 0.0;
-
-    UIView *content =
-        [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
-    if (!content) {
-        content = [[UIView alloc] initWithFrame:self.floatingContainer.bounds];
-        content.backgroundColor = [UIColor blackColor];
-    }
-    UIView *background =
-        [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
-    CGRect start = self.floatingHandleInitialContainerFrame;
-    UIView *wrapper = [[UIView alloc] initWithFrame:start];
-    wrapper.backgroundColor = [UIColor clearColor];
-    wrapper.autoresizingMask = UIViewAutoresizingNone;
-    wrapper.userInteractionEnabled = NO;
-    wrapper.clipsToBounds = YES;
-    wrapper.layer.cornerRadius = 18.0;
-    CGRect sourceBounds = CGRectMake(0.0,
-                                     0.0,
-                                     CGRectGetWidth(start),
-                                     CGRectGetHeight(start));
-    if (background) {
-        background.bounds = sourceBounds;
-        background.center = CGPointMake(CGRectGetMidX(wrapper.bounds),
-                                        CGRectGetMidY(wrapper.bounds));
-        background.autoresizingMask = UIViewAutoresizingNone;
-        background.userInteractionEnabled = NO;
-        background.alpha = 0.0;
-        [wrapper addSubview:background];
-    }
-    content.bounds = sourceBounds;
-    content.center = CGPointMake(CGRectGetMidX(wrapper.bounds),
-                                 CGRectGetMidY(wrapper.bounds));
-    content.autoresizingMask = UIViewAutoresizingNone;
-    content.userInteractionEnabled = NO;
-    [wrapper addSubview:content];
-    [self.floatingWindow.rootViewController.view addSubview:wrapper];
-    [self.floatingWindow.rootViewController.view
-        bringSubviewToFront:self.floatingHandle];
-    self.floatingInteractiveSnapshot = wrapper;
-    self.floatingInteractiveSnapshotBackground = background;
-    self.floatingInteractiveSnapshotContent = content;
-    self.floatingContainer.alpha = 0.0;
-    [self updateFloatingFullscreenSnapshotForProgress:0.0];
-
-    // The live Scene is now covered by the same card snapshot. Give the
-    // application its real fullscreen bounds before SpringBoard promotes it,
-    // so the final handoff does not expose a stale compact layout.
-    self.floatingSceneUsesCardGeometry = NO;
-    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"fullscreen-handoff"];
-    [self layoutFloatingHostView];
-}
-
-- (void)restoreFloatingSceneAfterCancelledTransition {
-    if (!self.floatingInteractiveScenePrepared &&
-        !self.floatingInteractiveSnapshot) {
-        return;
-    }
-    [self.floatingInteractiveSnapshot removeFromSuperview];
-    self.floatingInteractiveSnapshot = nil;
-    self.floatingInteractiveSnapshotBackground = nil;
-    self.floatingInteractiveSnapshotContent = nil;
-    self.floatingInteractiveScenePrepared = NO;
-    self.floatingInteractiveFullscreenTransition = NO;
-    self.floatingFullscreenProgress = 0.0;
-    self.floatingSceneUsesCardGeometry = YES;
-    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"card-restore"];
-    self.floatingContainer.alpha = 1.0;
-    self.floatingContainer.transform = CGAffineTransformIdentity;
-    if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
-        self.floatingContainer.frame = self.floatingHandleInitialContainerFrame;
-    }
-    [self layoutFloatingHostView];
-}
-
-- (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
-    if (self.floatingWindow.hidden) {
-        return;
-    }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGPoint point = [gesture locationInView:rootView];
-    CGRect bounds = rootView.bounds;
-    BOOL landscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        // A centered card always starts a new dock gesture at the fixed
-        // minimum size. Resizing a prior dock is intentionally not remembered.
-        self.floatingDockWidth = FLMMinimumDockWidth;
-        self.floatingHandleStartPoint = point;
-        self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
-        self.floatingHandleMoved = NO;
-        self.floatingDockTransitionActive = NO;
-        self.floatingInteractiveScenePrepared = NO;
-        [self setFloatingApplicationInputBlocked:NO];
-        [self setFloatingDockReady:NO animated:NO];
-        [UIView animateWithDuration:0.12
-                         animations:^{
-                             self.floatingHandleBar.alpha = 1.0;
-                             self.floatingHandleBar.transform =
-                                 landscape
-                                     ? CGAffineTransformMakeScale(1.28, 1.06)
-                                     : CGAffineTransformMakeScale(1.06, 1.28);
-                         }];
-        return;
-    }
-
-    CGFloat primaryMovement =
-        landscape ? point.x - self.floatingHandleStartPoint.x
-                  : point.y - self.floatingHandleStartPoint.y;
-    CGFloat crossMovement =
-        landscape ? point.y - self.floatingHandleStartPoint.y
-                  : point.x - self.floatingHandleStartPoint.x;
-
-    if (gesture.state == UIGestureRecognizerStateChanged) {
-        if (landscape) {
-            BOOL directionIsPrimary =
-                fabs(primaryMovement) >= fabs(crossMovement) * 0.55;
-            if (directionIsPrimary && primaryMovement >= 3.0) {
-                self.floatingHandleMoved = YES;
-                self.floatingDockTransitionActive = NO;
-                if (!self.floatingInteractiveScenePrepared) {
-                    [self prepareFloatingSceneForInteractiveFullscreen];
-                }
-                CGFloat available =
-                    MAX(1.0,
-                        CGRectGetWidth(bounds) -
-                            CGRectGetMaxX(self.floatingHandleInitialContainerFrame));
-                CGFloat progress =
-                    MIN(1.0, MAX(0.0, primaryMovement / available));
-                [self updateFloatingFullscreenSnapshotForProgress:progress];
-                self.floatingDimView.alpha = 1.0 - progress;
-                self.floatingHandle.alpha =
-                    1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-                [self layoutFloatingHandleForCurrentContainer];
-            } else {
-                CGFloat resistance =
-                    MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
-                self.floatingHandleBar.transform =
-                    CGAffineTransformMakeTranslation(resistance, 0.0);
-            }
-            return;
-        }
-
-        if (primaryMovement <= -3.0) {
-            if (self.floatingInteractiveScenePrepared) {
-                [self restoreFloatingSceneAfterCancelledTransition];
-            }
-            [self setFloatingApplicationInputBlocked:YES];
-            self.floatingHandleMoved = YES;
-            self.floatingDockTransitionActive = YES;
-            CGRect start = self.floatingHandleInitialContainerFrame;
-            CGRect dockTarget =
-                [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
-            CGFloat available = FLMCenteredDockActivationDistance;
-            CGFloat progress =
-                MIN(1.0, MAX(0.0, -primaryMovement / available));
-            CGFloat width =
-                CGRectGetWidth(start) +
-                (CGRectGetWidth(dockTarget) - CGRectGetWidth(start)) * progress;
-            CGFloat scale = width / MAX(1.0, CGRectGetWidth(start));
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            [UIView performWithoutAnimation:^{
-                self.floatingContainer.center =
-                    CGPointMake(CGRectGetMidX(start), CGRectGetMidY(start));
-                self.floatingContainer.transform =
-                    CGAffineTransformMakeScale(scale, scale);
-                self.floatingDockShadowView.center = self.floatingContainer.center;
-                self.floatingDockShadowView.transform =
-                    self.floatingContainer.transform;
-            }];
-            [CATransaction commit];
-            CGFloat visualCornerRadius =
-                18.0 + (16.0 - 18.0) * progress;
-            self.floatingContainer.layer.cornerRadius =
-                visualCornerRadius / MAX(0.01, scale);
-            self.floatingDimView.alpha = 1.0 - progress;
-            self.floatingDockShadowView.hidden = NO;
-            self.floatingDockShadowView.alpha = progress;
-            self.floatingHandle.alpha = 1.0;
-            [self layoutFloatingHandleForCurrentContainer];
-            [self layoutFloatingDockReadyIndicator];
-            if (!self.floatingDockReady && progress >= 1.0) {
-                if (@available(iOS 10.0, *)) {
-                    UIImpactFeedbackGenerator *feedback =
-                        [[UIImpactFeedbackGenerator alloc]
-                            initWithStyle:UIImpactFeedbackStyleMedium];
-                    [feedback impactOccurred];
-                }
-                [self setFloatingDockReady:YES animated:YES];
-            } else if (self.floatingDockReady && progress <= 0.90) {
-                [self setFloatingDockReady:NO animated:YES];
-            }
-        } else if (primaryMovement >= 3.0) {
-            [self setFloatingDockReady:NO animated:YES];
-            [self setFloatingApplicationInputBlocked:NO];
-            self.floatingHandleMoved = YES;
-            self.floatingDockTransitionActive = NO;
-            self.floatingDockShadowView.alpha = 0.0;
-            self.floatingDockShadowView.hidden = YES;
-            if (!self.floatingInteractiveScenePrepared) {
-                [self prepareFloatingSceneForInteractiveFullscreen];
-            }
-            CGFloat available =
-                MAX(1.0,
-                    CGRectGetHeight(bounds) -
-                        CGRectGetMaxY(self.floatingHandleInitialContainerFrame));
-            CGFloat progress = MIN(1.0, MAX(0.0, primaryMovement / available));
-            [self updateFloatingFullscreenSnapshotForProgress:progress];
-            self.floatingDimView.alpha = 1.0 - progress;
-            self.floatingHandle.alpha =
-                1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-            [self layoutFloatingHandleForCurrentContainer];
-        } else {
-            [self setFloatingDockReady:NO animated:YES];
-            [self setFloatingApplicationInputBlocked:NO];
-            if (self.floatingInteractiveScenePrepared) {
-                [self restoreFloatingSceneAfterCancelledTransition];
-            }
-            self.floatingDockTransitionActive = NO;
-            self.floatingContainer.transform = CGAffineTransformIdentity;
-            self.floatingContainer.frame =
-                self.floatingHandleInitialContainerFrame;
-            self.floatingDockShadowView.transform = CGAffineTransformIdentity;
-            self.floatingContainer.layer.cornerRadius = 18.0;
-            self.floatingDimView.alpha = 1.0;
-            self.floatingDockShadowView.alpha = 0.0;
-            self.floatingDockShadowView.hidden = YES;
-            self.floatingHandle.alpha = 1.0;
-            [self layoutFloatingHostView];
-            [self layoutFloatingHandleForCurrentContainer];
-        }
-        return;
-    }
-
-    if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
-        self.floatingDockReady && primaryMovement < 0.0) {
-        [self setFloatingDockReady:NO animated:YES];
-        [self transitionFloatingWindowToDocked];
-        return;
-    }
-    if (gesture.state == UIGestureRecognizerStateEnded &&
-        self.floatingHandleMoved && !self.floatingDockTransitionActive &&
-        primaryMovement > 0.0 &&
-        (landscape ||
-         point.y >= CGRectGetHeight(bounds) - 80.0)) {
-        [self setFloatingDockReady:NO animated:NO];
-        [self transitionFloatingWindowToFullscreen];
-        return;
-    }
-    [self setFloatingDockReady:NO animated:YES];
-    [self resetFloatingInteractiveLayoutAnimated:YES];
-}
-
-- (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
-    [self setFloatingDockReady:NO animated:animated];
-    [self restoreFloatingSceneAfterCancelledTransition];
-    [self setFloatingApplicationInputBlocked:NO];
-    [self normalizeFloatingContainerTransform];
-    void (^changes)(void) = ^{
-        self.floatingContainer.alpha = 1.0;
-        self.floatingContainer.layer.cornerRadius = 18.0;
-        self.floatingDimView.alpha = 1.0;
-        self.floatingHandle.alpha = 1.0;
-        self.floatingHandleBar.alpha = 1.0;
-        self.floatingHandleBar.transform = CGAffineTransformIdentity;
-        self.floatingDockShadowView.alpha = 0.0;
-        [self layoutFloatingWindow];
-    };
-    if (!animated) {
-        changes();
-        self.floatingDockTransitionActive = NO;
-        if (!self.floatingDocked) {
-            self.floatingDockShadowView.hidden = YES;
-        }
-        return;
-    }
-    [UIView animateWithDuration:0.34
-                          delay:0.0
-         usingSpringWithDamping:0.78
-          initialSpringVelocity:0.25
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction
-                     animations:changes
-                     completion:^(BOOL finished) {
-                         (void)finished;
-                         self.floatingDockTransitionActive = NO;
-                         if (!self.floatingDocked) {
-                             self.floatingDockShadowView.hidden = YES;
-                         }
-                     }];
-}
-
-- (void)transitionFloatingWindowToFullscreen {
-    [self setFloatingDockReady:NO animated:NO];
-    if (self.floatingWindow.hidden || self.floatingIdentifier.length == 0) {
-        [self resetFloatingInteractiveLayoutAnimated:YES];
-        return;
-    }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    [self endFloatingKeyboardSession];
-    CGRect targetFrame = rootView.bounds;
-    if (!self.floatingInteractiveScenePrepared) {
-        self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
-        [self prepareFloatingSceneForInteractiveFullscreen];
-    }
-    NSString *identifier = [self.floatingIdentifier copy];
-    self.floatingReconnectSuppressed = YES;
-    // Start the already-running scene promotion while the final part of the
-    // same card morph is still on screen. The old implementation waited until
-    // that animation ended, producing a visible motion/pause/activation split.
-    [self activateIdentifierFullscreen:identifier];
-    CGFloat remainingProgress =
-        MAX(0.0, 1.0 - self.floatingFullscreenProgress);
-    NSTimeInterval finishDuration = 0.18 + 0.28 * remainingProgress;
-    [UIView animateWithDuration:finishDuration
-                           delay:0.0
-                         options:UIViewAnimationOptionBeginFromCurrentState |
-                                 UIViewAnimationOptionCurveEaseOut |
-                                 UIViewAnimationOptionAllowUserInteraction
-                      animations:^{
-                         [self updateFloatingFullscreenSnapshotForProgress:1.0];
-                         self.floatingContainer.layer.cornerRadius = 0.0;
-                         self.floatingDimView.alpha = 0.0;
-                         self.floatingHandle.alpha = 0.0;
-                         [self layoutFloatingHandleForCurrentContainer];
-                     }
-                      completion:^(BOOL finished) {
-                          (void)finished;
-                          UIView *snapshot = self.floatingInteractiveSnapshot;
-                         self.floatingInteractiveSnapshot = nil;
-                         self.floatingInteractiveSnapshotBackground = nil;
-                         self.floatingInteractiveSnapshotContent = nil;
-                         if (!snapshot) {
-                             snapshot = [[UIView alloc] initWithFrame:targetFrame];
-                             snapshot.backgroundColor = [UIColor blackColor];
-                             [rootView addSubview:snapshot];
-                         } else {
-                             snapshot.layer.cornerRadius = 0.0;
-                             [rootView addSubview:snapshot];
-                         }
-
-                          self.floatingInteractiveScenePrepared = NO;
-                          self.floatingInteractiveFullscreenTransition = NO;
-                          self.floatingFullscreenProgress = 1.0;
-                         self.floatingLaunchGeneration += 1;
-                         self.floatingExclusiveGesture.enabled = NO;
-                         self.cornerGuardGesture.enabled = self.enabled;
-                         self.cornerGesture.enabled = self.enabled;
-                         self.floatingContainer.alpha = 0.0;
-                          [self finishFullscreenHandoffWithCover:snapshot
-                                                    identifier:identifier
-                                                      attempt:0];
-                     }];
-}
-
-- (void)finishFullscreenHandoffWithCover:(UIView *)cover
-                              identifier:(NSString *)identifier
-                                 attempt:(NSUInteger)attempt {
-    BOOL targetIsFrontmost =
-        identifier.length > 0 &&
-        [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    BOOL displayCommitted = targetIsFrontmost && attempt >= 3;
-    if (!displayCommitted && attempt < 24) {
-        if (attempt == 0 || attempt >= 22) {
-            FLMEnqueueDiagnosticLine(
-                @"sb fullscreen-handoff wait target=%@ frontmost=%@ attempt=%lu",
-                identifier ?: @"<none>",
-                FLMFrontmostApplicationIdentifier() ?: @"<none>",
-                (unsigned long)attempt);
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.05 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self finishFullscreenHandoffWithCover:cover
-                                       identifier:identifier
-                                          attempt:attempt + 1];
-        });
-        return;
-    }
-
-    if (!displayCommitted) {
-        // Never remove the only visible surface merely because the promotion
-        // deadline expired. Keep the app in centered mode and let the user
-        // retry; this prevents an occasional black SpringBoard screen when
-        // launchApplicationWithIdentifier: has not committed the target Scene.
-        FLMEnqueueDiagnosticLine(
-            @"sb fullscreen-handoff timeout target=%@ frontmost=%@ restoring-card=1",
-            identifier ?: @"<none>",
-            FLMFrontmostApplicationIdentifier() ?: @"<none>");
-        [cover removeFromSuperview];
-        self.floatingReconnectSuppressed = NO;
-        [self restoreFloatingSceneAfterCancelledTransition];
-        [self resetFloatingInteractiveLayoutAnimated:NO];
-        self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
-        self.cornerGuardGesture.enabled = self.enabled;
-        self.cornerGesture.enabled = self.enabled;
-        return;
-    }
-
-    id scene = self.floatingScene;
-    id presenter = self.floatingPresenter;
-    [self.floatingHostView removeFromSuperview];
-    self.floatingHostView = nil;
-    self.floatingHostReferenceSize = CGSizeZero;
-    self.floatingSceneEntity = nil;
-    self.floatingSceneHandle = nil;
-    self.floatingScene = nil;
-    self.floatingPresentationManager = nil;
-    self.floatingPresenter = nil;
-    self.floatingIdentifier = nil;
-    self.floatingFullscreenProgress = 0.0;
-    [self applyKeyboardFrame:CGRectNull visible:NO];
-    FLMClearProtectedScene(scene);
-    @try {
-        if ([presenter respondsToSelector:@selector(deactivate)]) {
-            [presenter deactivate];
-        }
-        if ([presenter respondsToSelector:@selector(invalidate)]) {
-            [presenter invalidate];
-        }
-    } @catch (__unused NSException *exception) {
-    }
-
-    // The geometry animation already ended at the exact physical-screen
-    // bounds. Once SpringBoard confirms the real Scene is frontmost, exchange
-    // the identical full-screen cover without a second visible animation.
-    [UIView performWithoutAnimation:^{
-        self.floatingWindow.hidden = YES;
-        [cover removeFromSuperview];
-        self.floatingContainer.alpha = 1.0;
-        [self resetFloatingInteractiveLayoutAnimated:NO];
-        [self stopLockMonitoringIfIdle];
-    }];
-}
-
-- (void)protectedSceneDidDisappear:(NSNotification *)notification {
-    (void)notification;
-    if (self.floatingKeyboardSessionGeneration != 0) {
-        [self endFloatingKeyboardSession];
-    }
-    if (self.floatingWindow.hidden) {
-        return;
-    }
-    if (self.floatingReconnectSuppressed) {
-        return;
-    }
-    if (FLMDeviceIsLocked() || self.floatingIdentifier.length == 0) {
-        [self closeFloatingWindowKeepingApplication:YES];
-        return;
-    }
-
-    NSString *identifier = [self.floatingIdentifier copy];
-    if (self.floatingDocked &&
-        [identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
-        // The user opened the docked application through SpringBoard. Its
-        // primary scene now belongs to the fullscreen transition; reconnecting
-        // that same scene into the dock produces a black, permanently stale
-        // presenter. Detach our presenter without backgrounding the app.
-        self.floatingReconnectSuppressed = YES;
-        [self closeFloatingWindowKeepingApplication:NO];
-        return;
-    }
-    if (self.floatingKeyboardSessionGeneration == 0) {
-        self.floatingKeyboardSessionCounter += 1;
-        if (self.floatingKeyboardSessionCounter == 0) {
-            self.floatingKeyboardSessionCounter = 1;
-        }
-        self.floatingKeyboardSessionGeneration =
-            self.floatingKeyboardSessionCounter;
-    }
-    self.floatingLaunchGeneration += 1;
-    NSUInteger generation = self.floatingLaunchGeneration;
-    self.floatingLaunchState = FLMFloatingLaunchStatePrewarming;
-    self.floatingLaunchStartedAt = CACurrentMediaTime();
-    self.floatingScenePreparedAt = 0.0;
-    id presenter = self.floatingPresenter;
-    [self.floatingHostView removeFromSuperview];
-    self.floatingHostView = nil;
-    self.floatingHostReferenceSize = CGSizeZero;
-    self.floatingSceneEntity = nil;
-    self.floatingSceneHandle = nil;
-    self.floatingScene = nil;
-    self.floatingPresentationManager = nil;
-    self.floatingPresenter = nil;
-    @try {
-        if ([presenter respondsToSelector:@selector(deactivate)]) {
-            [presenter deactivate];
-        }
-        if ([presenter respondsToSelector:@selector(invalidate)]) {
-            [presenter invalidate];
-        }
-    } @catch (__unused NSException *exception) {
-    }
-    [self configureFloatingLaunchCoverForIdentifier:identifier];
-    self.floatingHandle.userInteractionEnabled = NO;
-    self.floatingExclusiveGesture.enabled = NO;
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-            [self attachFloatingIdentifier:identifier
-                                generation:generation
-                                   attempt:0];
-    });
-}
-
-- (CGRect)centeredFloatingFrame {
-    CGRect bounds = self.floatingWindow.bounds;
-    CGFloat width = CGRectGetWidth(bounds);
-    CGFloat height = CGRectGetHeight(bounds);
-    if (width <= 0.0 || height <= 0.0) {
-        return CGRectZero;
-    }
-
-    UIEdgeInsets safeInsets =
-        self.floatingWindow.rootViewController.view.safeAreaInsets;
-    CGFloat containerWidth = width * 0.77;
-    CGFloat containerHeight = 520.0;
-    CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
-    BOOL landscape = width > height;
-    CGFloat originX = 0.0;
-    if (landscape) {
-        CGFloat portraitRatio = (390.0 * 0.77) / 520.0;
-        CGFloat verticalMargin = 16.0;
-        containerHeight = MAX(240.0, height - verticalMargin * 2.0);
-        containerWidth = containerHeight * portraitRatio;
-        CGFloat maximumWidth = MAX(240.0,
-                                   width - safeInsets.left -
-                                       safeInsets.right - 16.0);
-        if (containerWidth > maximumWidth) {
-            containerWidth = maximumWidth;
-            containerHeight = containerWidth / MAX(0.1, portraitRatio);
-        }
-        top = floor((height - containerHeight) * 0.5);
-        originX = MAX(0.0, safeInsets.left);
-    } else {
-        CGFloat centeredUpperTop =
-            floor((height - containerHeight) * 0.5 - 44.0);
-        top = MAX(safeInsets.top + 8.0, centeredUpperTop);
-        CGFloat maximumHeight = MAX(180.0, height - top - 72.0);
-        if (containerHeight > maximumHeight) {
-            CGFloat scale = maximumHeight / containerHeight;
-            containerHeight = maximumHeight;
-            containerWidth *= scale;
-        }
-        originX = floor((width - containerWidth) * 0.5);
-    }
-    return CGRectMake(originX, top, containerWidth, containerHeight);
-}
-
-- (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
-    CGRect centeredFrame = [self centeredFloatingFrame];
-    CGFloat aspectRatio =
-        CGRectGetWidth(centeredFrame) / MAX(1.0, CGRectGetHeight(centeredFrame));
-    CGFloat clampedWidth =
-        MAX(FLMMinimumDockWidth, MIN(FLMMaximumDockWidth, width));
-    CGFloat height = clampedWidth / MAX(0.1, aspectRatio);
-    CGFloat top = safeInsets.top + FLMDockTopMargin;
-    CGFloat originX =
-        onRight
-            ? CGRectGetWidth(bounds) - safeInsets.right -
-                  FLMDockSideMargin - clampedWidth
-            : safeInsets.left + FLMDockSideMargin;
-    return CGRectMake(originX, top, clampedWidth, height);
-}
-
-- (void)layoutFloatingDockShadow {
-    if (!self.floatingDocked && !self.floatingDockTransitionActive) {
-        self.floatingDockShadowView.hidden = YES;
-        return;
-    }
-    self.floatingDockShadowView.hidden = NO;
-    self.floatingDockShadowView.bounds = self.floatingContainer.bounds;
-    self.floatingDockShadowView.center = self.floatingContainer.center;
-    self.floatingDockShadowView.transform = self.floatingContainer.transform;
-    self.floatingDockShadowView.layer.cornerRadius =
-        self.floatingContainer.layer.cornerRadius;
-    UIBezierPath *shadowPath =
-        [UIBezierPath
-            bezierPathWithRoundedRect:self.floatingDockShadowView.bounds
-                         cornerRadius:self.floatingDockShadowView.layer.cornerRadius];
-    self.floatingDockShadowView.layer.shadowPath = shadowPath.CGPath;
-    [self.floatingWindow.rootViewController.view
-        insertSubview:self.floatingDockShadowView
-         belowSubview:self.floatingContainer];
-}
-
-- (void)updateFloatingDockAccessoryPositions {
-    if (!self.floatingDocked) {
-        return;
-    }
-    self.floatingDockShadowView.center = self.floatingContainer.center;
-    self.floatingDockShadowView.transform = self.floatingContainer.transform;
-
-    CGRect frame = self.floatingContainer.frame;
-    const CGFloat hitSize = 46.0;
-    self.floatingResizeHandle.frame =
-        self.floatingDockedOnRight
-            ? CGRectMake(CGRectGetMinX(frame) - 32.0,
-                         CGRectGetMaxY(frame) - 14.0,
-                         hitSize,
-                         hitSize)
-            : CGRectMake(CGRectGetMaxX(frame) - 14.0,
-                         CGRectGetMaxY(frame) - 14.0,
-                         hitSize,
-                         hitSize);
-}
-
-- (void)normalizeFloatingContainerTransform {
-    if (CGAffineTransformIsIdentity(self.floatingContainer.transform)) {
-        return;
-    }
-    CGRect visualFrame = self.floatingContainer.frame;
-    [UIView performWithoutAnimation:^{
-        self.floatingContainer.transform = CGAffineTransformIdentity;
-        self.floatingContainer.frame = visualFrame;
-        self.floatingDockShadowView.transform = CGAffineTransformIdentity;
-        self.floatingDockShadowView.frame = visualFrame;
-        self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-        [self layoutFloatingHostView];
-    }];
-}
-
-- (void)layoutFloatingDockReadyIndicator {
-    CGSize size = self.floatingDockReadyIndicator.bounds.size;
-    self.floatingDockReadyIndicator.center =
-        CGPointMake(CGRectGetMidX(self.floatingContainer.frame),
-                    CGRectGetMinY(self.floatingContainer.frame) -
-                        size.height * 0.5 - 10.0);
-}
-
-- (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated {
-    if (self.floatingDockReady == ready) {
-        if (ready) {
-            [self layoutFloatingDockReadyIndicator];
-        } else if (!animated) {
-            [self.floatingDockReadyIndicator.layer removeAllAnimations];
-            self.floatingDockReadyIndicator.hidden = YES;
-            self.floatingDockReadyIndicator.alpha = 0.0;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        }
-        return;
-    }
-    self.floatingDockReady = ready;
-    if (ready) {
-        [self layoutFloatingDockReadyIndicator];
-        self.floatingDockReadyIndicator.hidden = NO;
-        self.floatingDockReadyIndicator.alpha = 0.0;
-        self.floatingDockReadyIndicator.transform =
-            CGAffineTransformMakeScale(0.72, 0.72);
-        void (^showChanges)(void) = ^{
-            self.floatingDockReadyIndicator.alpha = 1.0;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        };
-        if (!animated) {
-            showChanges();
-            return;
-        }
-        [UIView animateWithDuration:0.28
-                              delay:0.0
-             usingSpringWithDamping:0.64
-              initialSpringVelocity:0.42
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:showChanges
-                         completion:nil];
-        return;
-    }
-
-    void (^hideChanges)(void) = ^{
-        self.floatingDockReadyIndicator.alpha = 0.0;
-        self.floatingDockReadyIndicator.transform =
-            CGAffineTransformMakeScale(0.78, 0.78);
-    };
-    void (^hideCompletion)(BOOL) = ^(BOOL finished) {
-        (void)finished;
-        if (!self.floatingDockReady) {
-            self.floatingDockReadyIndicator.hidden = YES;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        }
-    };
-    if (!animated) {
-        hideChanges();
-        hideCompletion(YES);
-        return;
-    }
-    [UIView animateWithDuration:0.16
-                          delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction |
-                                UIViewAnimationOptionCurveEaseOut
-                     animations:hideChanges
-                     completion:hideCompletion];
-}
-
-- (void)layoutFloatingResizeHandle {
-    if (!self.floatingDocked) {
-        self.floatingResizeHandle.hidden = YES;
-        return;
-    }
-    CGRect frame = self.floatingContainer.frame;
-    const CGFloat hitSize = 46.0;
-    UIBezierPath *path = [UIBezierPath bezierPath];
-    if (self.floatingDockedOnRight) {
-        self.floatingResizeHandle.frame =
-            CGRectMake(CGRectGetMinX(frame) - 32.0,
-                       CGRectGetMaxY(frame) - 14.0,
-                       hitSize,
-                       hitSize);
-        [path moveToPoint:CGPointMake(24.0, 2.0)];
-        [path addLineToPoint:CGPointMake(24.0, 12.0)];
-        [path addQuadCurveToPoint:CGPointMake(34.0, 22.0)
-                    controlPoint:CGPointMake(24.0, 22.0)];
-        [path addLineToPoint:CGPointMake(44.0, 22.0)];
-    } else {
-        self.floatingResizeHandle.frame =
-            CGRectMake(CGRectGetMaxX(frame) - 14.0,
-                       CGRectGetMaxY(frame) - 14.0,
-                       hitSize,
-                       hitSize);
-        [path moveToPoint:CGPointMake(22.0, 2.0)];
-        [path addLineToPoint:CGPointMake(22.0, 12.0)];
-        [path addQuadCurveToPoint:CGPointMake(12.0, 22.0)
-                    controlPoint:CGPointMake(22.0, 22.0)];
-        [path addLineToPoint:CGPointMake(2.0, 22.0)];
-    }
-    self.floatingResizeShapeLayer.frame = self.floatingResizeHandle.bounds;
-    self.floatingResizeShapeLayer.path = path.CGPath;
-    self.floatingResizeHandle.hidden = NO;
-}
-
-- (BOOL)floatingResizeControlContainsPoint:(CGPoint)point {
-    if (!self.floatingDocked || self.floatingResizeHandle.hidden ||
-        !self.floatingResizeShapeLayer.path) {
-        return NO;
-    }
-    CGRect broadFrame = CGRectInset(self.floatingResizeHandle.frame, -10.0, -10.0);
-    if (!CGRectContainsPoint(broadFrame, point)) {
-        return NO;
-    }
-    CGPoint localPoint =
-        CGPointMake(point.x - CGRectGetMinX(self.floatingResizeHandle.frame),
-                    point.y - CGRectGetMinY(self.floatingResizeHandle.frame));
-    CGPathRef touchPath =
-        CGPathCreateCopyByStrokingPath(self.floatingResizeShapeLayer.path,
-                                      NULL,
-                                      20.0,
-                                      kCGLineCapRound,
-                                      kCGLineJoinRound,
-                                      1.0);
-    if (!touchPath) {
-        return NO;
-    }
-    BOOL contains = CGPathContainsPoint(touchPath, NULL, localPoint, NO);
-    CGPathRelease(touchPath);
-    return contains;
-}
-
-- (void)configureFloatingInteractionForDockedState {
-    FLMFloatingWindow *floatingWindow =
-        (FLMFloatingWindow *)self.floatingWindow;
-    floatingWindow.passesTouchesOutsideFloatingContent = self.floatingDocked;
-    self.floatingBackdropTap.enabled = !self.floatingDocked;
-    self.floatingDockTap.enabled = NO;
-    self.floatingDockDragPress.enabled = NO;
-    self.floatingResizePress.enabled = NO;
-    self.floatingDockInputGesture.enabled = self.floatingDocked;
-    self.floatingHostView.userInteractionEnabled = !self.floatingDocked;
-    self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-    self.floatingDockInteractionShield.hidden = !self.floatingDocked;
-    self.floatingDockInteractionShield.userInteractionEnabled =
-        self.floatingDocked;
-    if (self.floatingDocked) {
-        [self.floatingContainer
-            bringSubviewToFront:self.floatingDockInteractionShield];
-    }
-    self.floatingHandle.userInteractionEnabled = !self.floatingDocked;
-    self.floatingHandle.hidden = self.floatingDocked;
-    self.floatingResizeHandle.hidden = !self.floatingDocked;
-    self.floatingExclusiveGesture.enabled =
-        !self.floatingDocked && self.usesSystemGestureManager &&
-        !self.floatingWindow.hidden;
-    if (self.floatingDocked) {
-        self.floatingDimView.alpha = 0.0;
-        self.floatingHandle.alpha = 0.0;
-        self.floatingResizeHandle.alpha = 1.0;
-        self.floatingDockShadowView.alpha = 1.0;
-        [self layoutFloatingDockShadow];
-        if (self.previousKeyWindow &&
-            self.previousKeyWindow != self.floatingWindow) {
-            [self.previousKeyWindow makeKeyWindow];
-        }
-        [self layoutFloatingResizeHandle];
-    } else {
-        self.floatingResizeHandle.alpha = 0.0;
-        self.floatingHandle.alpha = 1.0;
-        self.floatingDockShadowView.alpha = 0.0;
-        self.floatingDockShadowView.hidden = YES;
-        [self.floatingWindow makeKeyWindow];
-    }
-}
-
-- (void)restoreFloatingHandleInteraction {
-    // configureFloatingInteractionForDockedState deliberately disables the
-    // handle for a docked card.  The old close/open path only unhid it, so a
-    // subsequently centered card could display a white bar whose recognizers
-    // never received touches.  Keep this reset independent of Scene startup.
-    self.floatingHandle.hidden = NO;
-    self.floatingHandle.alpha = 1.0;
-    self.floatingHandle.userInteractionEnabled = YES;
-    self.floatingHandlePress.enabled = YES;
-    self.floatingHandleTap.enabled = YES;
-}
-
-- (void)transitionFloatingWindowToDocked {
-    [self setFloatingDockReady:NO animated:YES];
-    if (self.floatingWindow.hidden || self.floatingDocked) {
-        return;
-    }
-    [self setFloatingApplicationInputBlocked:YES];
-    [self endFloatingKeyboardSession];
-    self.floatingDockTransitionActive = YES;
-    self.floatingDockedOnRight = YES;
-    self.floatingDockWidth = FLMMinimumDockWidth;
-    CGRect target =
-        [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
-    CGFloat targetScale =
-        CGRectGetWidth(target) /
-        MAX(1.0, CGRectGetWidth(self.floatingContainer.bounds));
-    self.floatingDockShadowView.hidden = NO;
-    [UIView animateWithDuration:0.40
-                          delay:0.0
-         usingSpringWithDamping:0.84
-          initialSpringVelocity:0.34
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction |
-                                UIViewAnimationOptionCurveEaseOut
-                     animations:^{
-                         // Continue from the exact transform produced by the
-                         // finger. Do not restore the centered frame or relayout
-                         // the remote host before the card reaches its dock.
-                         self.floatingContainer.center =
-                             CGPointMake(CGRectGetMidX(target),
-                                         CGRectGetMidY(target));
-                         self.floatingContainer.transform =
-                             CGAffineTransformMakeScale(targetScale,
-                                                        targetScale);
-                         self.floatingContainer.layer.cornerRadius =
-                             16.0 / MAX(0.01, targetScale);
-                         self.floatingDimView.alpha = 0.0;
-                         self.floatingDockShadowView.alpha = 1.0;
-                         [self layoutFloatingDockShadow];
-                         self.floatingHandle.alpha = 0.0;
-                         [self layoutFloatingHandleForCurrentContainer];
-                     }
-                     completion:^(BOOL finished) {
+    NSMutableAr…18428 tokens truncated…   completion:^(BOOL finished) {
                          (void)finished;
                          UIView *settleCover =
                              [self.floatingContainer
@@ -5361,7 +3737,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingExternalActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
-    self.floatingSceneUsesCardGeometry = YES;
+    // Launch against the display-sized Scene first.  The compact card frame
+    // is committed only after the remote presenter has attached; this keeps
+    // UIKit from laying out a half-created host against stale bounds.
+    self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = YES;
+    self.floatingSceneCardGeometryCommitted = NO;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
@@ -5396,6 +3777,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
+    self.floatingSceneGeometryCommitGeneration = generation;
     self.floatingLaunchState = FLMFloatingLaunchStatePrewarming;
     self.floatingLaunchStartedAt = CACurrentMediaTime();
     self.floatingScenePreparedAt = 0.0;
@@ -5488,7 +3870,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在准备应用…";
+        self.floatingStatusLabel.text = @"姝ｅ湪鍑嗗搴旂敤鈥?;
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -5506,7 +3888,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id resolvedScene = [self sceneForHandle:sceneHandle];
     if (!resolvedScene) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在启动应用…";
+        self.floatingStatusLabel.text = @"姝ｅ湪鍚姩搴旂敤鈥?;
         if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
@@ -5556,7 +3938,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
-        self.floatingStatusLabel.text = @"正在连接画面…";
+        self.floatingStatusLabel.text = @"姝ｅ湪杩炴帴鐢婚潰鈥?;
         if (attempt > 0 && attempt % 6 == 0) {
             id stalePresenter = self.floatingPresenter;
             @try {
@@ -5600,17 +3982,181 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self layoutFloatingHostView];
     self.floatingStatusLabel.hidden = YES;
     [self.floatingContainer bringSubviewToFront:self.floatingLaunchCoverView];
-    [self revealFloatingContentForGeneration:generation];
+    if (self.floatingSceneCardGeometryPending) {
+        // Keep the neutral launch cover above the presenter while the
+        // application commits its compact Scene bounds.  Revealing the host
+        // before that transaction completes is what caused stale full-screen
+        // content to be clipped before the two-phase Scene commit in 0.8.49.
+        [self commitFloatingCardSceneGeometryForIdentifier:identifier
+                                                 generation:generation
+                                                    attempt:0];
+    } else {
+        [self revealFloatingContentForGeneration:generation];
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f}",
+            identifier, (unsigned long)generation, (unsigned long)attempt,
+            (__bridge void *)host, NSStringFromCGRect(host.bounds),
+            self.floatingHostReferenceSize.width,
+            self.floatingHostReferenceSize.height);
+    }
+}
+
+- (BOOL)floatingSceneLogicalFrameMatchesCard {
+    id scene = self.floatingScene;
+    CGSize cardSize = self.floatingContainer.bounds.size;
+    if (!scene || cardSize.width <= 1.0 || cardSize.height <= 1.0) {
+        return NO;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        NSValue *frameValue = nil;
+        if ([settings respondsToSelector:@selector(valueForKey:)]) {
+            id value = [settings valueForKey:@"frame"];
+            if ([value isKindOfClass:[NSValue class]]) {
+                frameValue = value;
+            }
+        }
+        if (!frameValue) {
+            return NO;
+        }
+        CGRect frame = frameValue.CGRectValue;
+        return fabs(CGRectGetWidth(frame) - cardSize.width) <= 1.0 &&
+               fabs(CGRectGetHeight(frame) - cardSize.height) <= 1.0;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+- (void)commitFloatingCardSceneGeometryForIdentifier:(NSString *)identifier
+                                           generation:(NSUInteger)generation
+                                              attempt:(NSUInteger)attempt {
+    if (generation != self.floatingLaunchGeneration ||
+        ![identifier isEqualToString:self.floatingIdentifier] ||
+        self.floatingWindow.hidden || !self.floatingHostView ||
+        !self.floatingSceneCardGeometryPending) {
+        return;
+    }
+    self.floatingSceneGeometryCommitGeneration = generation;
+    CGSize displayReference = self.floatingHostReferenceSize;
+    if (displayReference.width <= 1.0 || displayReference.height <= 1.0) {
+        displayReference = [self floatingSceneReferenceSize];
+    }
+    self.floatingSceneUsesCardGeometry = YES;
+    BOOL applied =
+        [self applyFloatingSceneLogicalFrameForCurrentPresentation:
+                  @"card-commit-request"];
+    // Keep the attached full-screen host scaled into the card until the
+    // Scene settings transaction is observable.  Changing the host bounds
+    // before that acknowledgement is the partial-content regression.
+    self.floatingHostReferenceSize = displayReference;
+    [self layoutFloatingHostView];
     FLMEnqueueDiagnosticLine(
-        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f}",
-        identifier, (unsigned long)generation, (unsigned long)attempt,
-        (__bridge void *)host, NSStringFromCGRect(host.bounds),
-        self.floatingHostReferenceSize.width,
-        self.floatingHostReferenceSize.height);
+        @"sb scene-card commit-request generation=%lu attempt=%lu applied=%d logical={%.1f,%.1f} host=%@",
+        (unsigned long)generation, (unsigned long)attempt, applied,
+        CGRectGetWidth(self.floatingContainer.bounds),
+        CGRectGetHeight(self.floatingContainer.bounds),
+        NSStringFromCGRect(self.floatingHostView.bounds));
+
+    if (!applied && attempt >= 8) {
+        [self finishFloatingCardSceneGeometryCommitForIdentifier:identifier
+                                                         generation:generation
+                                                            attempt:attempt];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.08 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self finishFloatingCardSceneGeometryCommitForIdentifier:identifier
+                                                         generation:generation
+                                                            attempt:attempt + 1];
+    });
+}
+
+- (void)finishFloatingCardSceneGeometryCommitForIdentifier:(NSString *)identifier
+                                                  generation:(NSUInteger)generation
+                                                     attempt:(NSUInteger)attempt {
+    if (generation != self.floatingLaunchGeneration ||
+        ![identifier isEqualToString:self.floatingIdentifier] ||
+        self.floatingWindow.hidden || !self.floatingHostView ||
+        !self.floatingSceneCardGeometryPending) {
+        return;
+    }
+    BOOL committed = [self floatingSceneLogicalFrameMatchesCard];
+    if (!committed && attempt < 8) {
+        [self commitFloatingCardSceneGeometryForIdentifier:identifier
+                                                 generation:generation
+                                                    attempt:attempt];
+        return;
+    }
+    if (!committed) {
+        // A private Scene may reject a compact frame while the application is
+        // still changing lifecycle state. Fall back to the already attached
+        // full-screen host instead of exposing a half-laid-out card or a
+        // permanent launch cover.
+        self.floatingSceneUsesCardGeometry = NO;
+        self.floatingSceneCardGeometryPending = NO;
+        self.floatingSceneCardGeometryCommitted = NO;
+        [self applyFloatingSceneLogicalFrameForCurrentPresentation:
+                  @"card-commit-fallback"];
+        [self layoutFloatingHostView];
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-card commit-fallback generation=%lu attempt=%lu host=%@",
+            (unsigned long)generation, (unsigned long)attempt,
+            NSStringFromCGRect(self.floatingHostView.bounds));
+    } else {
+        self.floatingSceneCardGeometryPending = NO;
+        self.floatingSceneCardGeometryCommitted = YES;
+        self.floatingHostReferenceSize = self.floatingContainer.bounds.size;
+        [self layoutFloatingHostView];
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-card committed generation=%lu attempt=%lu logical={%.1f,%.1f} host=%@",
+            (unsigned long)generation, (unsigned long)attempt,
+            CGRectGetWidth(self.floatingContainer.bounds),
+            CGRectGetHeight(self.floatingContainer.bounds),
+            NSStringFromCGRect(self.floatingHostView.bounds));
+    }
+
+    NSString *targetIdentifier = [identifier copy];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.10 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingLaunchGeneration ||
+            ![targetIdentifier isEqualToString:self.floatingIdentifier] ||
+            self.floatingWindow.hidden || !self.floatingScene) {
+            return;
+        }
+        // Re-pair the keyboard route after the Scene geometry transaction,
+        // so a reused third-party keyboard cannot retain the previous Scene
+        // generation and intermittently refuse the next input focus.
+        FLMPublishKeyboardState(nil, nil, 0);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.10 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (generation != self.floatingLaunchGeneration ||
+                ![targetIdentifier isEqualToString:self.floatingIdentifier] ||
+                self.floatingWindow.hidden || !self.floatingScene) {
+                return;
+            }
+            FLMPublishKeyboardState(targetIdentifier,
+                                    self.floatingScene,
+                                    self.floatingKeyboardSessionGeneration);
+            [self revealFloatingContentForGeneration:generation];
+            FLMEnqueueDiagnosticLine(
+                @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.1f,%.1f} cardCommitted=%d",
+                targetIdentifier, (unsigned long)generation,
+                (unsigned long)attempt, (__bridge void *)self.floatingHostView,
+                NSStringFromCGRect(self.floatingHostView.bounds),
+                self.floatingHostReferenceSize.width,
+                self.floatingHostReferenceSize.height,
+                self.floatingSceneCardGeometryCommitted);
+        });
+    });
 }
 
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
-                              generation:(NSUInteger)generation {
+                               generation:(NSUInteger)generation {
     if (generation != self.floatingLaunchGeneration ||
         self.floatingWindow.hidden) {
         return;
@@ -5649,6 +4195,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingSceneUsesCardGeometry = NO;
+    self.floatingSceneCardGeometryPending = NO;
+    self.floatingSceneCardGeometryCommitted = NO;
     self.floatingDocked = NO;
     self.floatingDockTransitionActive = NO;
     self.floatingExternalActivationArmed = NO;
@@ -5954,3 +4502,4 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         notify_post(FLYME_RUNTIME_NOTIFICATION);
     }
 }
+
