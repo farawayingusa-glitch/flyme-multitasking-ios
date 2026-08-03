@@ -57,12 +57,14 @@ foreach ($Marker in @(
     'floatingSceneUsesCardGeometry',
     'floatingSceneCardGeometryPending',
     'floatingSceneCardGeometryCommitted',
-    'scene-card commit-request',
-    'scene-card committed',
+    'floatingSceneLogicalFrameMatchesVirtualViewport',
+    'scene-virtual-viewport request',
+    'scene-virtual-viewport committed',
+    'virtual-viewport-fit',
     'frame-deferred waiting=scene-host',
     'host-deferred waiting=application-host',
     'frame-deferred replay=1',
-    'card-restore keyboard-session-restored'
+    'virtual-viewport restore keyboard-session-restored'
 )) {
     Require-Text $Source $Marker
 }
@@ -134,7 +136,7 @@ Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
-Require-Text $Source 'filter=WeChat-bundle target-gated'
+Require-Text $Source 'filter=UIKit-framework target-gated'
 Require-Text $Source 'scene-frame policy=%@'
 Require-Text $Source 'content-scale policy=%@'
 Require-Text $Source 'logicalScene=%@'
@@ -148,11 +150,14 @@ Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
 Require-Text $Source 'centered-preserved=%d'
 Reject-Text $Source 'content-scale policy=card-fit'
+Reject-Text $Source 'content-scale policy=card-1to1'
+Reject-Text $Source 'scene-card commit-request'
+Reject-Text $Source 'scene-card committed'
 Reject-Text $Source 'card-fit=1'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
-Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
-Reject-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
+Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
+Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
 Write-Output 'scene lifecycle, fixed card Scene geometry, preserved keyboard route, and target-gated WeChat adapter verified'

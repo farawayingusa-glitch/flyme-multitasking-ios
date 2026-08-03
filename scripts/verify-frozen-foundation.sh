@@ -24,13 +24,16 @@ required_source=(
     "floatingSceneUsesCardGeometry"
     "floatingSceneCardGeometryPending"
     "floatingSceneCardGeometryCommitted"
-    "scene-card commit-request"
-    "scene-card committed"
+    "floatingSceneLogicalFrameMatchesVirtualViewport"
+    "scene-virtual-viewport request"
+    "scene-virtual-viewport committed"
+    "virtual-viewport-fit"
+    "FLMVirtualViewportHeight"
     "floatingKeyboardFramePending"
     "frame-deferred waiting=scene-host"
     "host-deferred waiting=application-host"
     "frame-deferred replay=1"
-    "card-restore keyboard-session-restored"
+    "virtual-viewport restore keyboard-session-restored"
     "floatingHostReferenceSize"
     "applyFloatingSceneLogicalFrameForCurrentPresentation"
     "geometryProgress"
@@ -86,6 +89,9 @@ removed_source=(
     "verticalProgress"
     "fillScale"
     "content-scale policy=card-fit"
+    "content-scale policy=card-1to1"
+    "scene-card commit-request"
+    "scene-card committed"
     "card-fit=1"
 )
 
@@ -121,9 +127,9 @@ for marker in "${required_keyboard_source[@]}"; do
 done
 
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
-grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
-if grep -Eq 'com.apple.UIKit|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard adapter filter must target the exact WeChat bundle" >&2
+grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
+if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard adapter filter must use UIKit injection with in-process WeChat gating" >&2
     exit 1
 fi
 

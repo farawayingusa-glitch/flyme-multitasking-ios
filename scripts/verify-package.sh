@@ -56,9 +56,9 @@ test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
-grep -q "com.tencent.xin" "$keyboard_filter"
-if grep -Eq "com.apple.UIKit|UIApplication|Executables|Classes" "$keyboard_filter"; then
-    echo "keyboard adapter must use the exact WeChat bundle filter" >&2
+grep -q "com.apple.UIKit" "$keyboard_filter"
+if grep -Eq "com.tencent.xin|UIApplication|Executables|Classes" "$keyboard_filter"; then
+    echo "keyboard adapter must use the UIKit injection filter with in-process WeChat gating" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -84,7 +84,7 @@ strings "$keyboard" | grep -q "keyboard-app-ready-v47"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.52" "$workspace/control/control"
+grep -qx "Version: 0.8.53" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "WeChat" "$workspace/control/postinst"
