@@ -249,6 +249,8 @@ static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
+static const NSTimeInterval FLMFloatingPresenterRecoveryTimeout = 1.0;
+static const NSTimeInterval FLMFloatingCloseFallbackDelay = 0.45;
 typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
     FLMFloatingLaunchStateIdle,
     FLMFloatingLaunchStatePrewarming,
@@ -1043,11 +1045,23 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, strong) id floatingScene;
 @property(nonatomic, strong) id floatingPresentationManager;
 @property(nonatomic, strong) id floatingPresenter;
+@property(nonatomic, strong) id floatingPresenterScene;
 @property(nonatomic, assign) CGSize floatingHostReferenceSize;
 @property(nonatomic, assign) NSUInteger floatingLaunchGeneration;
 @property(nonatomic, assign) FLMFloatingLaunchState floatingLaunchState;
 @property(nonatomic, assign) NSTimeInterval floatingLaunchStartedAt;
 @property(nonatomic, assign) NSTimeInterval floatingScenePreparedAt;
+@property(nonatomic, assign) NSTimeInterval floatingPresenterUnavailableAt;
+@property(nonatomic, assign) NSUInteger floatingPresenterRetryAttempt;
+@property(nonatomic, assign) BOOL floatingCloseInProgress;
+@property(nonatomic, assign) NSUInteger floatingCloseTokenCounter;
+@property(nonatomic, assign) NSUInteger floatingActiveCloseToken;
+@property(nonatomic, assign) BOOL floatingCloseCleanupDone;
+@property(nonatomic, assign) BOOL floatingCloseKeepApplication;
+@property(nonatomic, copy) NSString *floatingQueuedIdentifier;
+@property(nonatomic, strong) id floatingClosingScene;
+@property(nonatomic, strong) id floatingClosingPresenter;
+@property(nonatomic, strong) UIView *floatingClosingHostView;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
 + (instancetype)sharedController;
 - (void)start;
@@ -1137,7 +1151,9 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
                                                   generation:(NSUInteger)generation
                                                      attempt:(NSUInteger)attempt;
 - (void)failFloatingLaunchForIdentifier:(NSString *)identifier
-                              generation:(NSUInteger)generation;
+                               generation:(NSUInteger)generation;
+- (void)invalidateFloatingPresenterForRecoveryReason:(NSString *)reason;
+- (void)finishFloatingCloseWithToken:(NSUInteger)token;
 - (FLMApplicationSceneHandle *)sceneHandleForIdentifier:(NSString *)identifier;
 - (id)sceneForHandle:(FLMApplicationSceneHandle *)sceneHandle;
 - (BOOL)prepareFloatingScene:(id)scene
@@ -5467,11 +5483,44 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMClearProtectedScene(scene);
 }
 
+- (void)invalidateFloatingPresenterForRecoveryReason:(NSString *)reason {
+    id presenter = self.floatingPresenter;
+    id manager = self.floatingPresentationManager;
+    id presenterScene = self.floatingPresenterScene;
+    UIView *host = self.floatingHostView;
+    self.floatingPresenter = nil;
+    self.floatingPresentationManager = nil;
+    self.floatingPresenterScene = nil;
+    self.floatingPresenterUnavailableAt = 0.0;
+    if (host) {
+        [host removeFromSuperview];
+        self.floatingHostView = nil;
+    }
+    @try {
+        if ([presenter respondsToSelector:@selector(deactivate)]) {
+            [presenter deactivate];
+        }
+        if ([presenter respondsToSelector:@selector(invalidate)]) {
+            [presenter invalidate];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb presenter-recovery reason=%@ manager=%p presenter=%p scene=%@",
+        reason ?: @"<unspecified>", (__bridge void *)manager,
+        (__bridge void *)presenter,
+        FLMSceneIdentifier(presenterScene) ?: @"<none>");
+}
+
 - (UIView *)hostViewForSceneHandle:(FLMApplicationSceneHandle *)sceneHandle {
     if (!sceneHandle) {
         return nil;
     }
     id scene = [self sceneForHandle:sceneHandle];
+    if (self.floatingPresenterScene &&
+        self.floatingPresenterScene != scene) {
+        [self invalidateFloatingPresenterForRecoveryReason:@"scene-replaced"];
+    }
     BOOL sceneChanged = scene && scene != self.floatingScene;
     BOOL needsInitialSceneSettle = self.floatingScenePreparedAt <= 0.0;
     FLMEnqueueDiagnosticLine(
@@ -5520,18 +5569,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingPresentationManager = manager;
         }
         if (!presenter) {
-            if (![manager respondsToSelector:
+            if ([manager respondsToSelector:
                              @selector(createPresenterWithIdentifier:)]) {
-                return nil;
-            }
-            presenter =
-                [manager createPresenterWithIdentifier:
-                             @"com.codex.flymemultitasking.centered"];
-            if (presenter) {
-                self.floatingPresenter = presenter;
-            }
-            if ([presenter respondsToSelector:@selector(activate)]) {
-                [presenter activate];
+                presenter =
+                    [manager createPresenterWithIdentifier:
+                                 @"com.codex.flymemultitasking.centered"];
+                if (presenter) {
+                    self.floatingPresenter = presenter;
+                }
+                if ([presenter respondsToSelector:@selector(activate)]) {
+                    [presenter activate];
+                }
             }
         }
         if ([presenter respondsToSelector:@selector(presentationView)]) {
@@ -5541,14 +5589,41 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         host = nil;
     }
     if (![host isKindOfClass:[UIView class]]) {
+        if (self.floatingPresenterUnavailableAt <= 0.0) {
+            self.floatingPresenterUnavailableAt = CACurrentMediaTime();
+        }
+        NSTimeInterval unavailableFor =
+            CACurrentMediaTime() - self.floatingPresenterUnavailableAt;
+        if (unavailableFor >= FLMFloatingPresenterRecoveryTimeout ||
+            (self.floatingPresenterRetryAttempt > 0 &&
+             self.floatingPresenterRetryAttempt % 12 == 0)) {
+            FLMEnqueueDiagnosticLine(
+                @"sb presenter-stale-retry manager=%p presenter=%p scene=%@ attempt=%lu unavailable=%.3f",
+                (__bridge void *)manager, (__bridge void *)presenter,
+                FLMSceneIdentifier(scene) ?: @"<none>",
+                (unsigned long)self.floatingPresenterRetryAttempt,
+                unavailableFor);
+            [self invalidateFloatingPresenterForRecoveryReason:
+                      @"nil-host-timeout"];
+            // A manager can outlive the Scene transaction that created it.
+            // Force the next retry through a fresh handle instead of polling
+            // the stale manager indefinitely.
+            self.floatingSceneEntity = nil;
+            self.floatingSceneHandle = nil;
+            self.floatingScene = nil;
+            self.floatingScenePreparedAt = 0.0;
+        }
         FLMEnqueueDiagnosticLine(
-            @"sb presenter-not-ready manager=%p presenter=%p scene=%@",
+            @"sb presenter-not-ready manager=%p presenter=%p scene=%@ attempt=%lu unavailable=%.3f",
             (__bridge void *)manager, (__bridge void *)presenter,
-            FLMSceneIdentifier(scene) ?: @"<none>");
+            FLMSceneIdentifier(scene) ?: @"<none>",
+            (unsigned long)self.floatingPresenterRetryAttempt, unavailableFor);
         return nil;
     }
     self.floatingPresentationManager = manager;
     self.floatingPresenter = presenter;
+    self.floatingPresenterScene = scene;
+    self.floatingPresenterUnavailableAt = 0.0;
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
     // The host starts with the display-sized Scene reference while the route
@@ -5569,23 +5644,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.prewarmedIdentifier = nil;
         return;
     }
+    if (self.floatingCloseInProgress) {
+        // All wheel targets share the same close transaction. Keep only the
+        // latest request and let the close completion open it after the old
+        // Scene/presenter has been released.
+        self.floatingQueuedIdentifier = [identifier copy];
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-open queued target=%@ closeToken=%lu current=%@",
+            identifier, (unsigned long)self.floatingActiveCloseToken,
+            self.floatingIdentifier ?: @"<none>");
+        return;
+    }
     if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
         [identifier isEqualToString:self.floatingIdentifier]) {
         self.prewarmedIdentifier = nil;
         return;
     }
-    if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0) {
-        NSString *pendingIdentifier = [identifier copy];
-        BOOL pendingWasPrewarmed =
-            [self.prewarmedIdentifier isEqualToString:pendingIdentifier];
+    if (!self.floatingWindow.hidden) {
+        self.floatingQueuedIdentifier = [identifier copy];
         [self closeFloatingWindowKeepingApplication:YES];
-        self.prewarmedIdentifier =
-            pendingWasPrewarmed ? pendingIdentifier : nil;
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.26 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{
-                [self openFloatingIdentifier:pendingIdentifier];
-            });
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-open queued target=%@ closeToken=%lu reason=replace-current",
+            identifier, (unsigned long)self.floatingActiveCloseToken);
         return;
     }
     if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
@@ -5665,6 +5745,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingScene = nil;
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
+    self.floatingPresenterScene = nil;
+    self.floatingPresenterUnavailableAt = 0.0;
+    self.floatingPresenterRetryAttempt = 0;
     self.floatingIdentifier = identifier;
     [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
@@ -5691,6 +5774,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingHandle.alpha = 0.0;
     self.floatingHandle.userInteractionEnabled = NO;
     self.previousKeyWindow = FLMCurrentKeyWindow();
+    self.floatingBackdropTap.enabled = YES;
     self.floatingExclusiveGesture.enabled = NO;
     self.cornerGuardGesture.enabled = NO;
     self.cornerGesture.enabled = NO;
@@ -5812,24 +5896,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
+    self.floatingPresenterRetryAttempt = attempt;
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
         self.floatingStatusLabel.text = @"正在连接画面…";
-        if (attempt > 0 && attempt % 6 == 0) {
-            id stalePresenter = self.floatingPresenter;
-            @try {
-                if ([stalePresenter respondsToSelector:@selector(deactivate)]) {
-                    [stalePresenter deactivate];
-                }
-                if ([stalePresenter respondsToSelector:@selector(invalidate)]) {
-                    [stalePresenter invalidate];
-                }
-            } @catch (__unused NSException *exception) {
-            }
-            self.floatingPresentationManager = nil;
-            self.floatingPresenter = nil;
-        }
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -6063,8 +6134,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication {
+    if (self.floatingCloseInProgress) {
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-close no-op closeToken=%lu requestedKeep=%d queuedTarget=%@",
+            (unsigned long)self.floatingActiveCloseToken, keepApplication,
+            self.floatingQueuedIdentifier ?: @"<none>");
+        return;
+    }
+    self.floatingCloseInProgress = YES;
+    self.floatingCloseCleanupDone = NO;
+    self.floatingCloseKeepApplication = keepApplication;
+    self.floatingCloseTokenCounter += 1;
+    if (self.floatingCloseTokenCounter == 0) {
+        self.floatingCloseTokenCounter = 1;
+    }
+    NSUInteger closeToken = self.floatingCloseTokenCounter;
+    self.floatingActiveCloseToken = closeToken;
     FLMEnqueueDiagnosticLine(
-        @"sb centered-close begin keep=%d app=%@ scene=%@ launchGen=%lu session=%lu keyboardVisible=%d interaction=%d host=%p forwardingKey=%d",
+        @"sb centered-close begin closeToken=%lu keep=%d app=%@ scene=%@ launchGen=%lu session=%lu keyboardVisible=%d interaction=%d host=%p forwardingKey=%d queuedTarget=%@",
+        (unsigned long)closeToken,
         keepApplication, self.floatingIdentifier ?: @"<none>",
         FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
         (unsigned long)self.floatingLaunchGeneration,
@@ -6072,7 +6160,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardVisible,
         self.floatingKeyboardInteractionSessionActive,
         (__bridge void *)self.floatingKeyboardLayerHostView,
-        self.keyboardForwardingWindow.isKeyWindow);
+        self.keyboardForwardingWindow.isKeyWindow,
+        self.floatingQueuedIdentifier ?: @"<none>");
     [self endFloatingKeyboardSession];
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;
@@ -6098,7 +6187,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self setFloatingDockReady:NO animated:NO];
     ((FLMFloatingWindow *)self.floatingWindow)
         .passesTouchesOutsideFloatingContent = NO;
-    self.floatingBackdropTap.enabled = YES;
+    // Both close recognizers are disabled before any asynchronous animation
+    // begins. The close token, not launchGeneration, owns this transaction.
+    self.floatingBackdropTap.enabled = NO;
     self.floatingDockTap.enabled = NO;
     self.floatingDockDragPress.enabled = NO;
     self.floatingResizePress.enabled = NO;
@@ -6114,16 +6205,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingHandle.hidden = NO;
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
-    NSUInteger generation = self.floatingLaunchGeneration;
     id scene = self.floatingScene;
     id presenter = self.floatingPresenter;
+    UIView *host = self.floatingHostView;
     UIWindow *previousKeyWindow = self.previousKeyWindow;
+    self.floatingClosingScene = scene;
+    self.floatingClosingPresenter = presenter;
+    self.floatingClosingHostView = host;
     self.floatingSceneEntity = nil;
     self.floatingSceneHandle = nil;
     self.floatingScene = nil;
     self.floatingHostReferenceSize = CGSizeZero;
     self.floatingPresentationManager = nil;
     self.floatingPresenter = nil;
+    self.floatingPresenterScene = nil;
+    self.floatingPresenterUnavailableAt = 0.0;
+    self.floatingPresenterRetryAttempt = 0;
     self.floatingIdentifier = nil;
     self.floatingExclusiveGesture.enabled = NO;
     self.floatingExclusiveTapEligible = NO;
@@ -6138,29 +6235,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [previousKeyWindow makeKeyWindow];
     }
     if (self.floatingWindow.hidden) {
-        [self.floatingHostView removeFromSuperview];
-        self.floatingHostView = nil;
-        if (keepApplication) {
-            [self backgroundFloatingScene:scene];
-        } else {
-            FLMClearProtectedScene(scene);
-        }
-        @try {
-            if ([presenter respondsToSelector:@selector(deactivate)]) {
-                [presenter deactivate];
-            }
-            if ([presenter respondsToSelector:@selector(invalidate)]) {
-                [presenter invalidate];
-            }
-        } @catch (__unused NSException *exception) {
-        }
-        self.floatingLaunchCoverView.hidden = YES;
-        self.floatingLaunchCoverView.alpha = 1.0;
-        self.floatingLaunchCoverView.userInteractionEnabled = NO;
-        self.floatingLaunchIconView.image = nil;
-        self.floatingStatusLabel.hidden = YES;
-        self.floatingLaunchState = FLMFloatingLaunchStateIdle;
-        [self stopLockMonitoringIfIdle];
+        [self finishFloatingCloseWithToken:closeToken];
         return;
     }
 
@@ -6177,39 +6252,84 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      }
                      completion:^(BOOL finished) {
                          (void)finished;
-                         if (generation != self.floatingLaunchGeneration) {
-                             return;
-                         }
-                           [self.floatingHostView removeFromSuperview];
-                           self.floatingHostView = nil;
-                           if (keepApplication) {
-                               [self backgroundFloatingScene:scene];
-                           } else {
-                               FLMClearProtectedScene(scene);
-                           }
-                           @try {
-                              if ([presenter respondsToSelector:@selector(deactivate)]) {
-                                  [presenter deactivate];
-                              }
-                              if ([presenter respondsToSelector:@selector(invalidate)]) {
-                                  [presenter invalidate];
-                              }
-                           } @catch (__unused NSException *exception) {
-                           }
-                           self.floatingWindow.hidden = YES;
-                         self.floatingLaunchState = FLMFloatingLaunchStateIdle;
-                         self.floatingDimView.alpha = 1.0;
-                         self.floatingContainer.alpha = 1.0;
-                         self.floatingContainer.transform =
-                             CGAffineTransformIdentity;
-                          self.floatingHandle.alpha = 1.0;
-                          self.floatingLaunchCoverView.hidden = YES;
-                          self.floatingLaunchCoverView.alpha = 1.0;
-                          self.floatingLaunchCoverView.userInteractionEnabled = NO;
-                          self.floatingLaunchIconView.image = nil;
-                          self.floatingStatusLabel.hidden = YES;
-                          [self stopLockMonitoringIfIdle];
+                         [self finishFloatingCloseWithToken:closeToken];
                      }];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(FLMFloatingCloseFallbackDelay * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+            [self finishFloatingCloseWithToken:closeToken];
+        });
+}
+
+- (void)finishFloatingCloseWithToken:(NSUInteger)token {
+    if (!self.floatingCloseInProgress ||
+        token != self.floatingActiveCloseToken) {
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-close stale-completion token=%lu active=%lu inProgress=%d",
+            (unsigned long)token, (unsigned long)self.floatingActiveCloseToken,
+            self.floatingCloseInProgress);
+        return;
+    }
+    if (self.floatingCloseCleanupDone) {
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-close cleanup-no-op token=%lu reason=already-cleaned",
+            (unsigned long)token);
+        return;
+    }
+    self.floatingCloseCleanupDone = YES;
+    id scene = self.floatingClosingScene;
+    id presenter = self.floatingClosingPresenter;
+    UIView *host = self.floatingClosingHostView;
+    BOOL keepApplication = self.floatingCloseKeepApplication;
+    NSString *queuedIdentifier = [self.floatingQueuedIdentifier copy];
+    [host removeFromSuperview];
+    self.floatingHostView = nil;
+    if (keepApplication) {
+        [self backgroundFloatingScene:scene];
+    } else {
+        FLMClearProtectedScene(scene);
+    }
+    @try {
+        if ([presenter respondsToSelector:@selector(deactivate)]) {
+            [presenter deactivate];
+        }
+        if ([presenter respondsToSelector:@selector(invalidate)]) {
+            [presenter invalidate];
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    self.floatingClosingScene = nil;
+    self.floatingClosingPresenter = nil;
+    self.floatingClosingHostView = nil;
+    self.floatingQueuedIdentifier = nil;
+    self.floatingWindow.hidden = YES;
+    self.floatingLaunchState = FLMFloatingLaunchStateIdle;
+    self.floatingDimView.alpha = 1.0;
+    self.floatingContainer.alpha = 1.0;
+    self.floatingContainer.transform = CGAffineTransformIdentity;
+    self.floatingHandle.alpha = 1.0;
+    self.floatingLaunchCoverView.hidden = YES;
+    self.floatingLaunchCoverView.alpha = 1.0;
+    self.floatingLaunchCoverView.userInteractionEnabled = NO;
+    self.floatingLaunchIconView.image = nil;
+    self.floatingStatusLabel.hidden = YES;
+    self.floatingCloseInProgress = NO;
+    self.floatingActiveCloseToken = 0;
+    FLMEnqueueDiagnosticLine(
+        @"sb centered-close cleanup-once token=%lu scene=%@ presenter=%p queuedTarget=%@",
+        (unsigned long)token, FLMSceneIdentifier(scene) ?: @"<none>",
+        (__bridge void *)presenter,
+        queuedIdentifier ?: @"<none>");
+    [self stopLockMonitoringIfIdle];
+    if (queuedIdentifier.length > 0 && !FLMDeviceIsLocked()) {
+        // This call occurs only after host removal, Scene background/protection
+        // release, and presenter invalidate have all completed.
+        FLMEnqueueDiagnosticLine(
+            @"sb centered-open dequeue target=%@ closeToken=%lu",
+            queuedIdentifier, (unsigned long)token);
+        [self openFloatingIdentifier:queuedIdentifier];
+    }
 }
 
 - (void)beginLockMonitoring {
