@@ -18,16 +18,11 @@ required_source=(
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
     "floatingFullscreenProgress"
-    "scene-frame policy=card"
-    "floatingSceneUsesCardGeometry"
-    "floatingSceneCardGeometryPending"
-    "floatingSceneCardGeometryCommitted"
-    "commitFloatingCardSceneGeometryForIdentifier:"
-    "finishFloatingCardSceneGeometryCommitForIdentifier:"
-    "scene-card commit-request"
-    "scene-card committed"
-    "card-commit-fallback"
-    "cardCommitted=%d"
+    "scene-frame policy=fullscreen"
+    "content-scale policy=card-fit"
+    "logicalScene=fullscreen"
+    "card-fit=1"
+    "floatingHostReferenceSize"
     "applyFloatingSceneLogicalFrameForCurrentPresentation"
     "geometryProgress"
     "displayCommitted = targetIsFrontmost && attempt >= 3"
@@ -81,6 +76,12 @@ removed_source=(
     "widthProgress"
     "verticalProgress"
     "fillScale"
+    "scene-frame policy=card"
+    "scene-card commit-request"
+    "scene-card committed"
+    "card-commit-fallback"
+    "floatingSceneCardGeometryPending"
+    "floatingSceneCardGeometryCommitted"
 )
 
 for marker in "${removed_source[@]}"; do
@@ -104,7 +105,6 @@ required_keyboard_source=(
     "FLMDiagnosticEventAdapterReady"
 )
 
-grep -Fq -- 'scene-frame policy=fullscreen' "$source_file"
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 
