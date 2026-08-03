@@ -56,9 +56,9 @@ test -f "$filter"
 test -f "$loader"
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
-grep -q "com.tencent.xin" "$keyboard_filter"
-if grep -Eq "com.apple.UIKit|UIApplication|Executables|Classes" "$keyboard_filter"; then
-    echo "keyboard adapter must use direct WeChat injection with in-process identity gating" >&2
+grep -q "com.apple.UIKit" "$keyboard_filter"
+if grep -Eq "com.tencent.xin|UIApplication|Executables|Classes" "$keyboard_filter"; then
+    echo "keyboard adapter must use generic UIKit injection with in-process target gating" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -84,10 +84,14 @@ strings "$keyboard" | grep -q "keyboard-app-ready-v47"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.8.54" "$workspace/control/control"
+grep -qx "Version: 0.8.55" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
-grep -q "WeChat" "$workspace/control/postinst"
+grep -q "generic" "$workspace/control/postinst"
+if grep -q "WeChat\|com.tencent.xin" "$workspace/control/postinst"; then
+    echo "package maintainer script still contains a hard-coded app target" >&2
+    exit 1
+fi
 
 if find "$workspace/root" -print | grep -Eiq "TrollOpenJB|charlieleung"; then
     echo "package unexpectedly contains TrollOpen files" >&2

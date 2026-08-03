@@ -10,9 +10,10 @@
 // only after the shared route identifies the current card target. The card is
 // a presentation transform; it must never become the keyboard's coordinate
 // system. UIKit therefore receives the display-sized reference (390x844 on
-// the target device), while the app-side content adapter uses a logical
-// 390x675.324675 viewport before SpringBoard applies the fixed 0.77 transform
-// to the 300.3x520 card.
+// the target device), while the app-side content adapter uses
+// the locked physical card viewport (300.3x520). The card is already the
+// presentation viewport; do not introduce a second 390x675.3247 logical
+// canvas or a second content transform here.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -64,10 +65,10 @@ static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
 static const CGSize FLMContentLogicalViewportSize = {
-    390.0,
-    675.3246753246753,
+    300.3,
+    520.0,
 };
-static const CGFloat FLMContentExternalScale = 0.77;
+static const CGFloat FLMContentExternalScale = 1.0;
 static const CGSize FLMPhysicalCardSize = {
     300.3,
     520.0,
@@ -77,6 +78,8 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
 static void FLMAttemptKeyboardInitialization(void);
+static void FLMRegisterKeyboardNotificationsAndInitialize(void);
+static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
@@ -313,8 +316,8 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
         if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
             continue;
         }
-        // Never use the hosted window/card bounds here. The hosted view may
-        // be 390x675.3247 in centered presentation, but keyboard avoidance
+        // Never use the hosted window/card bounds here. The hosted content
+        // view is 300.3x520 in centered presentation, but keyboard avoidance
         // must remain in the application's display-sized 390x844 space.
         return FLMPhysicalReferenceBoundsForScene(windowScene);
     }
@@ -922,19 +925,19 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                              &FLMKeyboardRouteToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
-                                 FLMReloadKeyboardRoute();
+                                 FLMHandleKeyboardRouteNotification();
                              });
     notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
                              &FLMKeyboardSceneToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
-                                 FLMReloadKeyboardRoute();
+                                 FLMHandleKeyboardRouteNotification();
                              });
     notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
                              &FLMKeyboardSessionToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
-                                 FLMReloadKeyboardRoute();
+                                 FLMHandleKeyboardRouteNotification();
                              });
     notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
                              &FLMKeyboardAvoidanceToken,
@@ -952,8 +955,19 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                              &FLMKeyboardSharedStateToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
-                                 FLMReloadKeyboardRoute();
+                                 FLMHandleKeyboardRouteNotification();
                              });
+}
+
+static void FLMHandleKeyboardRouteNotification(void) {
+    FLMReloadKeyboardRoute();
+    if (!FLMKeyboardHooksInstalled && FLMIsEligibleApplicationProcess() &&
+        FLMKeyboardTargetApplication) {
+        // UIKit may load this generic adapter before SpringBoard publishes
+        // the wheel target. A later route event must be able to complete the
+        // target-gated initialization without waiting for the retry budget.
+        FLMRegisterKeyboardNotificationsAndInitialize();
+    }
 }
 
 static void FLMRegisterKeyboardNotificationsAndInitialize(void) {

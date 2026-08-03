@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.54 schema=17");
+                    @"logger-ready build=0.8.55 schema=17");
             }
         });
     });
@@ -238,13 +238,13 @@ static const CGFloat FLMDockTopMargin = 8.0;
 // and orientation changes.
 static const CGFloat FLMCenteredCardWidth = 300.3;
 static const CGFloat FLMCenteredCardHeight = 520.0;
-// The physical card and its content viewport are deliberately independent
-// from the application's real Scene. The Scene must retain display-sized
-// coordinates for activation, responder ownership, and keyboard semantics;
-// only the SpringBoard presentation host uses this virtual content viewport.
-static const CGFloat FLMVirtualViewportWidth = 390.0;
-static const CGFloat FLMVirtualViewportScale = 0.77;
-static const CGFloat FLMVirtualViewportHeight = 675.3246753246753;
+// The physical card and the app content viewport are deliberately locked to
+// the same size. The Scene must retain display-sized coordinates for
+// activation, responder ownership, and keyboard semantics; only the app's
+// content root and the SpringBoard presentation host use this card viewport.
+static const CGFloat FLMVirtualViewportWidth = 300.3;
+static const CGFloat FLMVirtualViewportScale = 1.0;
+static const CGFloat FLMVirtualViewportHeight = 520.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
@@ -1319,14 +1319,17 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
         FLYME_KEYBOARD_APP_READY_NOTIFICATION,
         &FlymeKeyboardAppReadyToken,
         FLYME_KEYBOARD_APP_READY_MAGIC);
-    BOOL targetMatches = [identifier isEqualToString:@"com.tencent.xin"];
+    // The wheel can target any ordinary application. The identifier is the
+    // exact value published by SpringBoard; the lifecycle tokens prove that
+    // this same target process loaded and completed the adapter.
+    BOOL targetMatches = identifier.length > 0;
     BOOL accepted = targetMatches && ctor.valid && ready.valid &&
                     ctor.pid == ready.pid;
     if (accepted && readyPID) {
         *readyPID = ready.pid;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb adapter-handshake context=%@ app=%@ filter=WeChat-bundle target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
+        @"sb adapter-handshake context=%@ app=%@ filter=target-bundle target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
         context ?: @"<none>", identifier ?: @"<none>", accepted,
         ctor.registerStatus, ctor.readStatus,
         (unsigned long long)ctor.rawState, ctor.magic, ctor.build, ctor.pid,
@@ -1481,7 +1484,7 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
     BOOL adapterReady = FLMKeyboardAppAdapterReadyForIdentifier(
         FLMKeyboardSharedIdentifier, &adapterPID);
     // Readiness is evidence, never a publishing gate. In 0.8.39 the first
-    // keyboard frame could beat the WeChat ctor by one run-loop turn, causing
+    // keyboard frame could beat the target-app ctor by one run-loop turn, causing
     // a zero avoidance value that was never republished after ready arrived.
     // The atomically stored state is safe without a consumer; a late adapter
     // simply reads the latest real value during its initial route reload.
@@ -4274,9 +4277,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
     // The real application Scene remains display-sized for the complete
-    // centered-card lifetime. Only this presentation host adopts the
-    // card-ratio content viewport (390x675.3247), then applies one uniform
-    // transform to the fixed physical card (300.3x520).
+    // centered-card lifetime. Only this presentation host adopts the locked
+    // app/card content viewport (300.3x520); because that is already the
+    // physical card size, the centered state uses a 1:1 transform.
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
                         : MIN(widthScale, heightScale);
@@ -5043,7 +5046,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                    height);
     }
     // Third-party keyboard toolbars can own controls above UIKit's reported
-    // keyboard end frame. The captured WeChat keyboard collapse touch began
+    // keyboard end frame. The captured target-app keyboard collapse touch began
     // 26 pt above that frame. Protect a bounded 56 pt accessory band so the
     // physical touch remains in the keyboard domain from begin through end.
     CGFloat top = MAX(CGRectGetMinY(bounds),
@@ -5191,8 +5194,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingContentViewportReferenceSize {
-    // This reference belongs only to the SpringBoard presentation host. It
-    // preserves the locked card aspect ratio without changing the app Scene.
+    // This reference belongs only to the app content/presentation host. It
+    // preserves the locked physical card size without changing the app Scene.
     if (self.floatingSceneUsesCardGeometry &&
         !self.floatingInteractiveFullscreenTransition) {
         return CGSizeMake(FLMVirtualViewportWidth,
@@ -5628,7 +5631,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.userInteractionEnabled = YES;
     // The host starts with the display-sized Scene reference while the route
     // is being established. Once the card presentation commits, this host
-    // uses the independent 390x675.3247 content viewport; the real Scene
+    // uses the locked 300.3x520 app/card content viewport; the real Scene
     // remains display-sized and the physical card remains fixed.
     host.clipsToBounds = NO;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
