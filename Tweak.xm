@@ -238,11 +238,10 @@ static const CGFloat FLMDockTopMargin = 8.0;
 // and orientation changes.
 static const CGFloat FLMCenteredCardWidth = 300.3;
 static const CGFloat FLMCenteredCardHeight = 520.0;
-// The private Scene presenter does not expose a second layout/display Scene
-// that can remain full-screen for activation while using a different viewport
-// for the embedded content. The closest stable representation is therefore
-// a normal iPhone-width virtual viewport whose aspect ratio exactly matches
-// the fixed physical card, followed by one uniform host transform.
+// The physical card and its content viewport are deliberately independent
+// from the application's real Scene. The Scene must retain display-sized
+// coordinates for activation, responder ownership, and keyboard semantics;
+// only the SpringBoard presentation host uses this virtual content viewport.
 static const CGFloat FLMVirtualViewportWidth = 390.0;
 static const CGFloat FLMVirtualViewportScale = 0.77;
 static const CGFloat FLMVirtualViewportHeight = 675.3246753246753;
@@ -1149,9 +1148,11 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)configureFloatingLaunchCoverForIdentifier:(NSString *)identifier;
 - (void)revealFloatingContentForGeneration:(NSUInteger)generation;
 - (void)layoutFloatingHostView;
+- (CGSize)floatingSystemSceneReferenceSize;
+- (CGSize)floatingContentViewportReferenceSize;
 - (CGSize)floatingSceneReferenceSize;
 - (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy;
-- (BOOL)floatingSceneLogicalFrameMatchesVirtualViewport;
+- (BOOL)floatingSceneLogicalFrameMatchesSystemReference;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
 - (void)beginLockMonitoring;
@@ -3178,7 +3179,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneCardGeometryPending = NO;
     self.floatingSceneCardGeometryCommitted = YES;
     [self applyFloatingSceneLogicalFrameForCurrentPresentation:
-              @"virtual-viewport-restore"];
+              @"content-viewport-restore"];
     if (self.floatingKeyboardSessionGeneration == 0 &&
         self.floatingIdentifier.length > 0 && self.floatingScene &&
         !self.floatingWindow.hidden && !self.floatingDocked) {
@@ -3197,7 +3198,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                 self.floatingScene,
                                 self.floatingKeyboardSessionGeneration);
         FLMEnqueueDiagnosticLine(
-            @"sb virtual-viewport restore keyboard-session-restored session=%lu app=%@ scene=%@",
+            @"sb content-viewport restore keyboard-session-restored session=%lu app=%@ scene=%@",
             (unsigned long)self.floatingKeyboardSessionGeneration,
             self.floatingIdentifier,
             FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
@@ -4063,7 +4064,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneCardGeometryPending = NO;
     self.floatingSceneCardGeometryCommitted = YES;
     [self applyFloatingSceneLogicalFrameForCurrentPresentation:
-              @"virtual-viewport-restore"];
+              @"content-viewport-restore"];
     [self discardFloatingKeyboardLayerHost];
     self.floatingKeyboardSessionCounter += 1;
     if (self.floatingKeyboardSessionCounter == 0) {
@@ -4268,10 +4269,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!host || !self.floatingContainer) {
         return;
     }
-    CGSize referenceSize = self.floatingHostReferenceSize;
-    if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
-        referenceSize = self.floatingWindow.bounds.size;
-    }
+    CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+    CGSize contentViewportReference =
+        [self floatingContentViewportReferenceSize];
+    BOOL contentViewportActive =
+        self.floatingSceneUsesCardGeometry &&
+        !self.floatingInteractiveFullscreenTransition &&
+        self.floatingSceneCardGeometryCommitted &&
+        !self.floatingSceneCardGeometryPending;
+    CGSize referenceSize = contentViewportActive
+                              ? contentViewportReference
+                              : systemSceneReference;
+    self.floatingHostReferenceSize = referenceSize;
     CGSize targetSize = self.floatingContainer.bounds.size;
     if (targetSize.width < 1.0 || targetSize.height < 1.0) {
         return;
@@ -4286,18 +4295,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    BOOL virtualViewport = self.floatingSceneUsesCardGeometry &&
-                           !self.floatingInteractiveFullscreenTransition;
-    BOOL virtualViewportCommitted = virtualViewport &&
-                                    self.floatingSceneCardGeometryCommitted &&
-                                    !self.floatingSceneCardGeometryPending;
-    // During launch and fullscreen handoff the Scene keeps the complete
-    // display-sized logical coordinate space so the current application-style
-    // activation and keyboard owner remain stable. Once the presenter is
-    // attached, the Scene uses the card-ratio virtual viewport
-    // (390x675.3247), while the physical container remains exactly
-    // 300.3x520. A single uniform scale fills the card without crop or
-    // non-uniform stretching.
+    // The real application Scene remains display-sized for the complete
+    // centered-card lifetime. Only this presentation host adopts the
+    // card-ratio content viewport (390x675.3247), then applies one uniform
+    // transform to the fixed physical card (300.3x520).
     CGFloat scale = self.floatingInteractiveFullscreenTransition
                         ? MAX(widthScale, heightScale)
                         : MIN(widthScale, heightScale);
@@ -4312,26 +4313,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.clipsToBounds = NO;
     host.transform = CGAffineTransformMakeScale(scale, scale);
     FLMEnqueueDiagnosticLine(
-        @"sb content-scale policy=%@ reference={%.4f,%.4f} target={%.1f,%.1f} scale=%.6f uniform=%d virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} logicalScene=%@",
-        virtualViewport ? @"virtual-viewport-fit" : @"fullscreen-fit",
+        @"sb content-scale policy=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} targetPhysicalCard={%.1f,%.1f} scale=%.6f uniform=%d sceneFrameReference=system",
+        contentViewportActive ? @"content-viewport-fit" : @"fullscreen-fit",
+        systemSceneReference.width,
+        systemSceneReference.height,
+        contentViewportReference.width,
+        contentViewportReference.height,
         referenceSize.width,
         referenceSize.height,
         targetSize.width,
         targetSize.height,
         scale,
         fabs(widthScale - heightScale) <= 0.0001,
-        FLMVirtualViewportWidth,
-        FLMVirtualViewportHeight,
         FLMCenteredCardWidth,
-        FLMCenteredCardHeight,
-        virtualViewport ? @"virtual-viewport" : @"fullscreen");
+        FLMCenteredCardHeight);
     FLMPublishKeyboardCardGeometry(
         self.floatingKeyboardSessionGeneration,
         CGRectGetMaxY(self.floatingContainer.frame),
         scale,
         !self.floatingWindow.hidden && !self.floatingDocked &&
             self.floatingKeyboardSessionGeneration != 0 &&
-            virtualViewportCommitted);
+            contentViewportActive);
 }
 
 - (BOOL)propagateFloatingKeyboardScenePairing:(id)keyboardScene
@@ -4552,7 +4554,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardDeferredScene = scene;
         self.floatingKeyboardDeferredSessionGeneration = sessionGeneration;
         FLMEnqueueDiagnosticLine(
-            @"sb host-deferred waiting=application-host session=%lu host=%p scene=%@ virtualViewportPending=%d virtualViewportCommitted=%d launch=%lu",
+            @"sb host-deferred waiting=application-host session=%lu host=%p scene=%@ contentViewportPending=%d contentViewportCommitted=%d launch=%lu",
             (unsigned long)sessionGeneration, (__bridge void *)hostView,
             FLMSceneIdentifier(scene) ?: @"<none>",
             self.floatingSceneCardGeometryPending,
@@ -4826,7 +4828,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardPendingFrame = CGRectNull;
     self.floatingKeyboardPendingSessionGeneration = 0;
     FLMEnqueueDiagnosticLine(
-        @"sb frame-deferred replay=1 session=%lu frame=%@ host=%p virtualViewportCommitted=%d",
+        @"sb frame-deferred replay=1 session=%lu frame=%@ host=%p contentViewportCommitted=%d",
         (unsigned long)pendingSession, NSStringFromCGRect(pendingFrame),
         (__bridge void *)self.floatingKeyboardLayerHostView,
         self.floatingSceneCardGeometryCommitted);
@@ -4853,7 +4855,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardPendingSessionGeneration =
             self.floatingKeyboardSessionGeneration;
         FLMEnqueueDiagnosticLine(
-            @"sb frame-deferred waiting=scene-host session=%lu frame=%@ appHost=%p keyboardHost=%p virtualViewportPending=%d virtualViewportCommitted=%d launch=%lu",
+            @"sb frame-deferred waiting=scene-host session=%lu frame=%@ appHost=%p keyboardHost=%p contentViewportPending=%d contentViewportCommitted=%d launch=%lu",
             (unsigned long)self.floatingKeyboardSessionGeneration,
             NSStringFromCGRect(frame), (__bridge void *)self.floatingHostView,
             (__bridge void *)self.floatingKeyboardLayerHostView,
@@ -5197,18 +5199,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (unsigned long)finalizedGeneration);
 }
 
-- (CGSize)floatingSceneReferenceSize {
-    // Launch and fullscreen handoff use display-sized coordinates so the
-    // application is promoted with the same full-screen-like identity that
-    // made external keyboard routing reliable. After the presenter is ready,
-    // the centered card uses an iPhone-width virtual viewport with the same
-    // aspect ratio as the fixed physical card. The real Scene is never made
-    // 300.3x520; the physical card remains a SpringBoard container.
-    if (self.floatingSceneUsesCardGeometry &&
-        !self.floatingInteractiveFullscreenTransition) {
-        return CGSizeMake(FLMVirtualViewportWidth,
-                          FLMVirtualViewportHeight);
-    }
+- (CGSize)floatingSystemSceneReferenceSize {
+    // This is the only reference used to write the private application Scene
+    // settings. It intentionally never changes when the app is displayed in
+    // the centered card: the app remains a normal display-sized foreground
+    // Scene for activation, responder ownership, and keyboard semantics.
     CGRect displayBounds = FLMVisualScreenBounds();
     CGSize size = displayBounds.size;
     if (size.width < 1.0 || size.height < 1.0) {
@@ -5217,14 +5212,34 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return size.width > 1.0 && size.height > 1.0 ? size : CGSizeZero;
 }
 
+- (CGSize)floatingContentViewportReferenceSize {
+    // This reference belongs only to the SpringBoard presentation host. It
+    // preserves the locked card aspect ratio without changing the app Scene.
+    if (self.floatingSceneUsesCardGeometry &&
+        !self.floatingInteractiveFullscreenTransition) {
+        return CGSizeMake(FLMVirtualViewportWidth,
+                          FLMVirtualViewportHeight);
+    }
+    return [self floatingSystemSceneReferenceSize];
+}
+
+- (CGSize)floatingSceneReferenceSize {
+    // Keep the old helper as a scene-only alias. Callers that lay out the
+    // card host use floatingContentViewportReferenceSize explicitly.
+    return [self floatingSystemSceneReferenceSize];
+}
+
 - (BOOL)applyFloatingSceneLogicalFrameForCurrentPresentation:(NSString *)policy {
     id scene = self.floatingScene;
     if (!scene ||
         ![scene respondsToSelector:@selector(updateSettings:withTransitionContext:)]) {
         return NO;
     }
-    CGSize logicalSize = [self floatingSceneReferenceSize];
-    if (logicalSize.width <= 1.0 || logicalSize.height <= 1.0) {
+    CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+    CGSize contentViewportReference =
+        [self floatingContentViewportReferenceSize];
+    if (systemSceneReference.width <= 1.0 ||
+        systemSceneReference.height <= 1.0) {
         return NO;
     }
     @try {
@@ -5241,32 +5256,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         [mutableSettings setFrame:CGRectMake(0.0,
                                               0.0,
-                                              logicalSize.width,
-                                              logicalSize.height)];
+                                              systemSceneReference.width,
+                                              systemSceneReference.height)];
         [scene updateSettings:mutableSettings withTransitionContext:nil];
-        self.floatingHostReferenceSize = logicalSize;
+        self.floatingHostReferenceSize =
+            [self floatingContentViewportReferenceSize];
         FLMEnqueueDiagnosticLine(
-            @"sb scene-frame policy=%@ logical={%.4f,%.4f} virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} requested=%@",
-            (self.floatingSceneUsesCardGeometry &&
-             !self.floatingInteractiveFullscreenTransition)
-                ? @"virtual-viewport"
-                : @"fullscreen",
-            logicalSize.width, logicalSize.height,
-            FLMVirtualViewportWidth,
-            FLMVirtualViewportHeight,
+            @"sb scene-frame policy=fullscreen systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} requested=%@",
+            systemSceneReference.width,
+            systemSceneReference.height,
+            contentViewportReference.width,
+            contentViewportReference.height,
             FLMCenteredCardWidth,
             FLMCenteredCardHeight,
             policy ?: @"unknown");
         return YES;
     } @catch (__unused NSException *exception) {
         FLMEnqueueDiagnosticLine(
-            @"sb scene-frame policy=%@ rejected=exception virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} requested=%@",
-            (self.floatingSceneUsesCardGeometry &&
-             !self.floatingInteractiveFullscreenTransition)
-                ? @"virtual-viewport"
-                : @"fullscreen",
-            FLMVirtualViewportWidth,
-            FLMVirtualViewportHeight,
+            @"sb scene-frame policy=fullscreen rejected=exception systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} requested=%@",
+            systemSceneReference.width,
+            systemSceneReference.height,
+            contentViewportReference.width,
+            contentViewportReference.height,
             FLMCenteredCardWidth,
             FLMCenteredCardHeight,
             policy ?: @"unknown");
@@ -5401,29 +5412,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
             [mutableSettings setBackgrounded:NO];
         }
-        CGSize logicalSceneSize = [self floatingSceneReferenceSize];
-        NSString *sceneFramePolicy =
-            (self.floatingSceneUsesCardGeometry &&
-             !self.floatingInteractiveFullscreenTransition)
-                ? @"virtual-viewport"
-                : @"fullscreen";
-        if (logicalSceneSize.width > 0.0 && logicalSceneSize.height > 0.0 &&
+        CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+        CGSize contentViewportReference =
+            [self floatingContentViewportReferenceSize];
+        if (systemSceneReference.width > 0.0 &&
+            systemSceneReference.height > 0.0 &&
             [mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings
                 setFrame:CGRectMake(0.0,
                                     0.0,
-                                    logicalSceneSize.width,
-                                    logicalSceneSize.height)];
+                                    systemSceneReference.width,
+                                    systemSceneReference.height)];
             FLMEnqueueDiagnosticLine(
-                @"sb scene-frame policy=%@ logical={%.4f,%.4f} virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} requested=%@",
-                sceneFramePolicy,
-                logicalSceneSize.width,
-                logicalSceneSize.height,
-                FLMVirtualViewportWidth,
-                FLMVirtualViewportHeight,
+                @"sb scene-frame policy=fullscreen systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} requested=prepare",
+                systemSceneReference.width,
+                systemSceneReference.height,
+                contentViewportReference.width,
+                contentViewportReference.height,
                 FLMCenteredCardWidth,
-                FLMCenteredCardHeight,
-                sceneFramePolicy);
+                FLMCenteredCardHeight);
         }
         BOOL landscapeWindow =
             CGRectGetWidth(self.floatingWindow.bounds) >
@@ -5517,7 +5524,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardState(self.floatingIdentifier,
                             scene,
                             self.floatingKeyboardSessionGeneration);
-    self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
+    self.floatingHostReferenceSize =
+        [self floatingContentViewportReferenceSize];
 
     // Let the foreground/frame settings reach the application process before
     // creating the remote presenter. Creating both in the same transaction is
@@ -5581,10 +5589,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingPresenter = presenter;
     host.backgroundColor = [UIColor blackColor];
     host.userInteractionEnabled = YES;
-    // The host carries the Scene's current logical viewport. During launch it
-    // is display-sized; after the presenter is attached it becomes the
-    // card-ratio 390x675.3247 virtual viewport. The physical card remains
-    // fixed and layoutFloatingHostView applies one uniform visual scale.
+    // The host starts with the display-sized Scene reference while the route
+    // is being established. Once the card presentation commits, this host
+    // uses the independent 390x675.3247 content viewport; the real Scene
+    // remains display-sized and the physical card remains fixed.
     host.clipsToBounds = NO;
     self.floatingLaunchState = FLMFloatingLaunchStateAttached;
     FLMEnqueueDiagnosticLine(
@@ -5879,7 +5887,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHostReferenceSize.height < 1.0) {
         CGSize referenceSize = host.bounds.size;
         if (referenceSize.width < 1.0 || referenceSize.height < 1.0) {
-            referenceSize = [self floatingSceneReferenceSize];
+            referenceSize = [self floatingContentViewportReferenceSize];
         }
         self.floatingHostReferenceSize = referenceSize;
     }
@@ -5902,23 +5910,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self flushPendingFloatingKeyboardFrameIfReady];
         [self revealFloatingContentForGeneration:generation];
         FLMEnqueueDiagnosticLine(
-            @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.4f,%.4f} virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} virtualViewportCommitted=%d",
+            @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} physical-card={%.1f,%.1f} sceneFrameReference=system contentViewportCommitted=%d",
             identifier, (unsigned long)generation, (unsigned long)attempt,
             (__bridge void *)host, NSStringFromCGRect(host.bounds),
+            [self floatingSystemSceneReferenceSize].width,
+            [self floatingSystemSceneReferenceSize].height,
+            [self floatingContentViewportReferenceSize].width,
+            [self floatingContentViewportReferenceSize].height,
             self.floatingHostReferenceSize.width,
             self.floatingHostReferenceSize.height,
-            FLMVirtualViewportWidth,
-            FLMVirtualViewportHeight,
             FLMCenteredCardWidth,
             FLMCenteredCardHeight,
             self.floatingSceneCardGeometryCommitted);
     }
 }
 
-- (BOOL)floatingSceneLogicalFrameMatchesVirtualViewport {
+- (BOOL)floatingSceneLogicalFrameMatchesSystemReference {
     id scene = self.floatingScene;
-    CGSize cardSize = self.floatingContainer.bounds.size;
-    if (!scene || cardSize.width <= 1.0 || cardSize.height <= 1.0) {
+    CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+    if (!scene || systemSceneReference.width <= 1.0 ||
+        systemSceneReference.height <= 1.0) {
         return NO;
     }
     @try {
@@ -5932,8 +5943,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             return NO;
         }
         CGRect frame = [frameValue CGRectValue];
-        return fabs(CGRectGetWidth(frame) - FLMVirtualViewportWidth) <= 1.0 &&
-               fabs(CGRectGetHeight(frame) - FLMVirtualViewportHeight) <= 1.0;
+        return fabs(CGRectGetWidth(frame) - systemSceneReference.width) <= 1.0 &&
+               fabs(CGRectGetHeight(frame) - systemSceneReference.height) <= 1.0;
     } @catch (__unused NSException *exception) {
         return NO;
     }
@@ -5953,20 +5964,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneUsesCardGeometry = YES;
     BOOL applied =
         [self applyFloatingSceneLogicalFrameForCurrentPresentation:
-                  @"virtual-viewport-request"];
-    // The application/keyboard route was established using the display-sized
-    // Scene above. Once that transaction is requested, the remote host must
-    // use the same virtual viewport as the Scene, not the physical card size
-    // and not the stale display-sized reference.
-    self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
+                  @"content-viewport-request"];
+    // Do not change the Scene reference here. The route was established using
+    // the display-sized Scene and must remain that way. Only the presentation
+    // host changes reference space after its content viewport is committed.
+    CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+    CGSize contentViewportReference =
+        [self floatingContentViewportReferenceSize];
     [self layoutFloatingHostView];
     FLMEnqueueDiagnosticLine(
-        @"sb scene-virtual-viewport request generation=%lu attempt=%lu applied=%d previousReference={%.4f,%.4f} logical={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ routeSession=%lu",
+        @"sb content-viewport request generation=%lu attempt=%lu applied=%d previousHostReference={%.4f,%.4f} systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ sceneFrameReference=system routeSession=%lu",
         (unsigned long)generation, (unsigned long)attempt, applied,
         previousReference.width,
         previousReference.height,
-        FLMVirtualViewportWidth,
-        FLMVirtualViewportHeight,
+        systemSceneReference.width,
+        systemSceneReference.height,
+        contentViewportReference.width,
+        contentViewportReference.height,
         FLMCenteredCardWidth,
         FLMCenteredCardHeight,
         FLMVirtualViewportScale,
@@ -5998,7 +6012,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         !self.floatingSceneCardGeometryPending) {
         return;
     }
-    BOOL committed = [self floatingSceneLogicalFrameMatchesVirtualViewport];
+    BOOL committed = [self floatingSceneLogicalFrameMatchesSystemReference];
     if (!committed && attempt < 8) {
         [self commitFloatingCardSceneGeometryForIdentifier:identifier
                                                  generation:generation
@@ -6006,33 +6020,44 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     if (!committed) {
-        // A private Scene may reject the virtual viewport during lifecycle
-        // churn. Keep the proven full-screen route as a bounded fallback.
-        // Do not expose a half-laid-out card or leave the launch cover forever.
+        // A private Scene may reject the display-sized frame during lifecycle
+        // churn. Keep the existing bounded fallback rather than exposing a
+        // half-laid-out card or leaving the launch cover forever.
         self.floatingSceneUsesCardGeometry = NO;
         self.floatingSceneCardGeometryPending = NO;
         self.floatingSceneCardGeometryCommitted = NO;
         [self applyFloatingSceneLogicalFrameForCurrentPresentation:
-                  @"virtual-viewport-fallback-fullscreen"];
+                  @"content-viewport-fallback-fullscreen"];
         [self layoutFloatingHostView];
+        CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+        CGSize contentViewportReference =
+            [self floatingContentViewportReferenceSize];
         FLMEnqueueDiagnosticLine(
-            @"sb scene-virtual-viewport fallback=fullscreen generation=%lu attempt=%lu virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} host=%@",
+            @"sb content-viewport fallback=fullscreen generation=%lu attempt=%lu systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} host=%@ sceneFrameReference=system",
             (unsigned long)generation, (unsigned long)attempt,
-            FLMVirtualViewportWidth,
-            FLMVirtualViewportHeight,
+            systemSceneReference.width,
+            systemSceneReference.height,
+            contentViewportReference.width,
+            contentViewportReference.height,
             FLMCenteredCardWidth,
             FLMCenteredCardHeight,
             NSStringFromCGRect(self.floatingHostView.bounds));
     } else {
         self.floatingSceneCardGeometryPending = NO;
         self.floatingSceneCardGeometryCommitted = YES;
-        self.floatingHostReferenceSize = [self floatingSceneReferenceSize];
+        self.floatingHostReferenceSize =
+            [self floatingContentViewportReferenceSize];
         [self layoutFloatingHostView];
+        CGSize systemSceneReference = [self floatingSystemSceneReferenceSize];
+        CGSize contentViewportReference =
+            [self floatingContentViewportReferenceSize];
         FLMEnqueueDiagnosticLine(
-            @"sb scene-virtual-viewport committed generation=%lu attempt=%lu logical={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ routeSession=%lu",
+            @"sb content-viewport committed generation=%lu attempt=%lu systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ sceneFrameReference=system routeSession=%lu",
             (unsigned long)generation, (unsigned long)attempt,
-            FLMVirtualViewportWidth,
-            FLMVirtualViewportHeight,
+            systemSceneReference.width,
+            systemSceneReference.height,
+            contentViewportReference.width,
+            contentViewportReference.height,
             FLMCenteredCardWidth,
             FLMCenteredCardHeight,
             FLMVirtualViewportScale,
@@ -6044,14 +6069,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self flushPendingFloatingKeyboardFrameIfReady];
     [self revealFloatingContentForGeneration:generation];
     FLMEnqueueDiagnosticLine(
-        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ reference={%.4f,%.4f} virtual-viewport={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f virtualViewportCommitted=%d routeSession=%lu",
+        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f sceneFrameReference=system contentViewportCommitted=%d routeSession=%lu",
         identifier, (unsigned long)generation, (unsigned long)attempt,
         (__bridge void *)self.floatingHostView,
         NSStringFromCGRect(self.floatingHostView.bounds),
+        [self floatingSystemSceneReferenceSize].width,
+        [self floatingSystemSceneReferenceSize].height,
+        [self floatingContentViewportReferenceSize].width,
+        [self floatingContentViewportReferenceSize].height,
         self.floatingHostReferenceSize.width,
         self.floatingHostReferenceSize.height,
-        FLMVirtualViewportWidth,
-        FLMVirtualViewportHeight,
         FLMCenteredCardWidth,
         FLMCenteredCardHeight,
         FLMVirtualViewportScale,
