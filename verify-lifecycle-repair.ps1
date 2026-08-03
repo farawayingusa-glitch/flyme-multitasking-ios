@@ -29,6 +29,17 @@ foreach ($Marker in @(
     'restoreFloatingHandleInteraction',
     'updateFloatingFullscreenSnapshotForProgress:',
     'displayCommitted = targetIsFrontmost && attempt >= 1',
+    'scene-frame policy=fullscreen',
+    'content-scale policy=%@ systemSceneReference=',
+    'contentViewportReference=',
+    'sceneFrameReference=system',
+    'floatingSystemSceneReferenceSize',
+    'floatingContentViewportReferenceSize',
+    'floatingSceneLogicalFrameMatchesSystemReference',
+    'content-viewport request',
+    'content-viewport committed',
+    'content-viewport-fit',
+    'FLMVirtualViewportHeight',
     'CGFloat handleWidth = visibleHandleWidth + 40.0;',
     'pointIsInsideFloatingInteractionDomain:',
     'outsideCloseAuthorized',
@@ -79,7 +90,11 @@ foreach ($Removed in @(
     'consumeOutsideTapForKeyboardDismissal',
     'applyFloatingKeyboardContainerOffsetForFrame:',
     'floatingKeyboardContainerOffsetY',
-    'setFloatingSceneUsesFullscreenKeyboardHost'
+    'setFloatingSceneUsesFullscreenKeyboardHost',
+    'scene-virtual-viewport',
+    'floatingSceneLogicalFrameMatchesVirtualViewport',
+    'virtual-viewport-fit',
+    'virtual-viewport restore keyboard-session-restored'
 )) {
     Reject-Text $Source $Removed
 }
@@ -118,9 +133,14 @@ Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
-Require-Text $Source 'filter=UIKit-framework target-gated'
+Require-Text $Source 'filter=WeChat-bundle target-gated'
 Require-Text $Source 'scene-frame policy=fullscreen'
-Require-Text $Source 'virtual-viewport-fit'
+Require-Text $Source 'content-scale policy=%@ systemSceneReference='
+Require-Text $Source 'contentViewportReference='
+Require-Text $Source 'sceneFrameReference=system'
+Require-Text $Source 'floatingSystemSceneReferenceSize'
+Require-Text $Source 'floatingContentViewportReferenceSize'
+Require-Text $Source 'content-viewport-fit'
 Require-Text $Source 'FLMVirtualViewportHeight'
 Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
@@ -128,8 +148,8 @@ Require-Text $Source 'policy=touch-origin'
 Require-Text $Source 'centered-preserved=%d'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
-Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
-Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
+Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
+Reject-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
-Write-Output 'scene lifecycle and target-gated WeChat keyboard adapter verified'
+Write-Output 'scene lifecycle, fullscreen Scene/content viewport split, and direct WeChat keyboard adapter verified'

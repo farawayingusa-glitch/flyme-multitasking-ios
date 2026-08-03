@@ -18,26 +18,29 @@ required_source=(
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
     "floatingFullscreenProgress"
-    "scene-frame policy=%@"
-    "content-scale policy=%@"
-    "logicalScene=%@"
+    "scene-frame policy=fullscreen"
+    "content-scale policy=%@ systemSceneReference="
+    "contentViewportReference="
+    "sceneFrameReference=system"
+    "floatingSystemSceneReferenceSize"
+    "floatingContentViewportReferenceSize"
     "floatingSceneUsesCardGeometry"
     "floatingSceneCardGeometryPending"
     "floatingSceneCardGeometryCommitted"
-    "floatingSceneLogicalFrameMatchesVirtualViewport"
-    "scene-virtual-viewport request"
-    "scene-virtual-viewport committed"
-    "virtual-viewport-fit"
+    "floatingSceneLogicalFrameMatchesSystemReference"
+    "content-viewport request"
+    "content-viewport committed"
+    "content-viewport-fit"
     "FLMVirtualViewportHeight"
     "floatingKeyboardFramePending"
     "frame-deferred waiting=scene-host"
     "host-deferred waiting=application-host"
     "frame-deferred replay=1"
-    "virtual-viewport restore keyboard-session-restored"
+    "content-viewport-restore"
     "floatingHostReferenceSize"
     "applyFloatingSceneLogicalFrameForCurrentPresentation"
     "geometryProgress"
-    "displayCommitted = targetIsFrontmost && attempt >= 3"
+    "displayCommitted = targetIsFrontmost && attempt >= 1"
     "fullscreen-handoff"
     "restoring-card=1"
     "keyboardPassThroughFrame"
@@ -88,6 +91,10 @@ removed_source=(
     "widthProgress"
     "verticalProgress"
     "fillScale"
+    "scene-virtual-viewport"
+    "floatingSceneLogicalFrameMatchesVirtualViewport"
+    "virtual-viewport-fit"
+    "virtual-viewport restore keyboard-session-restored"
     "content-scale policy=card-fit"
     "content-scale policy=card-1to1"
     "scene-card commit-request"
@@ -127,9 +134,9 @@ for marker in "${required_keyboard_source[@]}"; do
 done
 
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
-grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
-if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard adapter filter must use UIKit injection with in-process WeChat gating" >&2
+grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
+if grep -Eq 'com.apple.UIKit|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard adapter filter must use direct WeChat injection with in-process identity gating" >&2
     exit 1
 fi
 
@@ -140,4 +147,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation and target-gated UIKit adapter architecture verified"
+echo "frozen gesture foundation, fullscreen Scene/content viewport split, and direct WeChat keyboard adapter verified"

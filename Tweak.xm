@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.53 schema=17");
+                    @"logger-ready build=0.8.54 schema=17");
             }
         });
     });
@@ -1310,7 +1310,7 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
         *readyPID = ready.pid;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb adapter-handshake context=%@ app=%@ filter=UIKit-framework target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
+        @"sb adapter-handshake context=%@ app=%@ filter=WeChat-bundle target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
         context ?: @"<none>", identifier ?: @"<none>", accepted,
         ctor.registerStatus, ctor.readStatus,
         (unsigned long long)ctor.rawState, ctor.magic, ctor.build, ctor.pid,
@@ -3148,16 +3148,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotContent = content;
     self.floatingContainer.alpha = 0.0;
     [self updateFloatingFullscreenSnapshotForProgress:0.0];
-
-    // The live compact Scene is now covered by the same card snapshot. Keep
-    // the application-style activation/keyboard identity, but temporarily
-    // restore display geometry for the fullscreen handoff. The cover hides
-    // this transaction from the user and the route/session is not reset here.
-    self.floatingSceneUsesCardGeometry = NO;
-    self.floatingSceneCardGeometryPending = NO;
-    self.floatingSceneCardGeometryCommitted = NO;
-    [self applyFloatingSceneLogicalFrameForCurrentPresentation:@"fullscreen-handoff"];
-    [self layoutFloatingHostView];
 }
 
 - (void)restoreFloatingSceneAfterCancelledTransition {
@@ -3172,37 +3162,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingFullscreenProgress = 0.0;
-    // A cancelled fullscreen transition returns to the real compact Scene.
-    // Restore the card frame without clearing the current keyboard route; the
-    // same target Scene/session remains the owner of input.
-    self.floatingSceneUsesCardGeometry = YES;
-    self.floatingSceneCardGeometryPending = NO;
-    self.floatingSceneCardGeometryCommitted = YES;
-    [self applyFloatingSceneLogicalFrameForCurrentPresentation:
-              @"content-viewport-restore"];
-    if (self.floatingKeyboardSessionGeneration == 0 &&
-        self.floatingIdentifier.length > 0 && self.floatingScene &&
-        !self.floatingWindow.hidden && !self.floatingDocked) {
-        // Fullscreen handoff intentionally ends the old keyboard interaction.
-        // If that handoff is cancelled, create a fresh generation for the same
-        // target Scene so the next responder can request the external keyboard
-        // without inheriting the ended route.
-        [self discardFloatingKeyboardLayerHost];
-        self.floatingKeyboardSessionCounter += 1;
-        if (self.floatingKeyboardSessionCounter == 0) {
-            self.floatingKeyboardSessionCounter = 1;
-        }
-        self.floatingKeyboardSessionGeneration =
-            self.floatingKeyboardSessionCounter;
-        FLMPublishKeyboardState(self.floatingIdentifier,
-                                self.floatingScene,
-                                self.floatingKeyboardSessionGeneration);
-        FLMEnqueueDiagnosticLine(
-            @"sb content-viewport restore keyboard-session-restored session=%lu app=%@ scene=%@",
-            (unsigned long)self.floatingKeyboardSessionGeneration,
-            self.floatingIdentifier,
-            FLMSceneIdentifier(self.floatingScene) ?: @"<none>");
-    }
     self.floatingContainer.alpha = 1.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
     if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
@@ -3498,7 +3457,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL targetIsFrontmost =
         identifier.length > 0 &&
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
-    BOOL displayCommitted = targetIsFrontmost && attempt >= 3;
+    // Match the 0.8.46 handoff cadence. The cover already completed the
+    // single continuous card-to-fullscreen animation; wait only one bounded
+    // polling turn before swapping it with the real foreground Scene.
+    BOOL displayCommitted = targetIsFrontmost && attempt >= 1;
     if (!displayCommitted && attempt < 24) {
         if (attempt == 0 || attempt >= 22) {
             FLMEnqueueDiagnosticLine(

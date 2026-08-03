@@ -30,7 +30,7 @@ foreach ($Marker in @(
     'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
     'restoreFloatingHandleInteraction',
     'updateFloatingFullscreenSnapshotForProgress:',
-    'displayCommitted = targetIsFrontmost && attempt >= 3',
+    'displayCommitted = targetIsFrontmost && attempt >= 1',
     'CGFloat handleWidth = visibleHandleWidth + 40.0;',
     'pointIsInsideFloatingInteractionDomain:',
     'outsideCloseAuthorized',
@@ -57,14 +57,20 @@ foreach ($Marker in @(
     'floatingSceneUsesCardGeometry',
     'floatingSceneCardGeometryPending',
     'floatingSceneCardGeometryCommitted',
-    'floatingSceneLogicalFrameMatchesVirtualViewport',
-    'scene-virtual-viewport request',
-    'scene-virtual-viewport committed',
-    'virtual-viewport-fit',
+    'floatingSceneLogicalFrameMatchesSystemReference',
+    'content-viewport request',
+    'content-viewport committed',
+    'content-viewport-fit',
+    'scene-frame policy=fullscreen',
+    'content-scale policy=%@ systemSceneReference=',
+    'contentViewportReference=',
+    'sceneFrameReference=system',
+    'floatingSystemSceneReferenceSize',
+    'floatingContentViewportReferenceSize',
     'frame-deferred waiting=scene-host',
     'host-deferred waiting=application-host',
     'frame-deferred replay=1',
-    'virtual-viewport restore keyboard-session-restored'
+    'content-viewport-restore'
 )) {
     Require-Text $Source $Marker
 }
@@ -97,7 +103,11 @@ foreach ($Removed in @(
     'verticalRevealStart',
     'widthProgress',
     'verticalProgress',
-    'fillScale'
+    'fillScale',
+    'scene-virtual-viewport',
+    'floatingSceneLogicalFrameMatchesVirtualViewport',
+    'virtual-viewport-fit',
+    'virtual-viewport restore keyboard-session-restored'
 )) {
     Reject-Text $Source $Removed
 }
@@ -136,10 +146,11 @@ Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
-Require-Text $Source 'filter=UIKit-framework target-gated'
-Require-Text $Source 'scene-frame policy=%@'
-Require-Text $Source 'content-scale policy=%@'
-Require-Text $Source 'logicalScene=%@'
+Require-Text $Source 'filter=WeChat-bundle target-gated'
+Require-Text $Source 'scene-frame policy=fullscreen'
+Require-Text $Source 'content-scale policy=%@ systemSceneReference='
+Require-Text $Source 'contentViewportReference='
+Require-Text $Source 'sceneFrameReference=system'
 Require-Text $Source 'floatingHostReferenceSize'
 Require-Text $Source 'applyFloatingSceneLogicalFrameForCurrentPresentation'
 Require-Text $Source 'floatingFullscreenProgress'
@@ -156,8 +167,8 @@ Reject-Text $Source 'scene-card committed'
 Reject-Text $Source 'card-fit=1'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
-Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
-Reject-Text $KeyboardFilter '<string>com.tencent.xin</string>'
+Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
+Reject-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
-Write-Output 'scene lifecycle, fixed card Scene geometry, preserved keyboard route, and target-gated WeChat adapter verified'
+Write-Output 'scene lifecycle, fullscreen Scene/content viewport split, preserved keyboard route, and direct WeChat adapter verified'

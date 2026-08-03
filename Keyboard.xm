@@ -5,12 +5,12 @@
 
 #import "FLMDiagnostics.h"
 
-// SpringBoard owns the real keyboard Scene and its touch routing. This UIKit
-// client does not resize the card or the system keyboard; SpringBoard changes
-// the target application Scene geometry and publishes the current logical
-// overlap. UIKit keeps the physical keyboard reference full-screen while the
-// application performs its normal responder/input-bar avoidance in its active
-// card Scene.
+// SpringBoard owns the real keyboard Scene and its touch routing. This adapter
+// is injected into WeChat's application process, not into a generic UIKit
+// client. The card is a presentation transform; it must never become the
+// keyboard's coordinate system. UIKit therefore receives the display-sized
+// reference (390x844 on the target device), while the card renderer remains
+// responsible for the fixed 300.3x520 visual viewport elsewhere.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -154,11 +154,10 @@ static uint16_t FLMWeChatProcessIdentityFlags(void) {
            (executableMatches ? 16U : 0U);
 }
 
-// The original TrollOpen keyboard adapter is filtered through UIKit, not the
-// application bundle. That reaches the process that owns the UIKit keyboard
-// contract on this iOS version, but it also maps the dylib into many processes.
-// Do not initialise hooks, notify state, or UI access unless both independent
-// checks prove that this is WeChat's main process.
+// FlymeKeyboard.plist targets com.tencent.xin directly. Keep the in-process
+// identity gate as a second safety check, but do not depend on a broad UIKit
+// injection path to discover WeChat after the dylib has already loaded in an
+// unrelated process.
 static BOOL FLMIsTargetWeChatProcess(void) {
     uint16_t flags = FLMWeChatProcessIdentityFlags();
     // Do not treat a WeChat framework loaded into another process as the app.
@@ -283,20 +282,13 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
         if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
             continue;
         }
-        for (UIWindow *window in windowScene.windows) {
-            if (!window.hidden && window.alpha > 0.01 &&
-                window.windowLevel <= UIWindowLevelNormal + 1.0 &&
-                CGRectGetWidth(window.bounds) > 1.0 &&
-                CGRectGetHeight(window.bounds) > 1.0) {
-                return window.bounds;
-            }
-        }
-        CGRect bounds = windowScene.coordinateSpace.bounds;
-        if (CGRectGetWidth(bounds) > 1.0 && CGRectGetHeight(bounds) > 1.0) {
-            return bounds;
-        }
+        // Never use the hosted window/card bounds here. The hosted view may
+        // be 390x675.3247 in centered presentation, but keyboard avoidance
+        // must remain in the application's display-sized 390x844 space.
+        return FLMPhysicalReferenceBoundsForScene(windowScene);
     }
-    return CGRectZero;
+    CGSize size = FLMFullPhysicalScreenSize();
+    return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
 static void FLMRefreshApplicationKeyboardLayout(void) {
@@ -579,20 +571,17 @@ static void FLMReloadKeyboardAvoidance(void) {
 
 static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
                                                           CGRect logicalBounds) {
-    if (!FLMKeyboardCardGeometryActive ||
-        FLMKeyboardCardGeometryGeneration !=
-            (FLMKeyboardSessionGeneration & 0x7FFFULL) ||
-        FLMKeyboardCardVisualScale <= 0.05 ||
-        CGRectGetHeight(logicalBounds) <= 1.0) {
+    // This fallback is deliberately full-screen. Card bottom and card scale
+    // belong to presentation, not to the UIKit keyboard contract.
+    if (CGRectGetHeight(logicalBounds) <= 1.0) {
         return 0.0;
     }
-    CGFloat physicalOverlap = MAX(0.0, FLMKeyboardCardBottom - keyboardTop);
+    CGSize physicalSize = FLMFullPhysicalScreenSize();
+    CGFloat physicalOverlap = MAX(0.0, physicalSize.height - keyboardTop);
     if (physicalOverlap <= 1.0) {
         return 0.0;
     }
-    CGFloat logicalHeight =
-        physicalOverlap / FLMKeyboardCardVisualScale +
-        8.0 / FLMKeyboardCardVisualScale;
+    CGFloat logicalHeight = physicalOverlap;
     return MIN(CGRectGetHeight(logicalBounds) * 0.72, logicalHeight);
 }
 
@@ -634,17 +623,14 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
         return originalHeight;
     }
 
-    CGFloat mappedHeight = 0.0;
-    if (FLMExternalKeyboardAvoidanceGeneration ==
-            FLMKeyboardSessionGeneration &&
-        FLMExternalKeyboardAvoidanceHeight > 1.0) {
-        mappedHeight = FLMExternalKeyboardAvoidanceHeight;
-    } else {
-        CGRect logicalBounds = FLMTargetApplicationLogicalBounds();
-        CGSize physicalSize = FLMFullPhysicalScreenSize();
-        mappedHeight = FLMLogicalAvoidanceForPhysicalKeyboardTop(
-            physicalSize.height - MAX(0.0, originalHeight), logicalBounds);
-    }
+    // Prefer UIKit's native full-screen intersection. If UIKit reports no
+    // intersection during a Scene handoff, derive the same value from the
+    // full-screen reference only; never substitute the card's shared geometry
+    // or its scaled bottom edge as the keyboard coordinate source.
+    CGRect logicalBounds = FLMTargetApplicationLogicalBounds();
+    CGSize physicalSize = FLMFullPhysicalScreenSize();
+    CGFloat mappedHeight = FLMLogicalAvoidanceForPhysicalKeyboardTop(
+        physicalSize.height - MAX(0.0, originalHeight), logicalBounds);
     if (mappedHeight <= 1.0) {
         mappedHeight = originalHeight;
     }
