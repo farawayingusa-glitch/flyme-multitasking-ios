@@ -6,11 +6,13 @@
 #import "FLMDiagnostics.h"
 
 // SpringBoard owns the real keyboard Scene and its touch routing. This adapter
-// is injected into WeChat's application process, not into a generic UIKit
-// client. The card is a presentation transform; it must never become the
-// keyboard's coordinate system. UIKit therefore receives the display-sized
-// reference (390x844 on the target device), while the card renderer remains
-// responsible for the fixed 300.3x520 visual viewport elsewhere.
+// is injected into UIKit application clients, but installs functional hooks
+// only after the shared route identifies the current card target. The card is
+// a presentation transform; it must never become the keyboard's coordinate
+// system. UIKit therefore receives the display-sized reference (390x844 on
+// the target device), while the app-side content adapter uses a logical
+// 390x675.324675 viewport before SpringBoard applies the fixed 0.77 transform
+// to the 300.3x520 card.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -50,16 +52,32 @@ static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static int FLMKeyboardAppCtorToken = -1;
 static int FLMKeyboardAppReadyToken = -1;
 static BOOL FLMKeyboardHooksInstalled = NO;
+static BOOL FLMKeyboardRouteObserversInstalled = NO;
+static BOOL FLMContentViewportAdapterApplying = NO;
+static BOOL FLMContentViewportAdapterActive = NO;
+static uint64_t FLMContentViewportAdapterGeneration = 0;
+static NSMapTable<UIView *, NSDictionary *> *FLMContentViewportOriginalLayouts;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
+static const CGSize FLMContentLogicalViewportSize = {
+    390.0,
+    675.3246753246753,
+};
+static const CGFloat FLMContentExternalScale = 0.77;
+static const CGSize FLMPhysicalCardSize = {
+    300.3,
+    520.0,
+};
+
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
 static void FLMAttemptKeyboardInitialization(void);
+static void FLMUpdateContentViewportAdapter(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -124,50 +142,65 @@ static BOOL FLMProcessIsKeyboardExtension(void) {
                NSNotFound;
 }
 
-static uint16_t FLMWeChatProcessIdentityFlags(void) {
-    static NSString *const bundleIdentifier = @"com.tencent.xin";
-    NSBundle *mainBundle = [NSBundle mainBundle];
-    NSString *mainBundleIdentifier = mainBundle.bundleIdentifier;
-    BOOL mainBundleMatches =
-        [mainBundleIdentifier isEqualToString:bundleIdentifier];
-    BOOL containsBundle = mainBundleMatches;
-    for (NSBundle *bundle in [NSBundle allBundles]) {
-        if ([bundle.bundleIdentifier isEqualToString:bundleIdentifier]) {
-            containsBundle = YES;
-            break;
-        }
-    }
-
+static BOOL FLMProcessIsSpringBoardOrSystemAgent(void) {
+    NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
     NSString *processName = [NSProcessInfo processInfo].processName;
-    NSString *executableName = mainBundle.executablePath.lastPathComponent;
-    BOOL processMatches = [processName isEqualToString:@"WeChat"];
-    BOOL executableMatches = [executableName isEqualToString:@"WeChat"];
-
-    // Bits 0 and 1 retain the v47 meaning used by SpringBoard diagnostics:
-    // a matching loaded bundle and a matching process/executable.  The high
-    // bits make the next log distinguish a strict main-bundle match from a
-    // merely loaded WeChat bundle, and process-name from executable matches.
-    return (containsBundle ? 1U : 0U) |
-           ((processMatches || executableMatches) ? 2U : 0U) |
-           (mainBundleMatches ? 4U : 0U) |
-           (processMatches ? 8U : 0U) |
-           (executableMatches ? 16U : 0U);
+    NSString *executableName = [NSBundle mainBundle].executablePath.lastPathComponent;
+    NSSet<NSString *> *excludedExecutables = [NSSet setWithObjects:
+        @"SpringBoard", @"backboardd", @"runningboardd", @"mediaserverd",
+        @"assertiond", @"frontboardd", @"lsd", nil];
+    return [bundleIdentifier isEqualToString:@"com.apple.springboard"] ||
+           [processName isEqualToString:@"SpringBoard"] ||
+           [excludedExecutables containsObject:processName] ||
+           [excludedExecutables containsObject:executableName];
 }
 
-// FlymeKeyboard.plist targets com.tencent.xin directly. Keep the in-process
-// identity gate as a second safety check, but do not depend on a broad UIKit
-// injection path to discover WeChat after the dylib has already loaded in an
-// unrelated process.
-static BOOL FLMIsTargetWeChatProcess(void) {
-    uint16_t flags = FLMWeChatProcessIdentityFlags();
-    // Do not treat a WeChat framework loaded into another process as the app.
-    // The main bundle must identify WeChat and the current process must carry
-    // the WeChat executable identity.  A temporary failure is retried below.
-    return (flags & 4U) != 0 && (flags & 2U) != 0;
+static BOOL FLMProcessIsApplicationClient(void) {
+    // The filter is deliberately broad enough to reach an arbitrary wheel
+    // target, so this process gate is the security boundary.  Extensions,
+    // SpringBoard and launch/system agents never install Logos groups.
+    NSDictionary *extension = [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+    BOOL isExtension = [extension isKindOfClass:[NSDictionary class]];
+    NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    return bundleIdentifier.length > 0 && !isExtension &&
+           !FLMProcessIsSpringBoardOrSystemAgent() &&
+           NSClassFromString(@"UIApplication") != Nil;
+}
+
+static uint16_t FLMApplicationProcessIdentityFlags(void) {
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    NSString *bundleIdentifier = mainBundle.bundleIdentifier;
+    NSString *processName = [NSProcessInfo processInfo].processName;
+    NSString *executableName = mainBundle.executablePath.lastPathComponent;
+    NSDictionary *extension = mainBundle.infoDictionary[@"NSExtension"];
+    BOOL bundlePresent = bundleIdentifier.length > 0;
+    BOOL applicationClient = FLMProcessIsApplicationClient();
+    BOOL extensionProcess = [extension isKindOfClass:[NSDictionary class]];
+    BOOL systemAgent = FLMProcessIsSpringBoardOrSystemAgent();
+    BOOL executablePresent = executableName.length > 0;
+    BOOL processPresent = processName.length > 0;
+    return (bundlePresent ? 1U : 0U) |
+           (applicationClient ? 2U : 0U) |
+           (extensionProcess ? 4U : 0U) |
+           (systemAgent ? 8U : 0U) |
+           (executablePresent ? 16U : 0U) |
+           (processPresent ? 32U : 0U);
+}
+
+// FlymeKeyboard.plist reaches UIKit application clients rather than naming a
+// single app. The shared-state route is the second, exact gate: only the
+// process whose main bundle hash equals the current wheel target can install
+// functional hooks. A dylib loaded into another app is diagnostic-only until
+// a later route notification selects that app.
+static BOOL FLMIsEligibleApplicationProcess(void) {
+    return (FLMApplicationProcessIdentityFlags() & 2U) != 0;
 }
 
 static void FLMPublishKeyboardRawLoadDiagnostic(void) {
-    uint16_t flags = FLMWeChatProcessIdentityFlags();
+    if (!FLMIsEligibleApplicationProcess()) {
+        return;
+    }
+    uint16_t flags = FLMApplicationProcessIdentityFlags();
     if (FLMKeyboardRawLoadDiagnosticPublished &&
         flags == FLMKeyboardLastIdentityFlags) {
         return;
@@ -179,9 +212,7 @@ static void FLMPublishKeyboardRawLoadDiagnostic(void) {
     // UI access, hook installation, route registration, or shared-state read.
     // A raw adapter-loaded event proves that the dylib reached this process;
     // its identity bits show whether the later target gate was premature.
-    FLMDiagnosticRole role = (flags & 3U) == 3U
-                                 ? FLMDiagnosticRoleApplication
-                                 : FLMDiagnosticRoleUIKitOther;
+    FLMDiagnosticRole role = FLMDiagnosticRoleApplication;
     FLMPublishDiagnosticEvent(role,
                               FLMDiagnosticEventAdapterLoaded,
                               0,
@@ -403,16 +434,12 @@ static void FLMReloadKeyboardRoute(void) {
     uint64_t previousGeneration = FLMKeyboardSessionGeneration;
     uint64_t currentHash =
         FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier);
-    uint16_t weChatIdentityFlags = FLMWeChatProcessIdentityFlags();
-    BOOL explicitWeChatTarget =
-        targetHash == FLMIdentifierHash(@"com.tencent.xin") &&
-        (weChatIdentityFlags & 1U) != 0 &&
-        (weChatIdentityFlags & 2U) != 0;
+    uint16_t applicationIdentityFlags = FLMApplicationProcessIdentityFlags();
     FLMKeyboardExtensionProcess = FLMProcessIsKeyboardExtension();
     FLMKeyboardTargetApplication =
         sessionGeneration != 0 && targetHash != 0 &&
-        ((currentHash != 0 && targetHash == currentHash) ||
-         explicitWeChatTarget);
+        currentHash != 0 && targetHash == currentHash &&
+        FLMIsEligibleApplicationProcess();
     FLMKeyboardRouteActive =
         FLMKeyboardTargetApplication ||
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
@@ -452,9 +479,9 @@ static void FLMReloadKeyboardRoute(void) {
              (FLMKeyboardExtensionProcess ? 4U : 0U) |
              (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
              (sceneHash != 0 ? 16U : 0U) |
-             (explicitWeChatTarget ? 32U : 0U) |
-             ((weChatIdentityFlags & 1U) != 0 ? 64U : 0U) |
-             ((weChatIdentityFlags & 2U) != 0 ? 128U : 0U) |
+            ((applicationIdentityFlags & 1U) != 0 ? 32U : 0U) |
+            ((applicationIdentityFlags & 2U) != 0 ? 64U : 0U) |
+            ((applicationIdentityFlags & 4U) != 0 ? 128U : 0U) |
              (sharedStateAvailable ? 256U : 0U) |
              (sharedStateActive ? 512U : 0U);
         FLMPublishDiagnosticEvent(
@@ -472,6 +499,7 @@ static void FLMReloadKeyboardRoute(void) {
                 FLMRemoteKeyboardGeometryInstalled ? 1 : 0);
         }
     }
+    FLMUpdateContentViewportAdapter();
 }
 
 static void FLMReloadKeyboardCardGeometry(void) {
@@ -502,6 +530,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
                 FLMDiagnosticUnsignedValue(FLMKeyboardCardVisualScale *
                                            1000.0));
         }
+        FLMUpdateContentViewportAdapter();
         return;
     }
     if (FLMKeyboardCardGeometryToken < 0 ||
@@ -528,6 +557,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
             FLMDiagnosticUnsignedValue(FLMKeyboardCardBottom),
             FLMDiagnosticUnsignedValue(FLMKeyboardCardVisualScale * 1000.0));
     }
+    FLMUpdateContentViewportAdapter();
 }
 
 static void FLMReloadKeyboardAvoidance(void) {
@@ -584,6 +614,230 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
     CGFloat logicalHeight = physicalOverlap;
     return MIN(CGRectGetHeight(logicalBounds) * 0.72, logicalHeight);
 }
+
+static BOOL FLMIsApplicationContentWindow(UIWindow *window) {
+    if (!window || window.hidden || window.alpha <= 0.01 ||
+        !window.rootViewController || !window.windowScene ||
+        !FLMSceneMatchesKeyboardRoute(window.windowScene)) {
+        return NO;
+    }
+    if (window.windowLevel != UIWindowLevelNormal) {
+        return NO;
+    }
+    NSString *className = NSStringFromClass(window.class);
+    if ([className rangeOfString:@"TextEffects"].location != NSNotFound ||
+        [className rangeOfString:@"Keyboard" options:NSCaseInsensitiveSearch].location !=
+            NSNotFound ||
+        [className rangeOfString:@"Remote" options:NSCaseInsensitiveSearch].location !=
+            NSNotFound) {
+        return NO;
+    }
+    return YES;
+}
+
+static void FLMLogContentViewportLayout(NSString *stage,
+                                        UIWindow *window,
+                                        UIView *contentView,
+                                        CGRect sceneLogicalBounds,
+                                        CGRect contentViewportBounds,
+                                        CGRect previousBounds,
+                                        CGRect currentBounds) {
+    CGRect windowBounds = window ? window.bounds : CGRectZero;
+    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+          stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
+          (unsigned long long)FLMKeyboardSessionGeneration,
+          NSStringFromCGRect(sceneLogicalBounds),
+          NSStringFromCGRect(contentViewportBounds),
+          FLMContentExternalScale, FLMPhysicalCardSize.width,
+          FLMPhysicalCardSize.height, NSStringFromCGRect(windowBounds),
+          NSStringFromCGRect(previousBounds), NSStringFromCGRect(currentBounds),
+          FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
+}
+
+static void FLMRestoreContentViewportLayouts(void) {
+    if (!FLMContentViewportOriginalLayouts ||
+        FLMContentViewportOriginalLayouts.count == 0) {
+        FLMContentViewportAdapterActive = NO;
+        FLMContentViewportAdapterGeneration = 0;
+        return;
+    }
+    if (FLMContentViewportAdapterApplying) {
+        return;
+    }
+    FLMContentViewportAdapterApplying = YES;
+    for (UIView *contentView in FLMContentViewportOriginalLayouts.keyEnumerator) {
+        NSDictionary *layout =
+            [FLMContentViewportOriginalLayouts objectForKey:contentView];
+        NSValue *savedFrame = layout[@"frame"];
+        NSValue *savedBounds = layout[@"bounds"];
+        if (!contentView || !savedFrame || !savedBounds) {
+            continue;
+        }
+        CGRect previousBounds = contentView.bounds;
+        contentView.frame = savedFrame.CGRectValue;
+        contentView.bounds = savedBounds.CGRectValue;
+        [contentView setNeedsLayout];
+        UIWindow *window = contentView.window;
+        FLMLogContentViewportLayout(@"layout-restored", window, contentView,
+                                    window
+                                        ? FLMPhysicalReferenceBoundsForScene(
+                                              window.windowScene)
+                                        : CGRectZero,
+                                    CGRectMake(0.0, 0.0,
+                                               FLMContentLogicalViewportSize.width,
+                                               FLMContentLogicalViewportSize.height),
+                                    previousBounds, contentView.bounds);
+    }
+    [FLMContentViewportOriginalLayouts removeAllObjects];
+    FLMContentViewportAdapterApplying = NO;
+    FLMContentViewportAdapterActive = NO;
+    FLMContentViewportAdapterGeneration = 0;
+}
+
+static void FLMApplyContentViewportToRootView(UIView *contentView,
+                                              UIWindow *window) {
+    if (!contentView || !window || !FLMContentViewportAdapterActive ||
+        FLMContentViewportAdapterApplying ||
+        !FLMIsApplicationContentWindow(window)) {
+        return;
+    }
+    if (!FLMContentViewportOriginalLayouts) {
+        FLMContentViewportOriginalLayouts =
+            [NSMapTable weakToStrongObjectsMapTable];
+    }
+    if (![FLMContentViewportOriginalLayouts objectForKey:contentView]) {
+        [FLMContentViewportOriginalLayouts setObject:@{
+            @"frame": [NSValue valueWithCGRect:contentView.frame],
+            @"bounds": [NSValue valueWithCGRect:contentView.bounds],
+        }
+                                       forKey:contentView];
+    }
+    CGRect previousBounds = contentView.bounds;
+    CGRect targetBounds = CGRectMake(0.0, 0.0,
+                                     FLMContentLogicalViewportSize.width,
+                                     FLMContentLogicalViewportSize.height);
+    CGRect currentFrame = contentView.frame;
+    CGRect targetFrame = CGRectMake(CGRectGetMinX(currentFrame),
+                                    CGRectGetMinY(currentFrame),
+                                    FLMContentLogicalViewportSize.width,
+                                    FLMContentLogicalViewportSize.height);
+    BOOL alreadyApplied =
+        fabs(CGRectGetWidth(previousBounds) - targetBounds.size.width) < 0.25 &&
+        fabs(CGRectGetHeight(previousBounds) - targetBounds.size.height) < 0.25 &&
+        fabs(CGRectGetWidth(currentFrame) - targetFrame.size.width) < 0.25 &&
+        fabs(CGRectGetHeight(currentFrame) - targetFrame.size.height) < 0.25;
+    if (alreadyApplied) {
+        return;
+    }
+    FLMContentViewportAdapterApplying = YES;
+    contentView.bounds = targetBounds;
+    contentView.frame = targetFrame;
+    [contentView setNeedsLayout];
+    [contentView setNeedsUpdateConstraints];
+    CGRect sceneLogicalBounds =
+        FLMPhysicalReferenceBoundsForScene(window.windowScene);
+    FLMLogContentViewportLayout(@"layout-applied", window, contentView,
+                                sceneLogicalBounds, targetBounds,
+                                previousBounds, contentView.bounds);
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication, FLMDiagnosticEventLayoutRefresh,
+        FLMKeyboardSessionGeneration,
+        FLMDiagnosticUnsignedValue(targetBounds.size.width),
+        FLMDiagnosticUnsignedValue(targetBounds.size.height));
+    FLMContentViewportAdapterApplying = NO;
+}
+
+static void FLMApplyContentViewportToVisibleApplicationWindows(void) {
+    if (!FLMContentViewportAdapterActive ||
+        !FLMIsEligibleApplicationProcess()) {
+        return;
+    }
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            if (!FLMIsApplicationContentWindow(window)) {
+                continue;
+            }
+            FLMApplyContentViewportToRootView(window.rootViewController.view,
+                                              window);
+        }
+    }
+}
+
+static void FLMUpdateContentViewportAdapter(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMUpdateContentViewportAdapter();
+        });
+        return;
+    }
+    BOOL shouldApply = FLMKeyboardTargetApplication &&
+                       FLMKeyboardRouteActive &&
+                       FLMKeyboardCardGeometryActive &&
+                       FLMKeyboardCardGeometryGeneration != 0 &&
+                       FLMKeyboardCardGeometryGeneration ==
+                           (FLMKeyboardSessionGeneration & 0x7FFFULL);
+    if (!shouldApply) {
+        if (FLMContentViewportAdapterActive ||
+            FLMContentViewportOriginalLayouts.count > 0) {
+            NSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
+                  [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
+                  (unsigned long long)FLMKeyboardSessionGeneration,
+                  FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
+            FLMRestoreContentViewportLayouts();
+        }
+        return;
+    }
+    if (FLMContentViewportAdapterActive &&
+        FLMContentViewportAdapterGeneration != FLMKeyboardSessionGeneration) {
+        FLMRestoreContentViewportLayouts();
+    }
+    if (!FLMContentViewportAdapterActive) {
+        FLMContentViewportAdapterActive = YES;
+        FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
+        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f}",
+              [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
+              (unsigned long long)FLMKeyboardSessionGeneration,
+              FLMContentLogicalViewportSize.width,
+              FLMContentLogicalViewportSize.height, FLMContentExternalScale,
+              FLMPhysicalCardSize.width, FLMPhysicalCardSize.height);
+    }
+    FLMApplyContentViewportToVisibleApplicationWindows();
+}
+
+%group FLMContentViewportAdapter
+
+%hook UIWindow
+
+- (void)layoutSubviews {
+    %orig;
+    FLMUpdateContentViewportAdapter();
+}
+
+%end
+
+%hook UIViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (!FLMContentViewportAdapterActive || FLMContentViewportAdapterApplying ||
+        ![self.view isKindOfClass:[UIView class]]) {
+        return;
+    }
+    UIWindow *window = self.view.window;
+    if (window.rootViewController == self &&
+        FLMIsApplicationContentWindow(window)) {
+        FLMApplyContentViewportToRootView(self.view, window);
+    }
+}
+
+%end
+
+%end
 
 %hook UITextEffectsWindow
 
@@ -659,23 +913,11 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
     FLMRemoteKeyboardGeometryInstalled = YES;
 }
 
-static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
-    if (FLMKeyboardHooksInstalled || !FLMIsTargetWeChatProcess()) {
+static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
+    if (FLMKeyboardRouteObserversInstalled || !FLMIsEligibleApplicationProcess()) {
         return;
     }
-    FLMKeyboardHooksInstalled = YES;
-
-    // The two independent notify states make a failed device run
-    // unambiguous: no ctor token means no target-gated initialization; ctor
-    // without ready means initialization did not complete.  The raw-loaded
-    // diagnostic published before this function additionally distinguishes a
-    // missing injection from a constructor that ran before identity settled.
-    FLMPublishKeyboardAppLifecycleStage(
-        FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
-        &FLMKeyboardAppCtorToken,
-        FLYME_KEYBOARD_APP_CTOR_MAGIC,
-        FLMDiagnosticEventAdapterCtor);
-    %init;
+    FLMKeyboardRouteObserversInstalled = YES;
     notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                              &FLMKeyboardRouteToken,
                              dispatch_get_main_queue(),
@@ -712,6 +954,27 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
                              ^(__unused int token) {
                                  FLMReloadKeyboardRoute();
                              });
+}
+
+static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
+    if (FLMKeyboardHooksInstalled || !FLMIsEligibleApplicationProcess() ||
+        !FLMKeyboardTargetApplication) {
+        return;
+    }
+    FLMKeyboardHooksInstalled = YES;
+
+    // The two independent notify states make a failed device run
+    // unambiguous: no ctor token means no target-gated initialization; ctor
+    // without ready means initialization did not complete.  The raw-loaded
+    // diagnostic published before this function additionally distinguishes a
+    // missing injection from a constructor that ran before identity settled.
+    FLMPublishKeyboardAppLifecycleStage(
+        FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
+        &FLMKeyboardAppCtorToken,
+        FLYME_KEYBOARD_APP_CTOR_MAGIC,
+        FLMDiagnosticEventAdapterCtor);
+    %init(FLMContentViewportAdapter);
+    %init;
     FLMInstallRemoteKeyboardGeometryIfAvailable();
     FLMReloadKeyboardRoute();
     FLMPublishKeyboardAppLifecycleStage(
@@ -722,7 +985,8 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
 }
 
 static void FLMScheduleKeyboardIdentityRetry(void) {
-    if (FLMKeyboardHooksInstalled || FLMKeyboardIdentityRetryScheduled ||
+    if (FLMKeyboardHooksInstalled || !FLMIsEligibleApplicationProcess() ||
+        FLMKeyboardIdentityRetryScheduled ||
         FLMKeyboardIdentityRetryCount >= FLMKeyboardIdentityRetryLimit) {
         return;
     }
@@ -743,10 +1007,18 @@ static void FLMAttemptKeyboardInitialization(void) {
         return;
     }
     FLMPublishKeyboardRawLoadDiagnostic();
-    if (!FLMIsTargetWeChatProcess()) {
-        // Constructor-time identity can be incomplete.  Keep the pre-gate
-        // path diagnostic-only and retry on the main queue; non-target
-        // processes never install Logos groups or register route observers.
+    if (!FLMIsEligibleApplicationProcess()) {
+        // Do not install observers, Logos groups, or UI hooks in SpringBoard,
+        // keyboard extensions, system agents, or app extensions.
+        return;
+    }
+    // The observer is lightweight and target-agnostic. It lets a process that
+    // loaded before the wheel published its target become the selected app
+    // later, while all functional hooks remain behind the exact bundle-hash
+    // route gate.
+    FLMRegisterKeyboardRouteObserversIfNeeded();
+    FLMReloadKeyboardRoute();
+    if (!FLMKeyboardTargetApplication) {
         FLMScheduleKeyboardIdentityRetry();
         return;
     }
@@ -755,9 +1027,10 @@ static void FLMAttemptKeyboardInitialization(void) {
 
 %ctor {
     @autoreleasepool {
-        // This first call is intentionally safe even when the filter injects
-        // the dylib into UIKit clients before WeChat has a complete bundle
-        // identity.  All functional setup remains behind the strict gate.
+        // This first call is intentionally safe even when the broad UIKit
+        // filter loads the dylib before the route has selected this app. All
+        // functional setup remains behind the application/process and exact
+        // shared bundle-hash gates.
         FLMPublishKeyboardRawLoadDiagnostic();
         FLMAttemptKeyboardInitialization();
     }
