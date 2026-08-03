@@ -234,6 +234,7 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, assign) CGFloat minimumValue;
 @property(nonatomic, assign) CGFloat maximumValue;
 @property(nonatomic, assign) CGFloat defaultValue;
+@property(nonatomic, assign) BOOL cardGeometry;
 @end
 
 @implementation FLMWheelSliderCell
@@ -256,6 +257,7 @@ static NSString *FLMNameForIdentifier(
         _minimumValue = [[specifier propertyForKey:@"minimumValue"] doubleValue];
         _maximumValue = [[specifier propertyForKey:@"maximumValue"] doubleValue];
         _defaultValue = [[specifier propertyForKey:@"defaultValue"] doubleValue];
+        _cardGeometry = [[specifier propertyForKey:@"cardGeometry"] boolValue];
 
         _settingTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _settingTitleLabel.text = specifier.name;
@@ -308,9 +310,18 @@ static NSString *FLMNameForIdentifier(
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
-    self.settingTitleLabel.frame = CGRectMake(16.0, 9.0, width - 150.0, 24.0);
+    CGFloat valueWidth = self.cardGeometry ? 90.0 : 56.0;
+    CGFloat valueRightInset = self.cardGeometry ? 160.0 : 128.0;
+    CGFloat titleRightInset = self.cardGeometry ? 180.0 : 150.0;
+    self.settingTitleLabel.frame = CGRectMake(16.0,
+                                               9.0,
+                                               width - titleRightInset,
+                                               24.0);
     self.defaultButton.frame = CGRectMake(width - 66.0, 8.0, 50.0, 25.0);
-    self.valueLabel.frame = CGRectMake(width - 128.0, 9.0, 56.0, 24.0);
+    self.valueLabel.frame = CGRectMake(width - valueRightInset,
+                                        9.0,
+                                        valueWidth,
+                                        24.0);
     self.slider.frame = CGRectMake(16.0, 41.0, width - 32.0, 42.0);
 }
 
@@ -330,8 +341,15 @@ static NSString *FLMNameForIdentifier(
 }
 
 - (void)updateValueLabel {
-    self.valueLabel.text =
-        [NSString stringWithFormat:@"%ld pt", (long)lroundf(self.slider.value)];
+    CGFloat width = (CGFloat)lroundf(self.slider.value);
+    if (self.cardGeometry) {
+        CGFloat height = width * (844.0 / 390.0);
+        self.valueLabel.text =
+            [NSString stringWithFormat:@"%.0f×%.1f", width, height];
+    } else {
+        self.valueLabel.text =
+            [NSString stringWithFormat:@"%ld pt", (long)width];
+    }
 }
 
 @end

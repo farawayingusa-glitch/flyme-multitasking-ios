@@ -36,6 +36,34 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
+            <string>只调整居中卡片的显示大小，宽高始终按照 390:844 等比例变化。默认尺寸为 300×649.230769，点击右侧“默认”按钮即可恢复。</string>
+            <key>label</key>
+            <string>居中卡片</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>cardGeometry</key>
+            <true/>
+            <key>defaultValue</key>
+            <real>300</real>
+            <key>height</key>
+            <real>92</real>
+            <key>label</key>
+            <string>卡片大小（等比例）</string>
+            <key>maximumValue</key>
+            <real>360</real>
+            <key>minimumValue</key>
+            <real>240</real>
+            <key>preferenceKey</key>
+            <string>centeredCardWidth</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
             <string>调节项会在下次呼出轮盘时生效，左右轮盘共用。应用仍会自动分轮并均匀排列。</string>
             <key>label</key>
             <string>轮盘外观</string>
