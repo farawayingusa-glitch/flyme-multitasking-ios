@@ -25,11 +25,11 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v46"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v46"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF146ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF246ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 46ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 
@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.51 schema=17");
+                    @"logger-ready build=0.8.52 schema=17");
             }
         });
     });
@@ -1301,7 +1301,7 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
         *readyPID = ready.pid;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb adapter-handshake context=%@ app=%@ filter=UIKit-framework target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
+        @"sb adapter-handshake context=%@ app=%@ filter=WeChat-bundle target-gated accepted=%d ctor={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d} ready={reg:%d read:%d raw:0x%016llx magic:0x%04x build:%u pid:%d alive:%d valid:%d}",
         context ?: @"<none>", identifier ?: @"<none>", accepted,
         ctor.registerStatus, ctor.readStatus,
         (unsigned long long)ctor.rawState, ctor.magic, ctor.build, ctor.pid,
@@ -3649,35 +3649,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIEdgeInsets safeInsets =
         self.floatingWindow.rootViewController.view.safeAreaInsets;
-    CGFloat containerWidth = FLMCenteredCardWidth;
-    CGFloat containerHeight = FLMCenteredCardHeight;
+    // The centered card is a hard product constraint.  Never derive either
+    // dimension from orientation, safe-area height, keyboard state, or Scene
+    // geometry.  If this viewport cannot show a particular application's
+    // content, report that compatibility issue instead of silently resizing
+    // the card.
+    const CGFloat containerWidth = FLMCenteredCardWidth;
+    const CGFloat containerHeight = FLMCenteredCardHeight;
     CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
     BOOL landscape = width > height;
     CGFloat originX = 0.0;
     if (landscape) {
-        CGFloat portraitRatio = FLMCenteredCardWidth / FLMCenteredCardHeight;
-        CGFloat verticalMargin = 16.0;
-        containerHeight = MAX(240.0, height - verticalMargin * 2.0);
-        containerWidth = containerHeight * portraitRatio;
-        CGFloat maximumWidth = MAX(240.0,
-                                   width - safeInsets.left -
-                                       safeInsets.right - 16.0);
-        if (containerWidth > maximumWidth) {
-            containerWidth = maximumWidth;
-            containerHeight = containerWidth / MAX(0.1, portraitRatio);
-        }
         top = floor((height - containerHeight) * 0.5);
         originX = MAX(0.0, safeInsets.left);
     } else {
         CGFloat centeredUpperTop =
             floor((height - containerHeight) * 0.5 - 44.0);
         top = MAX(safeInsets.top + 8.0, centeredUpperTop);
-        CGFloat maximumHeight = MAX(180.0, height - top - 72.0);
-        if (containerHeight > maximumHeight) {
-            CGFloat scale = maximumHeight / containerHeight;
-            containerHeight = maximumHeight;
-            containerWidth *= scale;
-        }
         originX = floor((width - containerWidth) * 0.5);
     }
     return CGRectMake(originX, top, containerWidth, containerHeight);
