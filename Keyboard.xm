@@ -645,6 +645,7 @@ static void FLMLogContentViewportLayout(NSString *stage,
                                         CGRect contentViewportBounds,
                                         CGRect previousBounds,
                                         CGRect currentBounds) {
+    (void)contentView;
     CGRect windowBounds = window ? window.bounds : CGRectZero;
     NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
