@@ -39,6 +39,7 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
         run: |
+          chmod 755 layout/DEBIAN/postinst
           make clean package FINALPACKAGE=1 messages=yes
 
       - name: Verify package
