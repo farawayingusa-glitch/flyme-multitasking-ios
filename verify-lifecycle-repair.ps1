@@ -24,6 +24,8 @@ foreach ($Marker in @(
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.18',
     'FLMFloatingSceneGenerationDelay = 0.75',
+    'FLMCenteredCardWidth = 300.0',
+    'FLMCenteredCardHeight = 649.2307692307692',
     'failFloatingLaunchForIdentifier:',
     'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
     'restoreFloatingHandleInteraction',
@@ -116,7 +118,7 @@ Require-Text $KeyboardSource 'startingTargetSession'
 Require-Text $KeyboardSource 'FLMApplicationProcessIdentityFlags'
 Require-Text $KeyboardSource 'FLMProcessIsApplicationClient'
 Require-Text $KeyboardSource 'FLMContentLogicalViewportSize'
-Require-Text $KeyboardSource 'FLMContentExternalScale = 0.7692307692307693'
+Require-Text $KeyboardSource 'FLMPhysicalCardSize'
 Require-Text $KeyboardSource 'FLMContentViewportAdapter'
 Require-Text $KeyboardSource 'FLMHandleKeyboardRouteNotification'
 Require-Text $KeyboardSource 'FLMProcessIsSpringBoardOrSystemAgent'
@@ -144,8 +146,12 @@ Require-Text $Source 'floatingQueuedIdentifier'
 Require-Text $Source 'sb centered-close cleanup-once'
 Require-Text $Source 'sb presenter-stale-retry'
 Require-Text $Source 'FLMVirtualViewportWidth = 390.0'
-Require-Text $Source 'FLMVirtualViewportScale = 0.7692307692307693'
 Require-Text $Source 'FLMVirtualViewportHeight = 844.0'
+Require-Text $Source 'effectiveCenteredCardScaleX'
+Require-Text $Source 'effectiveCenteredCardScaleY'
+Require-Text $Source 'CGAffineTransformMakeScale(scaleX, scaleY)'
+Require-Text $Source 'targetPhysicalCard={'
+Require-Text $Source 'scaleXY={'
 Require-Text $Source 'scene-frame policy=fullscreen'
 Require-Text $Source 'content-scale policy=%@ systemSceneReference='
 Require-Text $Source 'contentViewportReference='
@@ -158,10 +164,11 @@ Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
 Require-Text $Source 'centered-preserved=%d'
+Reject-Text $Source 'FLMVirtualViewportScale'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
 Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter 'com.tencent.xin'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
-Write-Output 'scene lifecycle, 390x844 full-screen viewport at 0.769230769 to 300x649.230769, generic keyboard route, and serialized close verified'
+Write-Output 'scene lifecycle, 390x844 logical viewport with independent X/Y card mapping, generic keyboard route, and serialized close verified'

@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=0.8.58 schema=17");
+                    @"logger-ready build=1.0.0 schema=17");
             }
         });
     });
@@ -233,22 +233,22 @@ static const CGFloat FLMMinimumDockWidth = 156.0;
 static const CGFloat FLMMaximumDockWidth = 270.0;
 static const CGFloat FLMDockSideMargin = 10.0;
 static const CGFloat FLMDockTopMargin = 8.0;
-// The centered card keeps the full-screen application's aspect ratio while
-// using a simple 300 pt default width. 300 * 844 / 390 = 649.2307692307692.
-// The Settings slider changes only the presentation width; the height is
-// always derived from the same 390:844 aspect ratio. Keep the logical Scene
-// and keyboard geometry independent from this physical presentation size.
+// The centered card is a physical presentation surface for a full-screen
+// application. Its default size preserves the 390:844 reference ratio, but
+// Settings deliberately exposes independent X/Y dimensions so the user can
+// choose a non-uniform display mapping without changing the Scene or keyboard
+// coordinate system.
 static const CGFloat FLMCenteredCardWidth = 300.0;
 static const CGFloat FLMCenteredCardHeight = 649.2307692307692;
 static const CGFloat FLMMinimumCenteredCardWidth = 240.0;
 static const CGFloat FLMMaximumCenteredCardWidth = 360.0;
-// The app content viewport is the display-sized 390x844 canvas. The single
-// proportional presentation transform maps it to the default 300x649.230769
-// physical card at 0.769230769; the Settings slider changes only that scale.
-// The Scene and keyboard keep the same full-screen coordinate system as the
-// application.
+static const CGFloat FLMMinimumCenteredCardHeight = 300.0;
+static const CGFloat FLMMaximumCenteredCardHeight = 780.0;
+// The app content viewport is always the display-sized 390x844 canvas. The
+// presentation host maps that canvas independently to the selected physical
+// card width and height. The Scene and keyboard keep the same full-screen
+// coordinate system as the application.
 static const CGFloat FLMVirtualViewportWidth = 390.0;
-static const CGFloat FLMVirtualViewportScale = 0.7692307692307693;
 static const CGFloat FLMVirtualViewportHeight = 844.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
@@ -984,6 +984,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, assign) CGFloat wheelRadius;
 @property(nonatomic, assign) CGFloat wheelIconSize;
 @property(nonatomic, assign) CGFloat centeredCardWidth;
+@property(nonatomic, assign) CGFloat centeredCardHeight;
 @property(nonatomic, assign) CGPoint floatingHandleStartPoint;
 @property(nonatomic, assign) CGRect floatingHandleInitialContainerFrame;
 @property(nonatomic, assign) BOOL floatingHandleMoved;
@@ -1126,7 +1127,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)layoutFloatingHandleForCurrentContainer;
 - (CGFloat)effectiveCenteredCardWidth;
 - (CGFloat)effectiveCenteredCardHeight;
-- (CGFloat)effectiveCenteredCardScale;
+- (CGFloat)effectiveCenteredCardScaleX;
+- (CGFloat)effectiveCenteredCardScaleY;
 - (CGRect)centeredFloatingFrame;
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width;
 - (void)layoutFloatingDockShadow;
@@ -2038,6 +2040,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id radiusValue = FLMCopyPreference(@"wheelRadius");
     id iconSizeValue = FLMCopyPreference(@"wheelIconSize");
     id centeredCardWidthValue = FLMCopyPreference(@"centeredCardWidth");
+    id centeredCardHeightValue = FLMCopyPreference(@"centeredCardHeight");
     self.enabled = [enabledValue isKindOfClass:[NSNumber class]] && [enabledValue boolValue];
     self.itemIdentifiers =
         [itemsValue isKindOfClass:[NSArray class]] ? [itemsValue copy] : @[];
@@ -2061,6 +2064,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.centeredCardWidth =
         MAX(FLMMinimumCenteredCardWidth,
             MIN(FLMMaximumCenteredCardWidth, requestedCenteredCardWidth));
+    CGFloat requestedCenteredCardHeight =
+        [centeredCardHeightValue isKindOfClass:[NSNumber class]]
+            ? [centeredCardHeightValue doubleValue]
+            // Migrate the previous proportional width-only setting without
+            // changing the user's existing card size on first launch.
+            : requestedCenteredCardWidth *
+                  (FLMCenteredCardHeight / FLMCenteredCardWidth);
+    self.centeredCardHeight =
+        MAX(FLMMinimumCenteredCardHeight,
+            MIN(FLMMaximumCenteredCardHeight, requestedCenteredCardHeight));
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     if (!self.enabled) {
@@ -3663,16 +3676,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGFloat)effectiveCenteredCardHeight {
-    return [self effectiveCenteredCardWidth] *
-           (FLMCenteredCardHeight / FLMCenteredCardWidth);
+    CGFloat height = self.centeredCardHeight;
+    if (height <= 0.0) {
+        height = FLMCenteredCardHeight;
+    }
+    return MAX(FLMMinimumCenteredCardHeight,
+              MIN(FLMMaximumCenteredCardHeight, height));
 }
 
-- (CGFloat)effectiveCenteredCardScale {
-    CGFloat width = [self effectiveCenteredCardWidth];
-    if (fabs(width - FLMCenteredCardWidth) <= 0.001) {
-        return FLMVirtualViewportScale;
-    }
-    return width / FLMVirtualViewportWidth;
+- (CGFloat)effectiveCenteredCardScaleX {
+    return [self effectiveCenteredCardWidth] / FLMVirtualViewportWidth;
+}
+
+- (CGFloat)effectiveCenteredCardScaleY {
+    return [self effectiveCenteredCardHeight] / FLMVirtualViewportHeight;
 }
 
 - (CGRect)centeredFloatingFrame {
@@ -3685,11 +3702,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     UIEdgeInsets safeInsets =
         self.floatingWindow.rootViewController.view.safeAreaInsets;
-    // The centered card is a hard product constraint.  Never derive either
-    // dimension from orientation, safe-area height, keyboard state, or Scene
-    // geometry.  If this viewport cannot show a particular application's
-    // content, report that compatibility issue instead of silently resizing
-    // the card.
+    // The centered card dimensions are explicit user preferences. Never
+    // derive either dimension from orientation, safe-area height, keyboard
+    // state, or Scene geometry. If a selected viewport is inconvenient for a
+    // particular application, keep the user's geometry and let the display
+    // mapping show that choice rather than silently resizing the card.
     const CGFloat containerWidth = [self effectiveCenteredCardWidth];
     const CGFloat containerHeight = [self effectiveCenteredCardHeight];
     CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
@@ -4321,13 +4338,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // The real application Scene and the presentation host both use the
-    // display-sized 390x844 reference. One proportional transform maps it to
-    // the fixed physical card (300x649.230769), so the bottom is not clipped.
-    CGFloat scale = self.floatingInteractiveFullscreenTransition
-                        ? MAX(widthScale, heightScale)
-                        : MIN(widthScale, heightScale);
-    scale = MAX(0.05, scale);
+    // Centered-card presentation intentionally maps each axis independently.
+    // This keeps the complete 390x844 logical canvas visible inside the user
+    // selected card dimensions. Fullscreen transition snapshots retain their
+    // original uniform animation policy so the existing white-bar gesture is
+    // not changed.
+    CGFloat scaleX = widthScale;
+    CGFloat scaleY = heightScale;
+    if (self.floatingInteractiveFullscreenTransition) {
+        CGFloat scale = MAX(widthScale, heightScale);
+        scaleX = scale;
+        scaleY = scale;
+    } else if (!contentViewportActive) {
+        CGFloat scale = MIN(widthScale, heightScale);
+        scaleX = scale;
+        scaleY = scale;
+    }
+    scaleX = MAX(0.05, scaleX);
+    scaleY = MAX(0.05, scaleY);
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0.0,
                              0.0,
@@ -4336,9 +4364,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     host.center = CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
                               CGRectGetMidY(self.floatingContainer.bounds));
     host.clipsToBounds = NO;
-    host.transform = CGAffineTransformMakeScale(scale, scale);
+    host.transform = CGAffineTransformMakeScale(scaleX, scaleY);
     FLMEnqueueDiagnosticLine(
-        @"sb content-scale policy=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} targetPhysicalCard={%.1f,%.1f} scale=%.6f uniform=%d sceneFrameReference=system",
+        @"sb content-scale policy=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} targetPhysicalCard={%.1f,%.1f} scaleXY={%.6f,%.6f} uniform=%d selectedCard={%.1f,%.1f} sceneFrameReference=system",
         contentViewportActive ? @"content-viewport-fit" : @"fullscreen-fit",
         systemSceneReference.width,
         systemSceneReference.height,
@@ -4348,14 +4376,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         referenceSize.height,
         targetSize.width,
         targetSize.height,
-        scale,
+        scaleX,
+        scaleY,
         fabs(widthScale - heightScale) <= 0.0001,
         [self effectiveCenteredCardWidth],
         [self effectiveCenteredCardHeight]);
     FLMPublishKeyboardCardGeometry(
         self.floatingKeyboardSessionGeneration,
         CGRectGetMaxY(self.floatingContainer.frame),
-        scale,
+        scaleY,
         !self.floatingWindow.hidden && !self.floatingDocked &&
             self.floatingKeyboardSessionGeneration != 0 &&
             contentViewportActive);
@@ -5125,11 +5154,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return 0.0;
     }
     CGAffineTransform transform = self.floatingHostView.transform;
-    CGFloat visualScale = hypot(transform.a, transform.c);
+    // Keyboard avoidance is vertical geometry. With an independent X/Y card
+    // mapping, use the transform's Y scale rather than applying the
+    // horizontal scale to vertical input movement.
+    CGFloat visualScale = hypot(transform.b, transform.d);
     if (visualScale <= 0.05) {
         CGSize referenceSize = [self floatingSceneReferenceSize];
         visualScale = referenceSize.width > 1.0
-                          ? CGRectGetWidth(contentFrame) / referenceSize.width
+                          ? CGRectGetHeight(contentFrame) / referenceSize.height
                           : 1.0;
     }
     visualScale = MAX(0.05, visualScale);
@@ -6055,7 +6087,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self floatingContentViewportReferenceSize];
     [self layoutFloatingHostView];
     FLMEnqueueDiagnosticLine(
-        @"sb content-viewport request generation=%lu attempt=%lu applied=%d previousHostReference={%.4f,%.4f} systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ sceneFrameReference=system routeSession=%lu",
+        @"sb content-viewport request generation=%lu attempt=%lu applied=%d previousHostReference={%.4f,%.4f} systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scaleXY={%.6f,%.6f} host=%@ sceneFrameReference=system routeSession=%lu",
         (unsigned long)generation, (unsigned long)attempt, applied,
         previousReference.width,
         previousReference.height,
@@ -6065,7 +6097,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         contentViewportReference.height,
         [self effectiveCenteredCardWidth],
         [self effectiveCenteredCardHeight],
-        [self effectiveCenteredCardScale],
+        [self effectiveCenteredCardScaleX],
+        [self effectiveCenteredCardScaleY],
         NSStringFromCGRect(self.floatingHostView.bounds),
         (unsigned long)self.floatingKeyboardSessionGeneration);
 
@@ -6134,7 +6167,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGSize contentViewportReference =
             [self floatingContentViewportReferenceSize];
         FLMEnqueueDiagnosticLine(
-            @"sb content-viewport committed generation=%lu attempt=%lu systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f host=%@ sceneFrameReference=system routeSession=%lu",
+        @"sb content-viewport committed generation=%lu attempt=%lu systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} physical-card={%.1f,%.1f} scaleXY={%.6f,%.6f} host=%@ sceneFrameReference=system routeSession=%lu",
             (unsigned long)generation, (unsigned long)attempt,
             systemSceneReference.width,
             systemSceneReference.height,
@@ -6142,7 +6175,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             contentViewportReference.height,
             [self effectiveCenteredCardWidth],
             [self effectiveCenteredCardHeight],
-            [self effectiveCenteredCardScale],
+            [self effectiveCenteredCardScaleX],
+            [self effectiveCenteredCardScaleY],
             NSStringFromCGRect(self.floatingHostView.bounds),
             (unsigned long)self.floatingKeyboardSessionGeneration);
     }
@@ -6151,7 +6185,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self flushPendingFloatingKeyboardFrameIfReady];
     [self revealFloatingContentForGeneration:generation];
     FLMEnqueueDiagnosticLine(
-        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} physical-card={%.1f,%.1f} scale=%.6f sceneFrameReference=system contentViewportCommitted=%d routeSession=%lu",
+        @"sb centered-content-ready app=%@ launchGen=%lu attempt=%lu host=%p hostBounds=%@ systemSceneReference={%.4f,%.4f} contentViewportReference={%.4f,%.4f} hostReference={%.4f,%.4f} physical-card={%.1f,%.1f} scaleXY={%.6f,%.6f} sceneFrameReference=system contentViewportCommitted=%d routeSession=%lu",
         identifier, (unsigned long)generation, (unsigned long)attempt,
         (__bridge void *)self.floatingHostView,
         NSStringFromCGRect(self.floatingHostView.bounds),
@@ -6163,7 +6197,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHostReferenceSize.height,
         [self effectiveCenteredCardWidth],
         [self effectiveCenteredCardHeight],
-        [self effectiveCenteredCardScale],
+        [self effectiveCenteredCardScaleX],
+        [self effectiveCenteredCardScaleY],
         self.floatingSceneCardGeometryCommitted,
         (unsigned long)self.floatingKeyboardSessionGeneration);
 }

@@ -1,4 +1,4 @@
-name: Build Flyme multitasking
+name: Build flyme-multitasking
 
 on:
   workflow_dispatch:
@@ -48,11 +48,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/Flyme-Multitasking_0.8.58_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_1.0.0_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Flyme-Multitasking-0.8.58
-          path: artifacts/Flyme-Multitasking_0.8.58_iphoneos-arm64.deb
+          name: flyme-multitasking-1.0.0
+          path: artifacts/flyme-multitasking_1.0.0_iphoneos-arm64.deb
           if-no-files-found: error

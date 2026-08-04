@@ -10,7 +10,7 @@
             <key>footerText</key>
             <string>开启后可从屏幕左下角或右下角滑动呼出应用轮盘。</string>
             <key>label</key>
-            <string>Flyme 模式</string>
+            <string>flyme-multitasking</string>
         </dict>
         <dict>
             <key>cell</key>
@@ -18,7 +18,7 @@
             <key>get</key>
             <string>flymeEnabled:</string>
             <key>label</key>
-            <string>Flyme 模式</string>
+            <string>启用 flyme-multitasking</string>
             <key>set</key>
             <string>setFlymeEnabled:specifier:</string>
         </dict>
@@ -36,7 +36,7 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>只调整居中卡片的显示大小，宽高始终按照 390:844 等比例变化。默认尺寸为 300×649.230769，点击右侧“默认”按钮即可恢复。</string>
+            <string>分别调整居中卡片的 X/Y 尺寸。应用仍按全屏逻辑运行，内容会完整映射到新的卡片宽高。默认尺寸为 300×649.230769。</string>
             <key>label</key>
             <string>居中卡片</string>
         </dict>
@@ -52,13 +52,33 @@
             <key>height</key>
             <real>92</real>
             <key>label</key>
-            <string>卡片大小（等比例）</string>
+            <string>卡片宽度（X轴）</string>
             <key>maximumValue</key>
             <real>360</real>
             <key>minimumValue</key>
             <real>240</real>
             <key>preferenceKey</key>
             <string>centeredCardWidth</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>cardGeometry</key>
+            <true/>
+            <key>defaultValue</key>
+            <real>649.2307692307692</real>
+            <key>height</key>
+            <real>92</real>
+            <key>label</key>
+            <string>卡片高度（Y轴）</string>
+            <key>maximumValue</key>
+            <real>780</real>
+            <key>minimumValue</key>
+            <real>300</real>
+            <key>preferenceKey</key>
+            <string>centeredCardHeight</string>
         </dict>
         <dict>
             <key>cell</key>
@@ -166,6 +186,6 @@
         </dict>
     </array>
     <key>title</key>
-    <string>Flyme 多任务</string>
+    <string>flyme-multitasking</string>
 </dict>
 </plist>

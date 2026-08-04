@@ -15,9 +15,15 @@ required_source=(
     "return totalMovement >= 14.0 &&"
     "static const CGFloat FLMDefaultWheelRadius = 202.0;"
     "static const CGFloat FLMDefaultWheelIconSize = 56.0;"
+    "static const CGFloat FLMCenteredCardWidth = 300.0;"
+    "static const CGFloat FLMCenteredCardHeight = 649.2307692307692;"
     "static const CGFloat FLMMinimumCenteredCardWidth = 240.0;"
     "static const CGFloat FLMMaximumCenteredCardWidth = 360.0;"
-    "effectiveCenteredCardScale"
+    "effectiveCenteredCardScaleX"
+    "effectiveCenteredCardScaleY"
+    "CGAffineTransformMakeScale(scaleX, scaleY)"
+    "targetPhysicalCard={"
+    "scaleXY={"
     "CGFloat handleWidth = visibleHandleWidth + 40.0;"
     "updateFloatingFullscreenSnapshotForProgress"
     "displayCommitted = targetIsFrontmost && attempt >= 1"
@@ -39,7 +45,6 @@ required_source=(
     "sb centered-close cleanup-once"
     "sb presenter-stale-retry"
     "FLMVirtualViewportWidth = 390.0"
-    "FLMVirtualViewportScale = 0.7692307692307693"
     "FLMVirtualViewportHeight = 844.0"
     "keyboardPassThroughFrame"
     "floatingKeyboardSessionGeneration"
@@ -86,6 +91,7 @@ removed_source=(
     "setFloatingSceneUsesFullscreenKeyboardHost"
     "scene-virtual-viewport"
     "floatingSceneLogicalFrameMatchesVirtualViewport"
+    "FLMVirtualViewportScale"
     "virtual-viewport-fit"
     "virtual-viewport restore keyboard-session-restored"
 )
@@ -111,7 +117,7 @@ required_keyboard_source=(
     "FLMDiagnosticEventAdapterReady"
     "FLMApplicationProcessIdentityFlags"
     "FLMContentLogicalViewportSize"
-    "FLMContentExternalScale = 0.7692307692307693"
+    "FLMPhysicalCardSize"
     "FLMContentViewportAdapter"
     "FLMHandleKeyboardRouteNotification"
 )
@@ -143,4 +149,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation, 390x844 full-screen viewport at 0.769230769 to 300x649.230769, generic keyboard route, and serialized close verified"
+echo "frozen gesture foundation, 390x844 logical viewport with independent X/Y card mapping, generic keyboard route, and serialized close verified"

@@ -1,7 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme 澶氫换鍔?Description: Flyme 澶氫换鍔＄嫭绔嬬増锛屾彁渚涘弻渚у簲鐢ㄨ疆鐩樹笌灞呬腑灏忕獥锛岄€傞厤 iOS 16 涓?NathanLR 鏃犳牴鐜銆?Maintainer: Codex build for local testing
+Name: flyme-multitasking
+Description: flyme-multitasking rootless iOS multitasking tweak with full-screen keyboard routing and adjustable centered card geometry.
+Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.8.58
+Version: 1.0.0

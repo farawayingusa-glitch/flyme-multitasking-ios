@@ -11,9 +11,9 @@
 // a presentation transform; it must never become the keyboard's coordinate
 // system. UIKit therefore receives the display-sized reference (390x844 on
 // the target device), while the app-side content adapter uses the content
-// full-screen content viewport (390x844). SpringBoard then applies the single
-// uniform 0.769230769 presentation transform, producing the locked
-// 300x649.230769 physical card without clipping the bottom of the application.
+// full-screen content viewport (390x844). SpringBoard then maps that logical
+// canvas to the selected physical card with independent X/Y presentation
+// scales. The card geometry never becomes the keyboard's coordinate system.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"

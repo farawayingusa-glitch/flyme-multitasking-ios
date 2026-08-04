@@ -252,6 +252,12 @@ static NSString *FLMNameForIdentifier(
                       specifier:specifier];
     if (self) {
         self.selectionStyle = UITableViewCellSelectionStyleNone;
+        // PSTableCell may also render the specifier label through its
+        // inherited textLabel. The custom slider layout owns the title, so
+        // hide the inherited label to avoid the duplicated bottom captions
+        // shown for card size, wheel radius, and icon size.
+        self.textLabel.hidden = YES;
+        self.detailTextLabel.hidden = YES;
 
         _preferenceKey = [[specifier propertyForKey:@"preferenceKey"] copy];
         _minimumValue = [[specifier propertyForKey:@"minimumValue"] doubleValue];
@@ -300,8 +306,11 @@ static NSString *FLMNameForIdentifier(
         CGFloat value = [storedValue isKindOfClass:[NSNumber class]]
                             ? [storedValue doubleValue]
                             : _defaultValue;
-        _slider.value =
-            (float)MAX(_minimumValue, MIN(_maximumValue, round(value)));
+        CGFloat clampedValue =
+            MAX(_minimumValue, MIN(_maximumValue, value));
+        _slider.value = self.cardGeometry
+                            ? (float)clampedValue
+                            : roundf((float)clampedValue);
         [self updateValueLabel];
     }
     return self;
@@ -309,6 +318,8 @@ static NSString *FLMNameForIdentifier(
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    self.textLabel.hidden = YES;
+    self.detailTextLabel.hidden = YES;
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat valueWidth = self.cardGeometry ? 90.0 : 56.0;
     CGFloat valueRightInset = self.cardGeometry ? 160.0 : 128.0;
@@ -326,12 +337,19 @@ static NSString *FLMNameForIdentifier(
 }
 
 - (void)sliderValueChanged:(UISlider *)slider {
-    slider.value = roundf(slider.value);
+    if (self.cardGeometry) {
+        slider.value = roundf(slider.value * 10.0) / 10.0;
+    } else {
+        slider.value = roundf(slider.value);
+    }
     [self updateValueLabel];
 }
 
 - (void)commitSliderValue {
-    FLMSetPreference(self.preferenceKey, @(lroundf(self.slider.value)));
+    NSNumber *value = self.cardGeometry
+                          ? @(self.slider.value)
+                          : @(lroundf(self.slider.value));
+    FLMSetPreference(self.preferenceKey, value);
 }
 
 - (void)resetToDefault {
@@ -341,14 +359,12 @@ static NSString *FLMNameForIdentifier(
 }
 
 - (void)updateValueLabel {
-    CGFloat width = (CGFloat)lroundf(self.slider.value);
     if (self.cardGeometry) {
-        CGFloat height = width * (844.0 / 390.0);
         self.valueLabel.text =
-            [NSString stringWithFormat:@"%.0f×%.1f", width, height];
+            [NSString stringWithFormat:@"%.1f pt", self.slider.value];
     } else {
         self.valueLabel.text =
-            [NSString stringWithFormat:@"%ld pt", (long)width];
+            [NSString stringWithFormat:@"%ld pt", (long)lroundf(self.slider.value)];
     }
 }
 

@@ -11,11 +11,11 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Flyme 多任务</string>
+    <string>flyme-multitasking</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.8.58</string>
+    <string>1.0.0</string>
     <key>CFBundleVersion</key>
     <string>53</string>
     <key>NSPrincipalClass</key>
