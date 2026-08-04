@@ -216,7 +216,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    @"logger-ready build=1.0.0 schema=17");
+                    @"logger-ready build=1.0.1 schema=17");
             }
         });
     });
@@ -234,20 +234,19 @@ static const CGFloat FLMMaximumDockWidth = 270.0;
 static const CGFloat FLMDockSideMargin = 10.0;
 static const CGFloat FLMDockTopMargin = 8.0;
 // The centered card is a physical presentation surface for a full-screen
-// application. Its default size preserves the 390:844 reference ratio, but
-// Settings deliberately exposes independent X/Y dimensions so the user can
-// choose a non-uniform display mapping without changing the Scene or keyboard
-// coordinate system.
+// application. Its physical width/height may be selected independently, but
+// the content mapping is never allowed to scale the 390-wide logical canvas
+// independently on X and Y. C derives a logical content height from the
+// selected physical card and one uniform width scale.
 static const CGFloat FLMCenteredCardWidth = 300.0;
 static const CGFloat FLMCenteredCardHeight = 649.2307692307692;
 static const CGFloat FLMMinimumCenteredCardWidth = 240.0;
 static const CGFloat FLMMaximumCenteredCardWidth = 360.0;
 static const CGFloat FLMMinimumCenteredCardHeight = 300.0;
 static const CGFloat FLMMaximumCenteredCardHeight = 780.0;
-// The app content viewport is always the display-sized 390x844 canvas. The
-// presentation host maps that canvas independently to the selected physical
-// card width and height. The Scene and keyboard keep the same full-screen
-// coordinate system as the application.
+// The Scene remains display-sized at 390x844. In centered mode the content
+// viewport height is derived at runtime as selectedCardHeight / (width / 390)
+// so the presentation host can use one uniform transform.
 static const CGFloat FLMVirtualViewportWidth = 390.0;
 static const CGFloat FLMVirtualViewportHeight = 844.0;
 static const CGFloat FLMCenteredDockActivationDistance = 110.0;
@@ -1211,6 +1210,10 @@ static CGFloat FLMKeyboardSharedAvoidanceHeight = 0.0;
 static BOOL FLMKeyboardSharedCardActive = NO;
 static CGFloat FLMKeyboardSharedCardBottom = 0.0;
 static CGFloat FLMKeyboardSharedCardScale = 0.0;
+static CGFloat FLMKeyboardSharedCardWidth = 0.0;
+static CGFloat FLMKeyboardSharedCardHeight = 0.0;
+static CGFloat FLMKeyboardSharedContentViewportWidth = 0.0;
+static CGFloat FLMKeyboardSharedContentViewportHeight = 0.0;
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -1366,7 +1369,7 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
     BOOL active = FLMKeyboardSharedIdentifier.length > 0 &&
                   FLMKeyboardSharedSessionGeneration != 0;
     NSDictionary *snapshot = @{
-        @"version": @2,
+        @"version": @3,
         @"active": @(active),
         @"bundleID": FLMKeyboardSharedIdentifier ?: @"",
         @"sceneHash": @(FLMKeyboardSharedSceneHash),
@@ -1376,6 +1379,10 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         @"cardActive": @(FLMKeyboardSharedCardActive),
         @"cardBottom": @(FLMKeyboardSharedCardBottom),
         @"cardScale": @(FLMKeyboardSharedCardScale),
+        @"cardWidth": @(FLMKeyboardSharedCardWidth),
+        @"cardHeight": @(FLMKeyboardSharedCardHeight),
+        @"contentViewportWidth": @(FLMKeyboardSharedContentViewportWidth),
+        @"contentViewportHeight": @(FLMKeyboardSharedContentViewportHeight),
         @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
     };
     dispatch_async(FLMKeyboardSharedStateWriterQueue, ^{
@@ -1443,6 +1450,10 @@ static void FLMPublishKeyboardState(NSString *identifier,
         FLMKeyboardSharedCardActive = NO;
         FLMKeyboardSharedCardBottom = 0.0;
         FLMKeyboardSharedCardScale = 0.0;
+        FLMKeyboardSharedCardWidth = 0.0;
+        FLMKeyboardSharedCardHeight = 0.0;
+        FLMKeyboardSharedContentViewportWidth = 0.0;
+        FLMKeyboardSharedContentViewportHeight = 0.0;
     }
     FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardRouteToken < 0 &&
@@ -1528,13 +1539,30 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
 static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
                                            CGFloat cardBottom,
                                            CGFloat visualScale,
+                                           CGFloat cardWidth,
+                                           CGFloat cardHeight,
                                            BOOL active) {
+    BOOL hasCardDimensions = cardWidth > 1.0 && cardHeight > 1.0;
     FLMKeyboardSharedCardActive = active && sessionGeneration != 0 &&
-                                  cardBottom > 1.0 && visualScale > 0.05;
+                                  cardBottom > 1.0 && visualScale > 0.05 &&
+                                  hasCardDimensions;
     FLMKeyboardSharedCardBottom =
         FLMKeyboardSharedCardActive ? cardBottom : 0.0;
     FLMKeyboardSharedCardScale =
         FLMKeyboardSharedCardActive ? visualScale : 0.0;
+    FLMKeyboardSharedCardWidth = FLMKeyboardSharedCardActive
+                                     ? MAX(0.0, cardWidth)
+                                     : 0.0;
+    FLMKeyboardSharedCardHeight = FLMKeyboardSharedCardActive
+                                      ? MAX(0.0, cardHeight)
+                                      : 0.0;
+    FLMKeyboardSharedContentViewportWidth = FLMKeyboardSharedCardActive
+                                                ? FLMVirtualViewportWidth
+                                                : 0.0;
+    FLMKeyboardSharedContentViewportHeight =
+        FLMKeyboardSharedCardActive && visualScale > 0.05
+            ? FLMKeyboardSharedCardHeight / visualScale
+            : 0.0;
     FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardCardGeometryToken < 0 &&
         notify_register_check(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
@@ -1543,8 +1571,7 @@ static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
         FlymeKeyboardCardGeometryToken = -1;
     }
     uint64_t state = 0;
-    if (active && sessionGeneration != 0 && cardBottom > 1.0 &&
-        visualScale > 0.05) {
+    if (FLMKeyboardSharedCardActive) {
         uint64_t generation = (sessionGeneration & 0x7FFFULL) << 48;
         uint64_t encodedBottom =
             MIN(0xFFFFFFULL, (uint64_t)llround(cardBottom * 100.0)) << 24;
@@ -1557,8 +1584,11 @@ static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
         notify_post(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION);
     }
     FLMEnqueueDiagnosticLine(
-        @"sb geometry-publish session=%llu active=%d bottom=%.2f scale=%.5f state=0x%llx",
+        @"sb geometry-publish session=%llu active=%d bottom=%.2f scale=%.5f card={%.2f,%.2f} viewport={%.2f,%.2f} state=0x%llx",
         (unsigned long long)sessionGeneration, active, cardBottom, visualScale,
+        FLMKeyboardSharedCardWidth, FLMKeyboardSharedCardHeight,
+        FLMKeyboardSharedContentViewportWidth,
+        FLMKeyboardSharedContentViewportHeight,
         (unsigned long long)state);
 }
 
@@ -3689,7 +3719,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGFloat)effectiveCenteredCardScaleY {
-    return [self effectiveCenteredCardHeight] / FLMVirtualViewportHeight;
+    // Version C uses one scale derived from the selected physical width. The
+    // logical content height is selectedCardHeight / this same scale, so Y
+    // must never become an independent stretch factor.
+    return [self effectiveCenteredCardScaleX];
 }
 
 - (CGRect)centeredFloatingFrame {
@@ -4338,24 +4371,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // Centered-card presentation intentionally maps each axis independently.
-    // This keeps the complete 390x844 logical canvas visible inside the user
-    // selected card dimensions. Fullscreen transition snapshots retain their
-    // original uniform animation policy so the existing white-bar gesture is
-    // not changed.
-    CGFloat scaleX = widthScale;
-    CGFloat scaleY = heightScale;
-    if (self.floatingInteractiveFullscreenTransition) {
-        CGFloat scale = MAX(widthScale, heightScale);
-        scaleX = scale;
-        scaleY = scale;
-    } else if (!contentViewportActive) {
-        CGFloat scale = MIN(widthScale, heightScale);
-        scaleX = scale;
-        scaleY = scale;
+    // Version C never uses the 390x844 Scene canvas as a non-uniform display
+    // source. In centered mode the logical content height was derived from
+    // selectedCardHeight / (selectedCardWidth / 390), so the two ratios are
+    // equal by construction. Keep one uniform scale even if a transient
+    // layout-rounding mismatch appears. Fullscreen-transition snapshots keep
+    // their existing uniform cover policy so the white-bar gesture is not
+    // changed.
+    CGFloat uniformScale = 0.0;
+    if (contentViewportActive) {
+        uniformScale = [self effectiveCenteredCardWidth] /
+                       FLMVirtualViewportWidth;
+    } else if (self.floatingInteractiveFullscreenTransition) {
+        uniformScale = MAX(widthScale, heightScale);
+    } else {
+        uniformScale = MIN(widthScale, heightScale);
     }
-    scaleX = MAX(0.05, scaleX);
-    scaleY = MAX(0.05, scaleY);
+    uniformScale = MAX(0.05, uniformScale);
+    CGFloat scaleX = uniformScale;
+    CGFloat scaleY = uniformScale;
     host.transform = CGAffineTransformIdentity;
     host.bounds = CGRectMake(0.0,
                              0.0,
@@ -4378,13 +4412,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         targetSize.height,
         scaleX,
         scaleY,
-        fabs(widthScale - heightScale) <= 0.0001,
+        fabs(scaleX - scaleY) <= 0.0001,
         [self effectiveCenteredCardWidth],
         [self effectiveCenteredCardHeight]);
     FLMPublishKeyboardCardGeometry(
         self.floatingKeyboardSessionGeneration,
         CGRectGetMaxY(self.floatingContainer.frame),
-        scaleY,
+        uniformScale,
+        [self effectiveCenteredCardWidth],
+        [self effectiveCenteredCardHeight],
         !self.floatingWindow.hidden && !self.floatingDocked &&
             self.floatingKeyboardSessionGeneration != 0 &&
             contentViewportActive);
@@ -5066,7 +5102,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [self.floatingHostView endEditing:YES];
     FLMPublishKeyboardAvoidance(endingSession, 0.0, NO);
-    FLMPublishKeyboardCardGeometry(endingSession, 0.0, 0.0, NO);
+    FLMPublishKeyboardCardGeometry(endingSession, 0.0, 0.0, 0.0, 0.0, NO);
     [self clearFloatingKeyboardScenePairingForSession:endingSession];
     self.floatingKeyboardSessionGeneration = 0;
     FLMPublishKeyboardState(nil, nil, 0);
@@ -5270,11 +5306,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGSize)floatingContentViewportReferenceSize {
-    // This reference belongs to the app content/presentation host. It is the
-    // full-screen logical viewport; the target container is the selected
-    // proportional physical card without changing the app Scene.
+    // This reference belongs to the app content/presentation host. The Scene
+    // remains 390x844, while the host receives a 390-wide logical viewport
+    // whose height is derived from the selected physical card aspect ratio.
+    // Example: 300x520 -> scale 300/390 and logical height 520/scale.
     if (self.floatingSceneUsesCardGeometry &&
         !self.floatingInteractiveFullscreenTransition) {
+        CGFloat selectedCardWidth = [self effectiveCenteredCardWidth];
+        CGFloat selectedCardHeight = [self effectiveCenteredCardHeight];
+        CGFloat uniformScale = selectedCardWidth / FLMVirtualViewportWidth;
+        if (uniformScale > 0.05 && selectedCardHeight > 1.0) {
+            return CGSizeMake(FLMVirtualViewportWidth,
+                              selectedCardHeight / uniformScale);
+        }
         return CGSizeMake(FLMVirtualViewportWidth,
                           FLMVirtualViewportHeight);
     }

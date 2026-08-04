@@ -21,6 +21,11 @@ required_source=(
     "static const CGFloat FLMMaximumCenteredCardWidth = 360.0;"
     "effectiveCenteredCardScaleX"
     "effectiveCenteredCardScaleY"
+    "uniformScale"
+    "selectedCardHeight / uniformScale"
+    "cardWidth"
+    "cardHeight"
+    "contentViewportHeight"
     "CGAffineTransformMakeScale(scaleX, scaleY)"
     "targetPhysicalCard={"
     "scaleXY={"
@@ -120,6 +125,10 @@ required_keyboard_source=(
     "FLMPhysicalCardSize"
     "FLMContentViewportAdapter"
     "FLMHandleKeyboardRouteNotification"
+    "FLMReloadContentViewportSelection"
+    "cardWidth"
+    "cardHeight"
+    "logicalHeight = cardHeight / uniformScale"
 )
 
 grep -Fq -- 'scene-frame policy=fullscreen' "$source_file"
@@ -149,4 +158,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "frozen gesture foundation, 390x844 logical viewport with independent X/Y card mapping, generic keyboard route, and serialized close verified"
+echo "frozen gesture foundation, Version C uniform card mapping with dynamic content viewport, generic keyboard route, and serialized close verified"

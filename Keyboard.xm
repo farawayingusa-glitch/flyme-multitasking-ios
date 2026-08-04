@@ -10,10 +10,10 @@
 // only after the shared route identifies the current card target. The card is
 // a presentation transform; it must never become the keyboard's coordinate
 // system. UIKit therefore receives the display-sized reference (390x844 on
-// the target device), while the app-side content adapter uses the content
-// full-screen content viewport (390x844). SpringBoard then maps that logical
-// canvas to the selected physical card with independent X/Y presentation
-// scales. The card geometry never becomes the keyboard's coordinate system.
+// the target device), while the app-side content adapter uses a separate
+// logical viewport whose width stays 390 and whose height is derived from the
+// shared Version C card geometry. The card geometry never becomes the
+// keyboard's coordinate system.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -22,7 +22,7 @@
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
 #define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
 #define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
-#define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
+#define FLYME_KEYBOARD_SHARED_STATE_VERSION 3
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
@@ -64,19 +64,26 @@ static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
-static const CGSize FLMContentLogicalViewportSize = {
+// Version C keeps the keyboard and Scene in the physical full-screen
+// coordinate space, but lets the application content root use a separate
+// logical viewport.  The logical width is fixed at 390; SpringBoard may
+// publish a physical cardWidth/cardHeight pair, from which the logical height
+// is derived using one uniform scale.
+static CGSize FLMContentLogicalViewportSize = {
     390.0,
     844.0,
 };
-static const CGFloat FLMContentExternalScale = 0.7692307692307693;
-static const CGSize FLMPhysicalCardSize = {
-    300.0,
-    649.2307692307692,
+static CGFloat FLMContentExternalScale = 1.0;
+static CGSize FLMPhysicalCardSize = {
+    390.0,
+    844.0,
 };
+static BOOL FLMContentViewportUsesSharedCardSize = NO;
 
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+static void FLMReloadContentViewportSelection(NSDictionary *sharedState);
 static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMHandleKeyboardRouteNotification(void);
@@ -116,6 +123,79 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
     return version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION
                ? state
                : nil;
+}
+
+static BOOL FLMIsValidViewportDimension(CGFloat value) {
+    return isfinite(value) && value > 1.0 && value < 10000.0;
+}
+
+static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
+    // The full-screen fallback is intentional: it keeps this content-side
+    // adapter harmless when an older SpringBoard writer has not published the
+    // Version C card dimensions yet. UIWindow, Scene, and keyboard geometry
+    // remain full-screen in either case.
+    const CGSize fallback = {390.0, 844.0};
+    if (![sharedState[@"cardActive"] boolValue]) {
+        FLMContentLogicalViewportSize = fallback;
+        FLMContentExternalScale = 1.0;
+        FLMPhysicalCardSize = fallback;
+        FLMContentViewportUsesSharedCardSize = NO;
+        return;
+    }
+    CGFloat cardWidth = 0.0;
+    CGFloat cardHeight = 0.0;
+    BOOL hasCardWidth =
+        [sharedState[@"cardWidth"] isKindOfClass:[NSNumber class]];
+    BOOL hasCardHeight =
+        [sharedState[@"cardHeight"] isKindOfClass:[NSNumber class]];
+    if (hasCardWidth && hasCardHeight) {
+        cardWidth = [sharedState[@"cardWidth"] doubleValue];
+        cardHeight = [sharedState[@"cardHeight"] doubleValue];
+    }
+
+    if (!FLMIsValidViewportDimension(cardWidth) ||
+        !FLMIsValidViewportDimension(cardHeight)) {
+        FLMContentLogicalViewportSize = fallback;
+        FLMContentExternalScale = 1.0;
+        FLMPhysicalCardSize = fallback;
+        FLMContentViewportUsesSharedCardSize = NO;
+        return;
+    }
+
+    CGFloat uniformScale = cardWidth / fallback.width;
+    CGFloat logicalHeight = cardHeight / uniformScale;
+    NSNumber *publishedViewportWidthValue =
+        [sharedState[@"contentViewportWidth"] isKindOfClass:[NSNumber class]]
+            ? sharedState[@"contentViewportWidth"]
+            : nil;
+    NSNumber *publishedViewportHeightValue =
+        [sharedState[@"contentViewportHeight"] isKindOfClass:[NSNumber class]]
+            ? sharedState[@"contentViewportHeight"]
+            : nil;
+    CGFloat publishedViewportWidth =
+        [publishedViewportWidthValue doubleValue];
+    CGFloat publishedViewportHeight =
+        [publishedViewportHeightValue doubleValue];
+    if (FLMIsValidViewportDimension(publishedViewportWidth) &&
+        FLMIsValidViewportDimension(publishedViewportHeight) &&
+        fabs(publishedViewportWidth - fallback.width) <= 0.25) {
+        uniformScale = cardWidth / publishedViewportWidth;
+        logicalHeight = publishedViewportHeight;
+    }
+    if (!isfinite(uniformScale) || uniformScale <= 0.05 ||
+        !FLMIsValidViewportDimension(logicalHeight)) {
+        FLMContentLogicalViewportSize = fallback;
+        FLMContentExternalScale = 1.0;
+        FLMPhysicalCardSize = fallback;
+        FLMContentViewportUsesSharedCardSize = NO;
+        return;
+    }
+
+    FLMContentLogicalViewportSize =
+        CGSizeMake(fallback.width, logicalHeight);
+    FLMContentExternalScale = uniformScale;
+    FLMPhysicalCardSize = CGSizeMake(cardWidth, cardHeight);
+    FLMContentViewportUsesSharedCardSize = YES;
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -509,6 +589,7 @@ static void FLMReloadKeyboardRoute(void) {
 static void FLMReloadKeyboardCardGeometry(void) {
     uint64_t state = 0;
     NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    FLMReloadContentViewportSelection(sharedState);
     if (sharedState) {
         BOOL active = [sharedState[@"cardActive"] boolValue];
         uint64_t generation =
@@ -520,7 +601,8 @@ static void FLMReloadKeyboardCardGeometry(void) {
                        generation != 0 &&
                        generation ==
                            (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
-                       cardBottom > 1.0 && visualScale > 0.05;
+                       cardBottom > 1.0 && visualScale > 0.05 &&
+                       FLMContentViewportUsesSharedCardSize;
         FLMKeyboardCardGeometryActive = current;
         FLMKeyboardCardGeometryGeneration = current ? generation : 0;
         FLMKeyboardCardBottom = current ? cardBottom : 0.0;
@@ -542,13 +624,17 @@ static void FLMReloadKeyboardCardGeometry(void) {
             NOTIFY_STATUS_OK) {
         return;
     }
+    // The legacy notify payload contains only card bottom/scale.  The
+    // Version C dimensions live in the shared plist, so the helper above has
+    // already selected the safe 390x844 fallback when that plist is absent.
     BOOL active = (state & (1ULL << 63)) != 0;
     uint64_t generation = (state >> 48) & 0x7FFFULL;
     CGFloat cardBottom = (CGFloat)((state >> 24) & 0xFFFFFFULL) / 100.0;
     CGFloat visualScale = (CGFloat)(state & 0xFFFFFFULL) / 1000000.0;
     BOOL current = FLMKeyboardTargetApplication && active && generation != 0 &&
                    generation == (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
-                   cardBottom > 1.0 && visualScale > 0.05;
+                   cardBottom > 1.0 && visualScale > 0.05 &&
+                   FLMContentViewportUsesSharedCardSize;
     FLMKeyboardCardGeometryActive = current;
     FLMKeyboardCardGeometryGeneration = current ? generation : 0;
     FLMKeyboardCardBottom = current ? cardBottom : 0.0;
@@ -648,13 +734,15 @@ static void FLMLogContentViewportLayout(NSString *stage,
                                         CGRect currentBounds) {
     (void)contentView;
     CGRect windowBounds = window ? window.bounds : CGRectZero;
-    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
           (unsigned long long)FLMKeyboardSessionGeneration,
           NSStringFromCGRect(sceneLogicalBounds),
           NSStringFromCGRect(contentViewportBounds),
           FLMContentExternalScale, FLMPhysicalCardSize.width,
-          FLMPhysicalCardSize.height, NSStringFromCGRect(windowBounds),
+          FLMPhysicalCardSize.height,
+          FLMContentViewportUsesSharedCardSize ? @"shared-card" : @"fullscreen-fallback",
+          NSStringFromCGRect(windowBounds),
           NSStringFromCGRect(previousBounds), NSStringFromCGRect(currentBounds),
           FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
 }
@@ -670,33 +758,34 @@ static void FLMRestoreContentViewportLayouts(void) {
         return;
     }
     FLMContentViewportAdapterApplying = YES;
-    for (UIView *contentView in FLMContentViewportOriginalLayouts.keyEnumerator) {
-        NSDictionary *layout =
-            [FLMContentViewportOriginalLayouts objectForKey:contentView];
-        NSValue *savedFrame = layout[@"frame"];
-        NSValue *savedBounds = layout[@"bounds"];
-        if (!contentView || !savedFrame || !savedBounds) {
-            continue;
+    @try {
+        for (UIView *contentView in FLMContentViewportOriginalLayouts.keyEnumerator) {
+            NSDictionary *layout =
+                [FLMContentViewportOriginalLayouts objectForKey:contentView];
+            NSValue *savedFrame = layout[@"frame"];
+            NSValue *savedBounds = layout[@"bounds"];
+            if (!contentView || !savedFrame || !savedBounds) {
+                continue;
+            }
+            CGRect previousBounds = contentView.bounds;
+            contentView.frame = savedFrame.CGRectValue;
+            contentView.bounds = savedBounds.CGRectValue;
+            [contentView setNeedsLayout];
+            UIWindow *window = contentView.window;
+            FLMLogContentViewportLayout(
+                @"layout-restored", window, contentView,
+                window ? FLMPhysicalReferenceBoundsForScene(window.windowScene)
+                       : CGRectZero,
+                CGRectMake(0.0, 0.0, FLMContentLogicalViewportSize.width,
+                           FLMContentLogicalViewportSize.height),
+                previousBounds, contentView.bounds);
         }
-        CGRect previousBounds = contentView.bounds;
-        contentView.frame = savedFrame.CGRectValue;
-        contentView.bounds = savedBounds.CGRectValue;
-        [contentView setNeedsLayout];
-        UIWindow *window = contentView.window;
-        FLMLogContentViewportLayout(@"layout-restored", window, contentView,
-                                    window
-                                        ? FLMPhysicalReferenceBoundsForScene(
-                                              window.windowScene)
-                                        : CGRectZero,
-                                    CGRectMake(0.0, 0.0,
-                                               FLMContentLogicalViewportSize.width,
-                                               FLMContentLogicalViewportSize.height),
-                                    previousBounds, contentView.bounds);
+    } @finally {
+        [FLMContentViewportOriginalLayouts removeAllObjects];
+        FLMContentViewportAdapterApplying = NO;
+        FLMContentViewportAdapterActive = NO;
+        FLMContentViewportAdapterGeneration = 0;
     }
-    [FLMContentViewportOriginalLayouts removeAllObjects];
-    FLMContentViewportAdapterApplying = NO;
-    FLMContentViewportAdapterActive = NO;
-    FLMContentViewportAdapterGeneration = 0;
 }
 
 static void FLMApplyContentViewportToRootView(UIView *contentView,
@@ -722,8 +811,8 @@ static void FLMApplyContentViewportToRootView(UIView *contentView,
                                      FLMContentLogicalViewportSize.width,
                                      FLMContentLogicalViewportSize.height);
     CGRect currentFrame = contentView.frame;
-    CGRect targetFrame = CGRectMake(CGRectGetMinX(currentFrame),
-                                    CGRectGetMinY(currentFrame),
+    CGRect targetFrame = CGRectMake(0.0,
+                                    0.0,
                                     FLMContentLogicalViewportSize.width,
                                     FLMContentLogicalViewportSize.height);
     BOOL alreadyApplied =
@@ -735,21 +824,25 @@ static void FLMApplyContentViewportToRootView(UIView *contentView,
         return;
     }
     FLMContentViewportAdapterApplying = YES;
-    contentView.bounds = targetBounds;
-    contentView.frame = targetFrame;
-    [contentView setNeedsLayout];
-    [contentView setNeedsUpdateConstraints];
-    CGRect sceneLogicalBounds =
-        FLMPhysicalReferenceBoundsForScene(window.windowScene);
-    FLMLogContentViewportLayout(@"layout-applied", window, contentView,
-                                sceneLogicalBounds, targetBounds,
-                                previousBounds, contentView.bounds);
-    FLMPublishDiagnosticEvent(
-        FLMDiagnosticRoleApplication, FLMDiagnosticEventLayoutRefresh,
-        FLMKeyboardSessionGeneration,
-        FLMDiagnosticUnsignedValue(targetBounds.size.width),
-        FLMDiagnosticUnsignedValue(targetBounds.size.height));
-    FLMContentViewportAdapterApplying = NO;
+    @try {
+        contentView.bounds = targetBounds;
+        contentView.frame = targetFrame;
+        [contentView setNeedsLayout];
+        [contentView setNeedsUpdateConstraints];
+        [contentView layoutIfNeeded];
+        CGRect sceneLogicalBounds =
+            FLMPhysicalReferenceBoundsForScene(window.windowScene);
+        FLMLogContentViewportLayout(@"layout-applied", window, contentView,
+                                    sceneLogicalBounds, targetBounds,
+                                    previousBounds, contentView.bounds);
+        FLMPublishDiagnosticEvent(
+            FLMDiagnosticRoleApplication, FLMDiagnosticEventLayoutRefresh,
+            FLMKeyboardSessionGeneration,
+            FLMDiagnosticUnsignedValue(targetBounds.size.width),
+            FLMDiagnosticUnsignedValue(targetBounds.size.height));
+    } @finally {
+        FLMContentViewportAdapterApplying = NO;
+    }
 }
 
 static void FLMApplyContentViewportToVisibleApplicationWindows(void) {
@@ -780,6 +873,9 @@ static void FLMUpdateContentViewportAdapter(void) {
         });
         return;
     }
+    if (FLMContentViewportAdapterApplying) {
+        return;
+    }
     BOOL shouldApply = FLMKeyboardTargetApplication &&
                        FLMKeyboardRouteActive &&
                        FLMKeyboardCardGeometryActive &&
@@ -804,12 +900,14 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMContentViewportAdapterActive) {
         FLMContentViewportAdapterActive = YES;
         FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
-        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f}",
+        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
               [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
               (unsigned long long)FLMKeyboardSessionGeneration,
               FLMContentLogicalViewportSize.width,
               FLMContentLogicalViewportSize.height, FLMContentExternalScale,
-              FLMPhysicalCardSize.width, FLMPhysicalCardSize.height);
+              FLMPhysicalCardSize.width, FLMPhysicalCardSize.height,
+              FLMContentViewportUsesSharedCardSize ? @"shared-card"
+                                                    : @"fullscreen-fallback");
     }
     FLMApplyContentViewportToVisibleApplicationWindows();
 }
