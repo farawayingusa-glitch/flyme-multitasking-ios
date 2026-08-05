@@ -52,26 +52,27 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.68_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.69_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.68
-          path: artifacts/flyme-multitasking_0.8.68_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.69
+          path: artifacts/flyme-multitasking_0.8.69_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.68
-          name: flyme-multitasking 0.8.68
+          tag_name: v0.8.69
+          name: flyme-multitasking 0.8.69
           body: |
             - NEW: home-indicator dock gesture. Press and hold in the bottom-center zone (instead of swiping up), then keep dragging up: the system app-switcher gesture is intercepted and the app you are using docks straight into the upper-right card
+            - Fixed in 0.8.69: the dock gesture now runs on its own transparent zone window instead of the system gesture manager, so a recognized long-press gates the real home gesture off (0.8.68's system-manager recognizer lost the arbitration race and the app switcher still opened)
             - Quick or slow normal up-swipes still open the app switcher as usual; only a stationary long-press captures the gesture
             - Wheel can be summoned in every card mode (centered / docked / hidden): the floating window hosts its own corner-gesture pair, the exclusive close gesture yields the corner trigger, and the docked/hidden pass-through hit-test keeps the corner inside the window
             - Docked transition no longer snaps the app content at the end (host crop stays glued to the shrinking card)
             - Wheel-launching the app already in the card dismisses the card and promotes the app straight to fullscreen
             - Wheel overlay renders and receives touches above the card while presented
-          files: artifacts/flyme-multitasking_0.8.68_iphoneos-arm64.deb
+          files: artifacts/flyme-multitasking_0.8.69_iphoneos-arm64.deb
           fail_on_unmatched_files: true

@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.68"
+#define FLMLogBuildString @"0.8.69"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -717,6 +717,35 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 
 @end
 
+@class FLMWheelController;
+
+static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
+
+// Full-screen transparent window that owns the bottom-center home-indicator
+// zone while a plain application is frontmost. Its recognizer runs UIKit's
+// normal in-window arbitration, so once the long-press begins, the system
+// gesture manager gate fails the real home gesture and the app switcher never
+// opens. Every gate (card visible, wheel pinned, locked, home screen) is
+// re-evaluated per touch in the hit-test, so the window never swallows input
+// it should not own.
+@interface FLMHomeDockWindow : UIWindow
+@end
+
+@implementation FLMHomeDockWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return NO;
+}
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!FLMHomeDockZoneHitTest(self.bounds, point)) {
+        return nil;
+    }
+    return [super hitTest:point withEvent:event];
+}
+
+@end
+
 @interface FLMCornerGestureRecognizer : UILongPressGestureRecognizer
 @property(nonatomic, assign) NSTimeInterval flmFirstTouchTimestamp;
 @property(nonatomic, assign) BOOL flmOutsideCloseAuthorized;
@@ -1109,6 +1138,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, strong) FLMOverlayWindow *overlayWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
 @property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
+@property(nonatomic, strong) FLMHomeDockWindow *homeDockWindow;
 @property(nonatomic, strong) FLMOverlayWindow *floatingWindow;
 @property(nonatomic, strong) UIView *floatingDimView;
 @property(nonatomic, strong) UIView *floatingDockShadowView;
@@ -1851,6 +1881,19 @@ static FLMHotspotWindow *FLMCreateHotspotWindow(CGRect frame) {
     return [[FLMHotspotWindow alloc] initWithFrame:frame];
 }
 
+static FLMHomeDockWindow *FLMCreateHomeDockWindow(CGRect frame) {
+    UIWindowScene *scene = FLMForegroundWindowScene();
+    if (@available(iOS 13.0, *)) {
+        if (scene) {
+            FLMHomeDockWindow *window =
+                [[FLMHomeDockWindow alloc] initWithWindowScene:scene];
+            window.frame = frame;
+            return window;
+        }
+    }
+    return [[FLMHomeDockWindow alloc] initWithFrame:frame];
+}
+
 static UIImage *FLMLockImage(void) {
     UIImage *image = [UIImage systemImageNamed:@"lock.fill"];
     return [image imageWithTintColor:[UIColor whiteColor]
@@ -1973,6 +2016,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     hotspotController.view.backgroundColor = [UIColor clearColor];
     self.hotspotWindow.rootViewController = hotspotController;
 
+    // Bottom-center home-dock zone. The recognizer must live on this window's
+    // view (UIKit in-window arbitration, not the system gesture manager) so a
+    // recognized long-press gates the real home gesture off instead of losing
+    // the arbitration race against it. The hit-test re-validates every touch.
+    self.homeDockWindow = FLMCreateHomeDockWindow(bounds);
+    self.homeDockWindow.windowLevel = UIWindowLevelAlert + 90.0;
+    self.homeDockWindow.backgroundColor = [UIColor clearColor];
+    UIViewController *homeDockController = [[UIViewController alloc] init];
+    homeDockController.view.backgroundColor = [UIColor clearColor];
+    self.homeDockWindow.rootViewController = homeDockController;
+
     self.cornerGesture =
         [[FLMCornerGestureRecognizer alloc] initWithTarget:self
                                                     action:@selector(handleCornerGesture:)];
@@ -2069,7 +2123,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Docks the frontmost app from the bottom-center home-indicator zone. The
     // system home gesture wins any swipe that starts moving quickly; only a
     // stationary press (long-press) beats it, then the upward drag past the
-    // swipe threshold grabs the frontmost app into the upper-right dock.
+    // swipe threshold grabs the frontmost app into the upper-right dock. The
+    // recognizer lives on the dedicated zone window: once it begins, UIKit's
+    // gate makes the system home gesture fail, which the system gesture
+    // manager pair (0.8.68) could not do.
     self.homeDockGesture =
         [[FLMDockGestureRecognizer alloc]
             initWithTarget:self
@@ -2078,6 +2135,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.homeDockGesture.cancelsTouchesInView = YES;
     self.homeDockGesture.delaysTouchesBegan = NO;
     self.homeDockGesture.delaysTouchesEnded = NO;
+    [self.homeDockWindow.rootViewController.view
+        addGestureRecognizer:self.homeDockGesture];
 
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
@@ -2299,8 +2358,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.floatingDockInputGesture
             toDisplayWithIdentity:identity];
-    [manager addGestureRecognizer:self.homeDockGesture
-            toDisplayWithIdentity:identity];
     self.systemGestureManager = manager;
     self.displayIdentity = identity;
     return YES;
@@ -2407,6 +2464,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelContainer.frame = bounds;
     self.hotspotWindow.frame = bounds;
     self.hotspotWindow.rootViewController.view.frame = bounds;
+    self.homeDockWindow.frame = bounds;
+    self.homeDockWindow.rootViewController.view.frame = bounds;
     self.floatingWindow.frame = bounds;
     self.floatingWindow.rootViewController.view.frame = bounds;
     self.floatingDimView.frame = bounds;
@@ -7554,6 +7613,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 @end
+
+static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
+    FLMWheelController *controller = [FLMWheelController sharedController];
+    if (!controller.enabled || controller.wheelPinned ||
+        !controller.floatingWindow.hidden || controller.floatingCloseInProgress ||
+        FLMDeviceIsLocked()) {
+        return NO;
+    }
+    if (point.x < CGRectGetMinX(bounds) + CGRectGetWidth(bounds) * 0.30 ||
+        point.x > CGRectGetMinX(bounds) + CGRectGetWidth(bounds) * 0.70 ||
+        point.y < CGRectGetMaxY(bounds) - 100.0) {
+        return NO;
+    }
+    NSString *frontmost = FLMFrontmostApplicationIdentifier();
+    if (frontmost.length == 0 ||
+        [frontmost isEqualToString:@"com.apple.springboard"] ||
+        [frontmost isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+        return NO;
+    }
+    return YES;
+}
 
 %hook _UIKeyboardLayerHostView
 
