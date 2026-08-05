@@ -1004,6 +1004,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, assign) BOOL floatingDockHideReady;
 @property(nonatomic, assign) CGPoint floatingDockHideStartPoint;
 @property(nonatomic, assign) CGRect floatingDockHideInitialFrame;
+@property(nonatomic, assign) CGPoint floatingHiddenBarDragStartPoint;
+@property(nonatomic, assign) CGRect floatingHiddenBarDragInitialFrame;
 @property(nonatomic, assign) BOOL floatingDockTransitionActive;
 @property(nonatomic, assign) CGFloat floatingDockWidth;
 @property(nonatomic, assign) CGPoint floatingDockDragStartPoint;
@@ -1107,6 +1109,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)handleWheelTap:(UITapGestureRecognizer *)gesture;
 - (void)handleFloatingBackdropTap:(UIGestureRecognizer *)gesture;
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture;
+- (void)handleFloatingHiddenBarDrag:(UILongPressGestureRecognizer *)gesture;
 - (void)handleFloatingHandleTap:(UITapGestureRecognizer *)gesture;
 - (void)handleFloatingDockTap:(UITapGestureRecognizer *)gesture;
 - (void)handleFloatingDockDragPress:(UILongPressGestureRecognizer *)gesture;
@@ -2837,9 +2840,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRect target =
             [self dockedHiddenFloatingFrameOnRight:self.floatingDockedOnRight
                                               width:self.floatingDockWidth];
-        // Two-stage edge-hide: the grab bar first glides from the card's
-        // lower-left corner to the hidden landing spot beside the card, then
-        // the card itself slides fully off-screen.
+        // Single-stage edge-hide: the grab bar and the card travel together,
+        // so the bar glides up from the card's corner to its edge landing
+        // spot while the card slides off-screen, instead of popping in.
         UIView *rootView = self.floatingWindow.rootViewController.view;
         CGRect bounds = rootView.bounds;
         CGFloat handleWidth = 44.0;
@@ -2861,35 +2864,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandle.alpha = 0.0;
         [self.floatingWindow.rootViewController.view
             bringSubviewToFront:self.floatingHandle];
-        [UIView animateWithDuration:0.20
+        [UIView animateWithDuration:0.34
                               delay:0.0
+             usingSpringWithDamping:0.92
+              initialSpringVelocity:0.20
                             options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionCurveEaseOut
+                                    UIViewAnimationOptionAllowUserInteraction
                          animations:^{
-                             self.floatingHandle.alpha = 1.0;
+                             self.floatingContainer.transform =
+                                 CGAffineTransformIdentity;
+                             self.floatingContainer.frame = target;
+                             self.floatingContainer.layer.cornerRadius = 16.0;
                              self.floatingHandle.frame = handleLanding;
+                             self.floatingHandle.alpha = 1.0;
                              self.floatingResizeHandle.alpha = 0.0;
                              self.floatingDimView.alpha = 0.0;
                          }
                          completion:^(__unused BOOL finished) {
-            [UIView animateWithDuration:0.28
-                                  delay:0.0
-                                options:UIViewAnimationOptionBeginFromCurrentState |
-                                        UIViewAnimationOptionCurveEaseOut
-                             animations:^{
-                                 self.floatingContainer.transform =
-                                     CGAffineTransformIdentity;
-                                 self.floatingContainer.frame = target;
-                                 self.floatingContainer.layer.cornerRadius =
-                                     16.0;
-                                 self.floatingHandle.alpha = 1.0;
-                                 [self layoutFloatingHandleForCurrentContainer];
-                             }
-                             completion:^(__unused BOOL done) {
-                                 self.floatingDockTransitionActive = NO;
-                                 [self configureFloatingInteractionForDockedState];
-                             }];
-        }];
+                             self.floatingDockTransitionActive = NO;
+                             [self configureFloatingInteractionForDockedState];
+                         }];
         return;
     }
 
@@ -2951,13 +2945,55 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                    (CGRectGetWidth(target) - CGRectGetWidth(start)) * progress,
                                CGRectGetHeight(start) +
                                    (CGRectGetHeight(target) - CGRectGetHeight(start)) * progress);
+    // The hidden grab bar tracks the drag: it interpolates from the card's
+    // corner (the resize-bar spot) toward its edge landing position with the
+    // same progress as the card disappearing, and always glides upward.
+    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGFloat handleWidth = 44.0;
+    CGFloat handleHeight = 72.0;
+    CGRect hiddenFrame =
+        [self dockedHiddenFloatingFrameOnRight:self.floatingDockedOnRight
+                                          width:self.floatingDockWidth];
+    CGRect handleLanding =
+        CGRectMake(self.floatingDockedOnRight
+                       ? CGRectGetWidth(bounds) - handleWidth
+                       : 0.0,
+                   CGRectGetMinY(hiddenFrame) + 24.0,
+                   handleWidth,
+                   handleHeight);
+    CGRect handleOrigin = self.floatingResizeHandle.frame;
+    if (CGRectIsEmpty(handleOrigin)) {
+        handleOrigin = handleLanding;
+    }
     [UIView performWithoutAnimation:^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = visual;
         self.floatingDockShadowView.alpha = 0.0;
         self.floatingResizeHandle.alpha = revealing ? 1.0 - progress : 0.0;
-        self.floatingHandle.alpha = revealing ? progress : 1.0;
-        [self layoutFloatingHandleForCurrentContainer];
+        self.floatingHandle.hidden = NO;
+        self.floatingHandle.alpha = revealing ? 1.0 - progress : progress;
+        CGFloat handleX =
+            revealing
+                ? CGRectGetMinX(handleLanding) +
+                      (CGRectGetMinX(handleOrigin) -
+                       CGRectGetMinX(handleLanding)) *
+                          progress
+                : CGRectGetMinX(handleOrigin) +
+                      (CGRectGetMinX(handleLanding) -
+                       CGRectGetMinX(handleOrigin)) *
+                          progress;
+        CGFloat handleY =
+            revealing
+                ? CGRectGetMinY(handleLanding) +
+                      (CGRectGetMinY(handleOrigin) -
+                       CGRectGetMinY(handleLanding)) *
+                          progress
+                : CGRectGetMinY(handleOrigin) +
+                      (CGRectGetMinY(handleLanding) -
+                       CGRectGetMinY(handleOrigin)) *
+                          progress;
+        self.floatingHandle.frame =
+            CGRectMake(handleX, handleY, handleWidth, handleHeight);
     }];
 }
 
@@ -3221,6 +3257,57 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
             [self transitionFloatingWindowToCentered];
         }
+    }
+}
+
+- (void)handleFloatingHiddenBarDrag:(UILongPressGestureRecognizer *)gesture {
+    UIView *rootView = self.floatingWindow.rootViewController.view;
+    CGRect bounds = rootView.bounds;
+    CGPoint point = [gesture locationInView:rootView];
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        self.floatingHiddenBarDragStartPoint = point;
+        self.floatingHiddenBarDragInitialFrame = self.floatingHandle.frame;
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateChanged) {
+        CGFloat deltaY = point.y - self.floatingHiddenBarDragStartPoint.y;
+        CGRect frame = self.floatingHiddenBarDragInitialFrame;
+        CGFloat topLimit = MAX(8.0, rootView.safeAreaInsets.top);
+        CGFloat bottomLimit =
+            CGRectGetHeight(bounds) - CGRectGetHeight(frame) -
+            rootView.safeAreaInsets.bottom;
+        frame.origin.y =
+            MAX(topLimit, MIN(bottomLimit, CGRectGetMinY(frame) + deltaY));
+        [UIView performWithoutAnimation:^{
+            self.floatingHandle.frame = frame;
+        }];
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateEnded ||
+        gesture.state == UIGestureRecognizerStateCancelled ||
+        gesture.state == UIGestureRecognizerStateFailed) {
+        // The hidden bar is free to travel vertically while dragged, but it
+        // always springs back to its landing spot beside the hidden card
+        // (upper-right for the right dock, upper-left for the left dock).
+        CGRect landing =
+            CGRectMake(self.floatingDockedOnRight
+                           ? CGRectGetWidth(bounds) -
+                                 CGRectGetWidth(self.floatingHandle.frame)
+                           : 0.0,
+                       MAX(8.0,
+                           CGRectGetMinY(self.floatingContainer.frame) + 24.0),
+                       CGRectGetWidth(self.floatingHandle.frame),
+                       CGRectGetHeight(self.floatingHandle.frame));
+        [UIView animateWithDuration:0.32
+                              delay:0.0
+             usingSpringWithDamping:0.78
+              initialSpringVelocity:0.20
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+                             self.floatingHandle.frame = landing;
+                         }
+                         completion:nil];
     }
 }
 
@@ -3550,6 +3637,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
     if (self.floatingWindow.hidden) {
+        return;
+    }
+    if (self.floatingDocked && self.floatingDockHidden) {
+        [self handleFloatingHiddenBarDrag:gesture];
         return;
     }
     UIView *rootView = self.floatingWindow.rootViewController.view;
@@ -4322,7 +4413,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingHandle.userInteractionEnabled = hidden || !docked;
     self.floatingHandle.hidden = docked && !hidden;
-    self.floatingHandlePress.enabled = !docked && !hidden;
+    self.floatingHandlePress.enabled = !docked || hidden;
     self.floatingHandleTap.enabled = !docked && !hidden;
     self.floatingResizeHandle.hidden = !docked || hidden;
     self.floatingExclusiveGesture.enabled =
@@ -4436,6 +4527,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                               self.floatingContainer.layer.cornerRadius =
                                                   16.0 / MAX(0.01, targetScale);
                                               self.floatingDockShadowView.alpha = 0.0;
+                                              // Ease the content crop to the
+                                              // docked (uncropped) position in
+                                              // sync with the container so the
+                                              // scene does not jump on settle.
+                                              self.floatingHostView.center =
+                                                  CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
+                                                              CGRectGetMidY(self.floatingContainer.bounds));
                                           }
                                           completion:^(__unused BOOL done) {
                                               [UIView performWithoutAnimation:^{
@@ -4700,11 +4798,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGFloat y = CGRectGetMinY(self.floatingContainer.frame) + 24.0;
         self.floatingHandle.frame =
             CGRectMake(x, MAX(8.0, y), handleWidth, handleHeight);
+        // The hidden grab bar keeps the same total length as the docked
+        // L-shaped drag bar so the two read as the same element.
+        CGFloat barLength = 44.0;
         self.floatingHandleBar.frame =
             CGRectMake(self.floatingDockedOnRight ? 36.0 : 3.0,
-                       floor((handleHeight - 28.0) * 0.5),
+                       floor((handleHeight - barLength) * 0.5),
                        5.0,
-                       28.0);
+                       barLength);
         return;
     }
     if (landscape) {

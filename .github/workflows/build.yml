@@ -1,4 +1,4 @@
-﻿name: Build flyme-multitasking
+name: Build flyme-multitasking
 
 on:
   workflow_dispatch:
@@ -52,24 +52,24 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.61_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.61
-          path: artifacts/flyme-multitasking_0.8.61_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.62
+          path: artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.61
-          name: flyme-multitasking 0.8.61
+          tag_name: v0.8.62
+          name: flyme-multitasking 0.8.62
           body: |
             - Remove dock shadow
             - Spring settle into dock on release
             - Two-stage edge-hide with grab-bar positioning
             - Fix docked content scaling
-          files: artifacts/flyme-multitasking_0.8.61_iphoneos-arm64.deb
+          files: artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
           fail_on_unmatched_files: true
