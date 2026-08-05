@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.64"
+#define FLMLogBuildString @"0.8.65"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -2860,27 +2860,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        CGRectGetMinY(self.floatingContainer.frame) + 24.0,
                        handleWidth,
                        handleHeight);
-        CGRect handleOrigin = self.floatingResizeHandle.frame;
-        if (CGRectIsEmpty(handleOrigin)) {
-            handleOrigin = handleLanding;
+        // Start the glide from wherever the drag left the bar.  The old code
+        // snapped the bar back to the L-grip's frame at the card corner,
+        // which was already off-screen at release, so the bar visibly flew
+        // in from nowhere instead of continuing its travel to the edge.
+        CGRect handleStart = self.floatingHandle.frame;
+        if (CGRectIsEmpty(handleStart)) {
+            handleStart = handleLanding;
         }
         self.floatingHandle.hidden = NO;
         self.floatingHandle.userInteractionEnabled = NO;
-        self.floatingHandle.frame = handleOrigin;
+        self.floatingHandle.frame = handleStart;
         // The L-shaped resize grip must vanish the instant the hide glide
         // starts; otherwise a second white strip fades out beside the bar.
         self.floatingResizeHandle.alpha = 0.0;
         self.floatingResizeHandle.hidden = YES;
         // Switch the grab bar to its hidden vertical form before the glide
-        // animation starts, so the bar travels as a vertical line from the
-        // card corner instead of flying out as a horizontal strip and then
-        // snapping vertical at the end.
+        // animation starts, so the bar travels as a vertical line instead of
+        // flying out as a horizontal strip and then snapping vertical at the
+        // end.
         self.floatingHandleBar.frame =
             CGRectMake(self.floatingDockedOnRight ? 36.0 : 3.0,
-                       floor((CGRectGetHeight(handleOrigin) - 44.0) * 0.5),
+                       floor((CGRectGetHeight(handleStart) - 44.0) * 0.5),
                        5.0,
                        44.0);
-        self.floatingHandle.alpha = 0.0;
         [self.floatingWindow.rootViewController.view
             bringSubviewToFront:self.floatingHandle];
         [UIView animateWithDuration:0.34
@@ -4546,12 +4549,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingDimView.alpha = 0.0;
                          self.floatingDockShadowView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
-                         // Ease the content crop to the docked (uncropped)
+                         // Ease the content crop to the docked proportional
                          // position during the settle as well, so the scene
                          // never jumps mid-transition.
                          self.floatingHostView.center =
                              CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
-                                         CGRectGetMidY(self.floatingContainer.bounds));
+                                         CGRectGetMidY(self.floatingContainer.bounds) +
+                                             (self.centeredCardBottomCrop -
+                                              self.centeredCardTopCrop) * 0.5 *
+                                                 self.floatingDockWidth /
+                                                 FLMCenteredCardWidth);
                          [self layoutFloatingDockShadow];
                      }
                      completion:^(__unused BOOL finished) {
@@ -4580,12 +4587,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                               46.0,
                                                               46.0);
                                                // Ease the content crop to the
-                                               // docked (uncropped) position in
-                                               // sync with the container so the
-                                               // scene does not jump on settle.
+                                               // docked proportional position
+                                               // in sync with the container so
+                                               // the scene does not jump on
+                                               // settle.
                                                self.floatingHostView.center =
                                                    CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
-                                                               CGRectGetMidY(self.floatingContainer.bounds));
+                                                               CGRectGetMidY(self.floatingContainer.bounds) +
+                                                                   (self.centeredCardBottomCrop -
+                                                                    self.centeredCardTopCrop) * 0.5 *
+                                                                       self.floatingDockWidth /
+                                                                       FLMCenteredCardWidth);
                                            }
                                           completion:^(__unused BOOL done) {
                                                [UIView performWithoutAnimation:^{
@@ -4601,11 +4613,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                    self.floatingDockShadowView.layer.cornerRadius =
                                                        22.0 * self.floatingDockWidth /
                                                            FLMCenteredCardWidth;
+                                                   // The card is already at its
+                                                   // final docked spot; mark the
+                                                   // state before laying out the
+                                                   // host so the docked crop is
+                                                   // applied here and the scene
+                                                   // never snaps back mid-frame.
+                                                   self.floatingDocked = YES;
                                                    [self layoutFloatingHostView];
                                                    [self layoutFloatingResizeHandle];
                                                }];
                                               self.floatingDockTransitionActive = NO;
-                                              self.floatingDocked = YES;
                                               self.floatingDockHidden = NO;
                                               self.lastObservedFrontmostIdentifier =
                                                   FLMFrontmostApplicationIdentifier();
@@ -4935,11 +4953,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              0.0,
                              referenceSize.width,
                              referenceSize.height);
-    CGFloat cropOffset = (self.floatingInteractiveFullscreenTransition ||
-                          self.floatingDocked)
-                             ? 0.0
-                             : (self.centeredCardBottomCrop -
-                                self.centeredCardTopCrop) * 0.5;
+    // The centered card shifts its content window by (bottom-top)/2 to
+    // center the uncropped fullscreen window; the docked card must apply the
+    // same window shift scaled by dockWidth/315 so the app sees exactly the
+    // same fullscreen region and does not re-layout (jump) on dock.
+    CGFloat cropOffset =
+        self.floatingInteractiveFullscreenTransition
+            ? 0.0
+            : (self.centeredCardBottomCrop - self.centeredCardTopCrop) * 0.5 *
+                  (self.floatingDocked
+                       ? (self.floatingDockWidth / FLMCenteredCardWidth)
+                       : 1.0);
     host.center = CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
                               CGRectGetMidY(self.floatingContainer.bounds) +
                                   cropOffset);

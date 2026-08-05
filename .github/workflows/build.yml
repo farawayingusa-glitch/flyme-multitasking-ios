@@ -52,24 +52,25 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.65_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.64
-          path: artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.65
+          path: artifacts/flyme-multitasking_0.8.65_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.64
-          name: flyme-multitasking 0.8.64
+          tag_name: v0.8.65
+          name: flyme-multitasking 0.8.65
           body: |
-            - Centered card shape is the baseline (22 pt corner radius); docked card corners scale proportionally with card width (22 * dockWidth / 315), so both modes share one visual shape
-            - Transition corner radius stays visually continuous at every scale (interactive drag, settle, travel, fullscreen wrapper)
+            - Hide gesture: grab bar continues from where the drag left it; it no longer snaps back to the (off-screen) card corner and flies in
+            - Docked mode now applies the centered card's crop proportionally (bottom-top)/2 * dockWidth/315, so the app sees exactly the same fullscreen region and no longer re-layouts (jumps) when docking
+            - Transition host crop eases to the docked proportional position; completion marks the state docked before re-layout
+            - Centered card shape is the baseline (22 pt corner radius); docked card corners scale proportionally with card width (22 * dockWidth / 315)
             - Hidden transition: L-shaped resize grip disappears instantly, no second white strip beside the gliding bar
-            - Docked corner radius follows resize/drag changes
-          files: artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
+          files: artifacts/flyme-multitasking_0.8.65_iphoneos-arm64.deb
           fail_on_unmatched_files: true
