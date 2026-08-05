@@ -11,6 +11,8 @@ jobs:
   build:
     runs-on: macos-14
     timeout-minutes: 30
+    permissions:
+      contents: write
 
     steps:
       - name: Check out source
@@ -58,3 +60,16 @@ jobs:
           name: flyme-multitasking-0.8.61
           path: artifacts/flyme-multitasking_0.8.61_iphoneos-arm64.deb
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.8.61
+          name: flyme-multitasking 0.8.61
+          body: |
+            - Remove dock shadow
+            - Spring settle into dock on release
+            - Two-stage edge-hide with grab-bar positioning
+            - Fix docked content scaling
+          files: artifacts/flyme-multitasking_0.8.61_iphoneos-arm64.deb
+          fail_on_unmatched_files: true
