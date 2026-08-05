@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.65"
+#define FLMLogBuildString @"0.8.66"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -2296,6 +2296,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         CGPoint rawPoint = [touch locationInView:nil];
         CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        // The wheel owns the corner trigger while it can summon: the exclusive
+        // close gesture must never arbitrate away the corner swipe that opens
+        // the wheel over a centered card.
+        if (self.enabled && !self.wheelPinned &&
+            self.itemIdentifiers.count > 0 &&
+            FLMPointInsideCornerTrigger(point,
+                                        FLMVisualScreenBounds(),
+                                        NULL)) {
+            FLMEnqueueDiagnosticLine(
+                @"sb touch-delegate recognizer=exclusive touch=%p timestamp=%.6f accepted=0 gate=wheel-corner point={%.1f,%.1f}",
+                (__bridge void *)touch, touch.timestamp, point.x, point.y);
+            return NO;
+        }
         BOOL outside = ![self pointIsInsideFloatingInteractionDomain:point];
         exclusiveGesture.flmOutsideCloseAuthorized = outside;
         exclusiveGesture.flmAuthorizedStartPoint = point;
@@ -2476,7 +2489,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)presentWheelFromRight:(BOOL)fromRight {
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
+    // The wheel must render and receive touches above any visible card. The
+    // keyboard forwarding window sits at floating+1, so present at +2.
     self.overlayWindow.userInteractionEnabled = NO;
+    self.overlayWindow.windowLevel = self.floatingWindow.windowLevel + 2.0;
     NSMutableArray<FLMWheelItemView *> *views = [NSMutableArray array];
     CGRect bounds = FLMVisualScreenBounds();
     CGFloat width = CGRectGetWidth(bounds);
@@ -2653,6 +2669,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.modalGesture.enabled = NO;
     self.wheelTapGesture.enabled = YES;
     self.overlayWindow.userInteractionEnabled = NO;
+    // Restore the overlay below the floating window now that the wheel no
+    // longer needs to sit above a visible card.
+    self.overlayWindow.windowLevel = UIWindowLevelAlert + 91.0;
     [self stopLockMonitoringIfIdle];
     if (self.overlayWindow.hidden) {
         if (item) {
@@ -4549,16 +4568,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingDimView.alpha = 0.0;
                          self.floatingDockShadowView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
-                         // Ease the content crop to the docked proportional
-                         // position during the settle as well, so the scene
-                         // never jumps mid-transition.
+                         // Keep the content glued to the shrinking card.  The
+                         // host stays at the centered crop offset while the
+                         // container scale maps it onto the docked proportional
+                         // crop, so the scene never jumps mid-transition.
                          self.floatingHostView.center =
                              CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
                                          CGRectGetMidY(self.floatingContainer.bounds) +
                                              (self.centeredCardBottomCrop -
-                                              self.centeredCardTopCrop) * 0.5 *
-                                                 self.floatingDockWidth /
-                                                 FLMCenteredCardWidth);
+                                              self.centeredCardTopCrop) * 0.5);
                          [self layoutFloatingDockShadow];
                      }
                      completion:^(__unused BOOL finished) {
@@ -4586,18 +4604,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                               CGRectGetMaxY(target) - 14.0,
                                                               46.0,
                                                               46.0);
-                                               // Ease the content crop to the
-                                               // docked proportional position
-                                               // in sync with the container so
-                                               // the scene does not jump on
-                                               // settle.
-                                               self.floatingHostView.center =
-                                                   CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
-                                                               CGRectGetMidY(self.floatingContainer.bounds) +
-                                                                   (self.centeredCardBottomCrop -
-                                                                    self.centeredCardTopCrop) * 0.5 *
-                                                                       self.floatingDockWidth /
-                                                                       FLMCenteredCardWidth);
+                                                // The host reaches the same
+                                                // centered crop offset the
+                                                // completion layout expects:
+                                                // the container scale then maps
+                                                // it onto the docked
+                                                // proportional crop, so the
+                                                // scene does not jump on settle.
+                                                self.floatingHostView.center =
+                                                    CGPointMake(CGRectGetMidX(self.floatingContainer.bounds),
+                                                                CGRectGetMidY(self.floatingContainer.bounds) +
+                                                                    (self.centeredCardBottomCrop -
+                                                                     self.centeredCardTopCrop) * 0.5);
                                            }
                                           completion:^(__unused BOOL done) {
                                                [UIView performWithoutAnimation:^{
@@ -7178,7 +7196,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
         [identifier isEqualToString:self.floatingIdentifier]) {
+        // The wheel target is the app already sitting in the card. Dismiss the
+        // card and promote the running app straight to fullscreen instead of
+        // swallowing the request.
         self.prewarmedIdentifier = nil;
+        if (self.floatingCloseInProgress) {
+            self.floatingQueuedFullscreenIdentifier = [identifier copy];
+            return;
+        }
+        FLMEnqueueDiagnosticLine(
+            @"sb wheel-promote target=%@ closeToken=%lu card=%@",
+            identifier, (unsigned long)self.floatingActiveCloseToken,
+            self.floatingDocked
+                ? (self.floatingDockHidden ? @"hidden" : @"docked")
+                : @"centered");
+        self.floatingQueuedFullscreenIdentifier = [identifier copy];
+        [self closeFloatingWindowKeepingApplication:YES];
         return;
     }
     if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
