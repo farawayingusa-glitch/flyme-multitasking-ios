@@ -52,24 +52,24 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.63
-          path: artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.64
+          path: artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.63
-          name: flyme-multitasking 0.8.63
+          tag_name: v0.8.64
+          name: flyme-multitasking 0.8.64
           body: |
-            - Fix logger-ready build tag not following the package version
-            - Unify centered/docked card corner radius (22 pt, iOS 16 app switcher look)
-            - Hidden transition: grab bar travels as a vertical line from the card corner
-            - Dock transition: ease content crop during settle, L-bar glides in with the card
-          files: artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
+            - Centered card shape is the baseline (22 pt corner radius); docked card corners scale proportionally with card width (22 * dockWidth / 315), so both modes share one visual shape
+            - Transition corner radius stays visually continuous at every scale (interactive drag, settle, travel, fullscreen wrapper)
+            - Hidden transition: L-shaped resize grip disappears instantly, no second white strip beside the gliding bar
+            - Docked corner radius follows resize/drag changes
+          files: artifacts/flyme-multitasking_0.8.64_iphoneos-arm64.deb
           fail_on_unmatched_files: true

@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.63"
+#define FLMLogBuildString @"0.8.64"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -2803,10 +2803,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     void (^changes)(void) = ^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = target;
-        self.floatingContainer.layer.cornerRadius = 22.0;
+        self.floatingContainer.layer.cornerRadius =
+            22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
         self.floatingDockShadowView.alpha = 0.0;
         self.floatingDimView.alpha = 0.0;
         self.floatingResizeHandle.alpha = 0.0;
+        self.floatingResizeHandle.hidden = YES;
         self.floatingHandle.alpha = 1.0;
         [self layoutFloatingHandleForCurrentContainer];
     };
@@ -2865,13 +2867,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandle.hidden = NO;
         self.floatingHandle.userInteractionEnabled = NO;
         self.floatingHandle.frame = handleOrigin;
+        // The L-shaped resize grip must vanish the instant the hide glide
+        // starts; otherwise a second white strip fades out beside the bar.
+        self.floatingResizeHandle.alpha = 0.0;
+        self.floatingResizeHandle.hidden = YES;
         // Switch the grab bar to its hidden vertical form before the glide
         // animation starts, so the bar travels as a vertical line from the
         // card corner instead of flying out as a horizontal strip and then
         // snapping vertical at the end.
         self.floatingHandleBar.frame =
             CGRectMake(self.floatingDockedOnRight ? 36.0 : 3.0,
-                       floor((handleHeight - 44.0) * 0.5),
+                       floor((CGRectGetHeight(handleOrigin) - 44.0) * 0.5),
                        5.0,
                        44.0);
         self.floatingHandle.alpha = 0.0;
@@ -2887,10 +2893,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              self.floatingContainer.transform =
                                  CGAffineTransformIdentity;
                              self.floatingContainer.frame = target;
-                             self.floatingContainer.layer.cornerRadius = 22.0;
+                             self.floatingContainer.layer.cornerRadius =
+                                 22.0 * self.floatingDockWidth /
+                                     FLMCenteredCardWidth;
                              self.floatingHandle.frame = handleLanding;
                              self.floatingHandle.alpha = 1.0;
-                             self.floatingResizeHandle.alpha = 0.0;
                              self.floatingDimView.alpha = 0.0;
                          }
                          completion:^(__unused BOOL finished) {
@@ -2909,9 +2916,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     void (^changes)(void) = ^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = target;
-                             self.floatingContainer.layer.cornerRadius = 22.0;
+                             self.floatingContainer.layer.cornerRadius =
+                                 22.0 * self.floatingDockWidth /
+                                     FLMCenteredCardWidth;
                              self.floatingDockShadowView.alpha = 0.0;
                              self.floatingDimView.alpha = 0.0;
+        self.floatingResizeHandle.hidden = NO;
         self.floatingResizeHandle.alpha = 1.0;
         self.floatingHandle.alpha = 0.0;
         [self layoutFloatingHandleForCurrentContainer];
@@ -3558,7 +3568,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect frame = CGRectMake(minX, minY, width, height);
     wrapper.transform = CGAffineTransformIdentity;
     wrapper.frame = frame;
-    wrapper.layer.cornerRadius = 22.0 * (1.0 - progress);
+    wrapper.layer.cornerRadius =
+        22.0 * (CGRectGetWidth(start) / FLMCenteredCardWidth) *
+        (1.0 - progress);
 
     CGFloat uniformScale = CGRectGetWidth(frame) /
                            MAX(1.0, CGRectGetWidth(start));
@@ -3605,7 +3617,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     wrapper.autoresizingMask = UIViewAutoresizingNone;
     wrapper.userInteractionEnabled = NO;
     wrapper.clipsToBounds = YES;
-    wrapper.layer.cornerRadius = 22.0;
+    wrapper.layer.cornerRadius =
+        22.0 * CGRectGetWidth(start) / FLMCenteredCardWidth;
     CGRect sourceBounds = CGRectMake(0.0,
                                      0.0,
                                      CGRectGetWidth(start),
@@ -3762,9 +3775,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     self.floatingContainer.transform;
             }];
             [CATransaction commit];
-            CGFloat visualCornerRadius = 22.0;
-            self.floatingContainer.layer.cornerRadius =
-                visualCornerRadius / MAX(0.01, scale);
+            // Card corners scale proportionally with the card: the visual
+            // radius stays 22pt at the centered size and shrinks to the
+            // docked ratio (22 * dockWidth / 315) as the card shrinks.
+            self.floatingContainer.layer.cornerRadius = 22.0;
             self.floatingDimView.alpha = 1.0 - visualProgress;
             self.floatingDockShadowView.hidden = YES;
             self.floatingDockShadowView.alpha = 0.0;
@@ -4267,6 +4281,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingContainer.frame = visualFrame;
         self.floatingDockShadowView.transform = CGAffineTransformIdentity;
         self.floatingDockShadowView.frame = visualFrame;
+        if (self.floatingDocked) {
+            self.floatingContainer.layer.cornerRadius =
+                22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
+            self.floatingDockShadowView.layer.cornerRadius =
+                22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
+        }
         self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
         [self layoutFloatingHostView];
     }];
@@ -4522,8 +4542,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.center = settleCenter;
                          self.floatingContainer.transform =
                              CGAffineTransformMakeScale(settleScale, settleScale);
-                         self.floatingContainer.layer.cornerRadius =
-                             22.0 / MAX(0.01, settleScale);
+                         self.floatingContainer.layer.cornerRadius = 22.0;
                          self.floatingDimView.alpha = 0.0;
                          self.floatingDockShadowView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
@@ -4549,8 +4568,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                self.floatingContainer.transform =
                                                    CGAffineTransformMakeScale(targetScale,
                                                                               targetScale);
-                                               self.floatingContainer.layer.cornerRadius =
-                                                   22.0 / MAX(0.01, targetScale);
+                                               self.floatingContainer.layer.cornerRadius = 22.0;
                                                self.floatingDockShadowView.alpha = 0.0;
                                                // The L-shaped resize bar glides
                                                // in with the card instead of
@@ -4574,11 +4592,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                    self.floatingContainer.transform =
                                                        CGAffineTransformIdentity;
                                                    self.floatingContainer.frame = target;
-                                                   self.floatingContainer.layer.cornerRadius = 22.0;
+                                                   self.floatingContainer.layer.cornerRadius =
+                                                       22.0 * self.floatingDockWidth /
+                                                           FLMCenteredCardWidth;
                                                    self.floatingDockShadowView.transform =
                                                        CGAffineTransformIdentity;
                                                    self.floatingDockShadowView.frame = target;
-                                                   self.floatingDockShadowView.layer.cornerRadius = 22.0;
+                                                   self.floatingDockShadowView.layer.cornerRadius =
+                                                       22.0 * self.floatingDockWidth /
+                                                           FLMCenteredCardWidth;
                                                    [self layoutFloatingHostView];
                                                    [self layoutFloatingResizeHandle];
                                                }];
