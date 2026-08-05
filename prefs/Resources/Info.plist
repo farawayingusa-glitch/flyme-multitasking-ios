@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>flyme-multitasking</string>
     <key>CFBundleExecutable</key>
     <string>FlymeMultitaskingPrefs</string>
     <key>CFBundleIdentifier</key>
@@ -15,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.1</string>
+    <string>0.8.60</string>
     <key>CFBundleVersion</key>
-    <string>53</string>
+    <string>60</string>
     <key>NSPrincipalClass</key>
     <string>FLMRootListController</string>
 </dict>

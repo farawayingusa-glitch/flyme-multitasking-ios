@@ -24,8 +24,11 @@ foreach ($Marker in @(
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.18',
     'FLMFloatingSceneGenerationDelay = 0.75',
-    'FLMCenteredCardWidth = 300.0',
-    'FLMCenteredCardHeight = 649.2307692307692',
+    'FLMCenteredCardWidth = 315.0',
+    'FLMCenteredCardTopCrop = 37.0',
+    'FLMCenteredCardBottomCrop = 19.0',
+    'FLMDefaultCenteredDockSwipeThreshold = 20.0',
+    'FLMDockAnimationSpeed = 0.85',
     'failFloatingLaunchForIdentifier:',
     'generatingNewPrimarySceneIfRequired:generatePrimaryScene',
     'restoreFloatingHandleInteraction',
@@ -60,7 +63,6 @@ foreach ($Marker in @(
     'floatingSceneLogicalFrameMatchesSystemReference',
     'content-viewport request',
     'content-viewport committed',
-    'content-viewport-fit',
     'scene-frame policy=fullscreen',
     'content-scale policy=%@ systemSceneReference=',
     'contentViewportReference=',
@@ -136,7 +138,7 @@ Require-Text $KeyboardSource 'FLMReloadContentViewportSelection'
 Require-Text $KeyboardSource 'FLMProcessIsSpringBoardOrSystemAgent'
 Require-Text $KeyboardSource 'return MAX(originalHeight, mappedHeight);'
 Require-Text $KeyboardSource 'FLMReadKeyboardSharedState'
-Require-Text $KeyboardSource 'FLYME_KEYBOARD_SHARED_STATE_VERSION 3'
+Require-Text $KeyboardSource 'FLYME_KEYBOARD_SHARED_STATE_VERSION 2'
 Require-Text $KeyboardSource 'dictionaryWithContentsOfFile:FLMKeyboardSharedStatePath'
 Require-Text $KeyboardSource 'FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLMPublishKeyboardAppLifecycleStage'
@@ -147,7 +149,7 @@ Require-Text $Source 'avoidance-retained=1'
 Require-Text $Source 'FLYME_DIAGNOSTIC_APPLICATION_NOTIFICATION'
 Require-Text $Source 'FLMScheduleKeyboardSharedStateWrite'
 Require-Text $Source 'NSPropertyListBinaryFormat_v1_0'
-Require-Text $Source '@"version": @3'
+Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
@@ -162,7 +164,6 @@ Require-Text $Source 'FLMVirtualViewportHeight = 844.0'
 Require-Text $Source 'effectiveCenteredCardScaleX'
 Require-Text $Source 'effectiveCenteredCardScaleY'
 Require-Text $Source 'uniformScale'
-Require-Text $Source 'selectedCardHeight / uniformScale'
 Require-Text $Source 'cardWidth'
 Require-Text $Source 'cardHeight'
 Require-Text $Source 'contentViewportHeight'
@@ -182,6 +183,19 @@ Require-Text $Source 'host.clipsToBounds = NO'
 Require-Text $Source 'ctor={reg:%d read:%d raw:'
 Require-Text $Source 'policy=touch-origin'
 Require-Text $Source 'centered-preserved=%d'
+Require-Text $Source 'sb presenter-watchdog fallback=fullscreen'
+Require-Text $Source 'launch-cover recovery-failed'
+Require-Text $Source 'fullscreen-fallback dequeue target'
+Require-Text $Source 'floatingQueuedFullscreenIdentifier'
+Require-Text $Source 'dockedHiddenFloatingFrameOnRight'
+Require-Text $Source 'floatingDockHideGestureActive'
+Require-Text $Source 'floatingDockHideReady'
+Require-Text $Source 'finishFloatingDockHiddenGesture'
+Require-Text $Source 'effectiveCenteredDockSwipeThreshold'
+Require-Text $Source 'effectiveDockedPresentationWidth'
+Require-Text $KeyboardSource 'BOOL shouldApply = NO;'
+Require-Text $KeyboardSource 'if (currentHash == FLMKeyboardTargetSceneHash)'
+Require-Text $Source 'sb host-update rejected=alternate-host'
 Reject-Text $Source 'content-scale policy=card-fit'
 Reject-Text $Source 'content-scale policy=card-1to1'
 Reject-Text $Source 'scene-card commit-request'
@@ -194,4 +208,4 @@ Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
 Reject-Text $KeyboardFilter 'com.tencent.xin'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
-Write-Output 'scene lifecycle, Version C uniform card mapping with dynamic content viewport, generic keyboard route, and serialized close verified'
+Write-Output 'scene lifecycle, full-screen crop presentation, single-host keyboard route, bounded launch recovery, and hidden-dock interaction verified'

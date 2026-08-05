@@ -57,8 +57,14 @@ test -f "$filter"
 test -f "$loader"
 test -f "$preferences_root"
 grep -q "centeredCardWidth" "$preferences_root"
-grep -q "centeredCardHeight" "$preferences_root"
-grep -q "cardGeometry" "$preferences_root"
+grep -q "centeredCardTopCrop" "$preferences_root"
+grep -q "centeredCardBottomCrop" "$preferences_root"
+grep -q "centeredDockSwipeThreshold" "$preferences_root"
+grep -q "dockedShrinkAmount" "$preferences_root"
+if grep -q "centeredCardHeight" "$preferences_root"; then
+    echo "preferences still exposes the removed logical card-height setting" >&2
+    exit 1
+fi
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
 grep -q "com.apple.UIKit" "$keyboard_filter"
@@ -89,7 +95,7 @@ strings "$keyboard" | grep -q "keyboard-app-ready-v47"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 1.0.1" "$workspace/control/control"
+grep -qx "Version: 0.8.60" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "generic" "$workspace/control/postinst"

@@ -36,23 +36,23 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>分别调整居中卡片的 X/Y 尺寸。应用仍按全屏逻辑运行，内容会完整映射到新的卡片宽高。默认尺寸为 300×649.230769。</string>
+            <string>卡片保持全屏画布的等比例显示；顶部和底部裁切只改变可见视口，不改变应用布局。</string>
             <key>label</key>
-            <string>居中卡片</string>
+            <string>卡片大小</string>
         </dict>
         <dict>
             <key>cell</key>
             <string>PSStaticTextCell</string>
             <key>cellClass</key>
             <string>FLMWheelSliderCell</string>
-            <key>cardGeometry</key>
-            <true/>
             <key>defaultValue</key>
-            <real>300</real>
+            <real>315</real>
             <key>height</key>
             <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
             <key>label</key>
-            <string>卡片宽度（X轴）</string>
+            <string>卡片尺寸（等比例缩放）</string>
             <key>maximumValue</key>
             <real>360</real>
             <key>minimumValue</key>
@@ -65,20 +65,88 @@
             <string>PSStaticTextCell</string>
             <key>cellClass</key>
             <string>FLMWheelSliderCell</string>
-            <key>cardGeometry</key>
-            <true/>
             <key>defaultValue</key>
-            <real>649.2307692307692</real>
+            <real>37</real>
             <key>height</key>
             <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
             <key>label</key>
-            <string>卡片高度（Y轴）</string>
+            <string>顶部裁切</string>
             <key>maximumValue</key>
-            <real>780</real>
+            <real>260</real>
             <key>minimumValue</key>
-            <real>300</real>
+            <real>0</real>
             <key>preferenceKey</key>
-            <string>centeredCardHeight</string>
+            <string>centeredCardTopCrop</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>defaultValue</key>
+            <real>19</real>
+            <key>height</key>
+            <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
+            <key>label</key>
+            <string>底部裁切</string>
+            <key>maximumValue</key>
+            <real>260</real>
+            <key>minimumValue</key>
+            <real>0</real>
+            <key>preferenceKey</key>
+            <string>centeredCardBottomCrop</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>调整后会在下一次呼出或挂靠卡片时生效。</string>
+            <key>label</key>
+            <string>交互行为</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>defaultValue</key>
+            <real>20</real>
+            <key>height</key>
+            <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
+            <key>label</key>
+            <string>上滑触发距离</string>
+            <key>maximumValue</key>
+            <real>120</real>
+            <key>minimumValue</key>
+            <real>8</real>
+            <key>preferenceKey</key>
+            <string>centeredDockSwipeThreshold</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>defaultValue</key>
+            <real>0</real>
+            <key>height</key>
+            <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
+            <key>label</key>
+            <string>挂靠缩小量</string>
+            <key>maximumValue</key>
+            <real>60</real>
+            <key>minimumValue</key>
+            <real>0</real>
+            <key>preferenceKey</key>
+            <string>dockedShrinkAmount</string>
         </dict>
         <dict>
             <key>cell</key>

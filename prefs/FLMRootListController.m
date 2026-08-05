@@ -4,6 +4,7 @@
 #import <Preferences/PSViewController.h>
 #import <UIKit/UIKit.h>
 #import <errno.h>
+#import <math.h>
 #import <notify.h>
 #import <signal.h>
 #import <stdint.h>
@@ -227,14 +228,15 @@ static NSString *FLMNameForIdentifier(
 
 @interface FLMWheelSliderCell : PSTableCell
 @property(nonatomic, strong) UILabel *settingTitleLabel;
-@property(nonatomic, strong) UILabel *valueLabel;
+@property(nonatomic, strong) UIButton *valueButton;
 @property(nonatomic, strong) UIButton *defaultButton;
 @property(nonatomic, strong) UISlider *slider;
 @property(nonatomic, copy) NSString *preferenceKey;
 @property(nonatomic, assign) CGFloat minimumValue;
 @property(nonatomic, assign) CGFloat maximumValue;
 @property(nonatomic, assign) CGFloat defaultValue;
-@property(nonatomic, assign) BOOL cardGeometry;
+@property(nonatomic, assign) CGFloat inputStep;
+@property(nonatomic, assign) CGFloat valueBeforeEditing;
 @end
 
 @implementation FLMWheelSliderCell
@@ -263,19 +265,27 @@ static NSString *FLMNameForIdentifier(
         _minimumValue = [[specifier propertyForKey:@"minimumValue"] doubleValue];
         _maximumValue = [[specifier propertyForKey:@"maximumValue"] doubleValue];
         _defaultValue = [[specifier propertyForKey:@"defaultValue"] doubleValue];
-        _cardGeometry = [[specifier propertyForKey:@"cardGeometry"] boolValue];
+        _inputStep = [[specifier propertyForKey:@"inputStep"] doubleValue];
+        if (_inputStep <= 0.0 || !isfinite(_inputStep)) {
+            _inputStep = 1.0;
+        }
 
         _settingTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _settingTitleLabel.text = specifier.name;
         _settingTitleLabel.font = [UIFont systemFontOfSize:16.0];
         [self.contentView addSubview:_settingTitleLabel];
 
-        _valueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        _valueLabel.font =
+        _valueButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        _valueButton.titleLabel.font =
             [UIFont monospacedDigitSystemFontOfSize:13.0 weight:UIFontWeightMedium];
-        _valueLabel.textColor = [UIColor secondaryLabelColor];
-        _valueLabel.textAlignment = NSTextAlignmentRight;
-        [self.contentView addSubview:_valueLabel];
+        [_valueButton setTitleColor:[UIColor secondaryLabelColor]
+                            forState:UIControlStateNormal];
+        _valueButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+        [_valueButton addTarget:self
+                         action:@selector(valueButtonTapped)
+               forControlEvents:UIControlEventTouchUpInside];
+        _valueButton.accessibilityHint = @"点按后使用数字键盘输入";
+        [self.contentView addSubview:_valueButton];
 
         _defaultButton = [UIButton buttonWithType:UIButtonTypeSystem];
         [_defaultButton setTitle:@"默认" forState:UIControlStateNormal];
@@ -306,11 +316,7 @@ static NSString *FLMNameForIdentifier(
         CGFloat value = [storedValue isKindOfClass:[NSNumber class]]
                             ? [storedValue doubleValue]
                             : _defaultValue;
-        CGFloat clampedValue =
-            MAX(_minimumValue, MIN(_maximumValue, value));
-        _slider.value = self.cardGeometry
-                            ? (float)clampedValue
-                            : roundf((float)clampedValue);
+        _slider.value = (float)[self normalizedValue:value];
         [self updateValueLabel];
     }
     return self;
@@ -321,51 +327,155 @@ static NSString *FLMNameForIdentifier(
     self.textLabel.hidden = YES;
     self.detailTextLabel.hidden = YES;
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
-    CGFloat valueWidth = self.cardGeometry ? 90.0 : 56.0;
-    CGFloat valueRightInset = self.cardGeometry ? 160.0 : 128.0;
-    CGFloat titleRightInset = self.cardGeometry ? 180.0 : 150.0;
+    CGFloat valueWidth = 86.0;
+    CGFloat valueRightInset = 154.0;
+    CGFloat titleRightInset = 174.0;
     self.settingTitleLabel.frame = CGRectMake(16.0,
                                                9.0,
                                                width - titleRightInset,
                                                24.0);
     self.defaultButton.frame = CGRectMake(width - 66.0, 8.0, 50.0, 25.0);
-    self.valueLabel.frame = CGRectMake(width - valueRightInset,
-                                        9.0,
-                                        valueWidth,
-                                        24.0);
+    self.valueButton.frame = CGRectMake(width - valueRightInset,
+                                         6.0,
+                                         valueWidth,
+                                         30.0);
     self.slider.frame = CGRectMake(16.0, 41.0, width - 32.0, 42.0);
 }
 
 - (void)sliderValueChanged:(UISlider *)slider {
-    if (self.cardGeometry) {
-        slider.value = roundf(slider.value * 10.0) / 10.0;
-    } else {
-        slider.value = roundf(slider.value);
-    }
+    slider.value = (float)[self normalizedValue:slider.value];
     [self updateValueLabel];
 }
 
 - (void)commitSliderValue {
-    NSNumber *value = self.cardGeometry
-                          ? @(self.slider.value)
-                          : @(lroundf(self.slider.value));
-    FLMSetPreference(self.preferenceKey, value);
+    [self commitCurrentValue];
 }
 
 - (void)resetToDefault {
-    [self.slider setValue:(float)self.defaultValue animated:YES];
+    [self.slider setValue:(float)[self normalizedValue:self.defaultValue]
+                animated:YES];
     [self updateValueLabel];
-    [self commitSliderValue];
+    [self commitCurrentValue];
 }
 
 - (void)updateValueLabel {
-    if (self.cardGeometry) {
-        self.valueLabel.text =
-            [NSString stringWithFormat:@"%.1f pt", self.slider.value];
-    } else {
-        self.valueLabel.text =
-            [NSString stringWithFormat:@"%ld pt", (long)lroundf(self.slider.value)];
+    NSString *text = [NSString stringWithFormat:@"%ld pt",
+                      (long)lround([self normalizedValue:self.slider.value])];
+    [self.valueButton setTitle:text forState:UIControlStateNormal];
+}
+
+- (CGFloat)normalizedValue:(CGFloat)value {
+    if (!isfinite(value)) {
+        value = self.defaultValue;
     }
+    value = MAX(self.minimumValue, MIN(self.maximumValue, value));
+    value = round(value / self.inputStep) * self.inputStep;
+    return MAX(self.minimumValue, MIN(self.maximumValue, value));
+}
+
+- (void)commitCurrentValue {
+    if (self.preferenceKey.length == 0) {
+        return;
+    }
+    self.slider.value = (float)[self normalizedValue:self.slider.value];
+    FLMSetPreference(self.preferenceKey, @(self.slider.value));
+}
+
+- (UIViewController *)owningViewController {
+    UIResponder *responder = self;
+    while (responder) {
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            return (UIViewController *)responder;
+        }
+        responder = [responder nextResponder];
+    }
+    return nil;
+}
+
+- (void)restoreValueBeforeEditing {
+    self.slider.value = (float)[self normalizedValue:self.valueBeforeEditing];
+    [self updateValueLabel];
+    [self commitCurrentValue];
+}
+
+- (void)showInvalidValueAlertForText:(NSString *)text {
+    NSString *message = [NSString stringWithFormat:
+        @"请输入 %.0f 至 %.0f 之间的数字。",
+        self.minimumValue,
+        self.maximumValue];
+    if (text.length == 0) {
+        message = @"请输入数字，或点击取消保留原值。";
+    }
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"数值无效"
+                                             message:message
+                                      preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
+    [[self owningViewController] presentViewController:alert
+                                               animated:YES
+                                             completion:nil];
+}
+
+- (void)valueButtonTapped {
+    UIViewController *controller = [self owningViewController];
+    if (!controller) {
+        return;
+    }
+
+    self.valueBeforeEditing = [self normalizedValue:self.slider.value];
+    NSString *initialText =
+        [NSString stringWithFormat:@"%ld", (long)lround(self.valueBeforeEditing)];
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:self.settingTitleLabel.text
+                                             message:@"请输入数值（pt）"
+                                      preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = initialText;
+        textField.keyboardType = UIKeyboardTypeDecimalPad;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.spellCheckingType = UITextSpellCheckingTypeNo;
+        textField.accessibilityLabel = self.settingTitleLabel.text;
+    }];
+
+    __weak UIAlertController *weakAlert = alert;
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                               style:UIAlertActionStyleCancel
+                                             handler:^(__unused UIAlertAction *action) {
+        [weakSelf restoreValueBeforeEditing];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定"
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(__unused UIAlertAction *action) {
+        FLMWheelSliderCell *strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        NSString *text = [[weakAlert.textFields.firstObject.text
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+        NSScanner *scanner = [NSScanner scannerWithString:text];
+        double parsedValue = 0.0;
+        BOOL valid = text.length > 0 && [scanner scanDouble:&parsedValue] &&
+                     scanner.isAtEnd && isfinite(parsedValue) &&
+                     parsedValue >= strongSelf.minimumValue &&
+                     parsedValue <= strongSelf.maximumValue;
+        if (!valid) {
+            [strongSelf restoreValueBeforeEditing];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [strongSelf showInvalidValueAlertForText:text];
+            });
+            return;
+        }
+        strongSelf.slider.value = (float)[strongSelf normalizedValue:parsedValue];
+        [strongSelf updateValueLabel];
+        [strongSelf commitCurrentValue];
+    }]];
+    [controller presentViewController:alert animated:YES completion:^{
+        [alert.textFields.firstObject becomeFirstResponder];
+    }];
 }
 
 @end

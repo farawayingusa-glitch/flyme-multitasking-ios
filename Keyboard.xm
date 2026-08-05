@@ -10,10 +10,11 @@
 // only after the shared route identifies the current card target. The card is
 // a presentation transform; it must never become the keyboard's coordinate
 // system. UIKit therefore receives the display-sized reference (390x844 on
-// the target device), while the app-side content adapter uses a separate
-// logical viewport whose width stays 390 and whose height is derived from the
-// shared Version C card geometry. The card geometry never becomes the
-// keyboard's coordinate system.
+// the target device). The card is only a SpringBoard presentation surface:
+// the app and keyboard continue to use the full-screen 390x844 logical space.
+// SpringBoard applies one uniform presentation scale and clips only the
+// explicitly selected top/bottom card crop; it never changes the app's
+// keyboard coordinate system to the card's physical bounds.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -22,7 +23,7 @@
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
 #define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
 #define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
-#define FLYME_KEYBOARD_SHARED_STATE_VERSION 3
+#define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
@@ -64,11 +65,9 @@ static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
-// Version C keeps the keyboard and Scene in the physical full-screen
-// coordinate space, but lets the application content root use a separate
-// logical viewport.  The logical width is fixed at 390; SpringBoard may
-// publish a physical cardWidth/cardHeight pair, from which the logical height
-// is derived using one uniform scale.
+// The application-side logical viewport is deliberately fixed at the full
+// display size. Card width/crop values belong to SpringBoard presentation and
+// must not turn into a second application layout viewport.
 static CGSize FLMContentLogicalViewportSize = {
     390.0,
     844.0,
@@ -125,77 +124,16 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
                : nil;
 }
 
-static BOOL FLMIsValidViewportDimension(CGFloat value) {
-    return isfinite(value) && value > 1.0 && value < 10000.0;
-}
-
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
-    // The full-screen fallback is intentional: it keeps this content-side
-    // adapter harmless when an older SpringBoard writer has not published the
-    // Version C card dimensions yet. UIWindow, Scene, and keyboard geometry
-    // remain full-screen in either case.
+    // Keep the app-side layout full-screen. The 0.8.59 presentation model
+    // crops the already-scaled host in SpringBoard; it does not ask the target
+    // application to lay out inside the physical card.
+    (void)sharedState;
     const CGSize fallback = {390.0, 844.0};
-    if (![sharedState[@"cardActive"] boolValue]) {
-        FLMContentLogicalViewportSize = fallback;
-        FLMContentExternalScale = 1.0;
-        FLMPhysicalCardSize = fallback;
-        FLMContentViewportUsesSharedCardSize = NO;
-        return;
-    }
-    CGFloat cardWidth = 0.0;
-    CGFloat cardHeight = 0.0;
-    BOOL hasCardWidth =
-        [sharedState[@"cardWidth"] isKindOfClass:[NSNumber class]];
-    BOOL hasCardHeight =
-        [sharedState[@"cardHeight"] isKindOfClass:[NSNumber class]];
-    if (hasCardWidth && hasCardHeight) {
-        cardWidth = [sharedState[@"cardWidth"] doubleValue];
-        cardHeight = [sharedState[@"cardHeight"] doubleValue];
-    }
-
-    if (!FLMIsValidViewportDimension(cardWidth) ||
-        !FLMIsValidViewportDimension(cardHeight)) {
-        FLMContentLogicalViewportSize = fallback;
-        FLMContentExternalScale = 1.0;
-        FLMPhysicalCardSize = fallback;
-        FLMContentViewportUsesSharedCardSize = NO;
-        return;
-    }
-
-    CGFloat uniformScale = cardWidth / fallback.width;
-    CGFloat logicalHeight = cardHeight / uniformScale;
-    NSNumber *publishedViewportWidthValue =
-        [sharedState[@"contentViewportWidth"] isKindOfClass:[NSNumber class]]
-            ? sharedState[@"contentViewportWidth"]
-            : nil;
-    NSNumber *publishedViewportHeightValue =
-        [sharedState[@"contentViewportHeight"] isKindOfClass:[NSNumber class]]
-            ? sharedState[@"contentViewportHeight"]
-            : nil;
-    CGFloat publishedViewportWidth =
-        [publishedViewportWidthValue doubleValue];
-    CGFloat publishedViewportHeight =
-        [publishedViewportHeightValue doubleValue];
-    if (FLMIsValidViewportDimension(publishedViewportWidth) &&
-        FLMIsValidViewportDimension(publishedViewportHeight) &&
-        fabs(publishedViewportWidth - fallback.width) <= 0.25) {
-        uniformScale = cardWidth / publishedViewportWidth;
-        logicalHeight = publishedViewportHeight;
-    }
-    if (!isfinite(uniformScale) || uniformScale <= 0.05 ||
-        !FLMIsValidViewportDimension(logicalHeight)) {
-        FLMContentLogicalViewportSize = fallback;
-        FLMContentExternalScale = 1.0;
-        FLMPhysicalCardSize = fallback;
-        FLMContentViewportUsesSharedCardSize = NO;
-        return;
-    }
-
-    FLMContentLogicalViewportSize =
-        CGSizeMake(fallback.width, logicalHeight);
-    FLMContentExternalScale = uniformScale;
-    FLMPhysicalCardSize = CGSizeMake(cardWidth, cardHeight);
-    FLMContentViewportUsesSharedCardSize = YES;
+    FLMContentLogicalViewportSize = fallback;
+    FLMContentExternalScale = 1.0;
+    FLMPhysicalCardSize = fallback;
+    FLMContentViewportUsesSharedCardSize = NO;
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -366,12 +304,14 @@ static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
         return YES;
     }
     uint64_t currentHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
-    if (currentHash == 0 || currentHash == FLMKeyboardTargetSceneHash) {
+    if (currentHash == FLMKeyboardTargetSceneHash) {
         return YES;
     }
-    NSSet<UIScene *> *connectedScenes =
-        [UIApplication sharedApplication].connectedScenes;
-    return connectedScenes.count == 1 && [connectedScenes containsObject:scene];
+    // Once SpringBoard publishes a concrete scene hash, accepting a different
+    // scene merely because it is the only connected scene is unsafe during
+    // scene replacement. That fallback could route a stale keyboard into the
+    // wrong application/card session.
+    return NO;
 }
 
 static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
@@ -601,8 +541,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
                        generation != 0 &&
                        generation ==
                            (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
-                       cardBottom > 1.0 && visualScale > 0.05 &&
-                       FLMContentViewportUsesSharedCardSize;
+                       cardBottom > 1.0 && visualScale > 0.05;
         FLMKeyboardCardGeometryActive = current;
         FLMKeyboardCardGeometryGeneration = current ? generation : 0;
         FLMKeyboardCardBottom = current ? cardBottom : 0.0;
@@ -633,8 +572,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
     CGFloat visualScale = (CGFloat)(state & 0xFFFFFFULL) / 1000000.0;
     BOOL current = FLMKeyboardTargetApplication && active && generation != 0 &&
                    generation == (FLMKeyboardSessionGeneration & 0x7FFFULL) &&
-                   cardBottom > 1.0 && visualScale > 0.05 &&
-                   FLMContentViewportUsesSharedCardSize;
+                   cardBottom > 1.0 && visualScale > 0.05;
     FLMKeyboardCardGeometryActive = current;
     FLMKeyboardCardGeometryGeneration = current ? generation : 0;
     FLMKeyboardCardBottom = current ? cardBottom : 0.0;
@@ -876,12 +814,13 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (FLMContentViewportAdapterApplying) {
         return;
     }
-    BOOL shouldApply = FLMKeyboardTargetApplication &&
-                       FLMKeyboardRouteActive &&
-                       FLMKeyboardCardGeometryActive &&
-                       FLMKeyboardCardGeometryGeneration != 0 &&
-                       FLMKeyboardCardGeometryGeneration ==
-                           (FLMKeyboardSessionGeneration & 0x7FFFULL);
+    // 0.8.60 keeps the target application and keyboard in their native
+    // full-screen 390x844 coordinate system.  The card is clipped and
+    // scaled only by SpringBoard's presentation host; this adapter must not
+    // rewrite an application's root view during Scene handoff.  The old
+    // Version C branch could repeatedly fight UIKit's own layout pass and
+    // was also capable of resurrecting a stale root after a rapid reopen.
+    BOOL shouldApply = NO;
     if (!shouldApply) {
         if (FLMContentViewportAdapterActive ||
             FLMContentViewportOriginalLayouts.count > 0) {
@@ -942,6 +881,8 @@ static void FLMUpdateContentViewportAdapter(void) {
 
 %end
 
+%group FLMRemoteKeyboardGeometry
+
 %hook UITextEffectsWindow
 
 - (CGSize)keyboardScreenReferenceSize {
@@ -962,8 +903,6 @@ static void FLMUpdateContentViewportAdapter(void) {
 }
 
 %end
-
-%group FLMRemoteKeyboardGeometry
 
 %hook _UIRemoteKeyboards
 
@@ -1087,8 +1026,12 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
         &FLMKeyboardAppCtorToken,
         FLYME_KEYBOARD_APP_CTOR_MAGIC,
         FLMDiagnosticEventAdapterCtor);
+    // Keep the legacy adapter group initialized so Logos does not leave an
+    // uninitialized hook group behind.  Its update routine is deliberately
+    // hard-disabled (shouldApply=NO), so it never rewrites the application's
+    // full-screen root layout.  The remote keyboard hook below remains gated
+    // by the exact Scene route.
     %init(FLMContentViewportAdapter);
-    %init;
     FLMInstallRemoteKeyboardGeometryIfAvailable();
     FLMReloadKeyboardRoute();
     FLMPublishKeyboardAppLifecycleStage(
