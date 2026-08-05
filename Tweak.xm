@@ -2078,7 +2078,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.homeDockGesture.cancelsTouchesInView = YES;
     self.homeDockGesture.delaysTouchesBegan = NO;
     self.homeDockGesture.delaysTouchesEnded = NO;
-    self.homeDockGesture.numberOfTouchesRequired = 1;
 
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
@@ -2126,7 +2125,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingWindow.rootViewController.view addSubview:self.floatingContainer];
 
     self.floatingStatusLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.floatingStatusLabel.text = @"姝ｅ湪鎵撳紑鈥?;
+    self.floatingStatusLabel.text = @"正在打开…";
     self.floatingStatusLabel.textAlignment = NSTextAlignmentCenter;
     self.floatingStatusLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
@@ -6912,7 +6911,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"姝ｅ湪鍑嗗搴旂敤鈥?;
+        self.floatingStatusLabel.text = @"正在准备应用…";
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -6930,7 +6929,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id resolvedScene = [self sceneForHandle:sceneHandle];
     if (!resolvedScene) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"姝ｅ湪鍚姩搴旂敤鈥?;
+        self.floatingStatusLabel.text = @"正在启动应用…";
         if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
@@ -6981,7 +6980,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
-        self.floatingStatusLabel.text = @"姝ｅ湪杩炴帴鐢婚潰鈥?;
+        self.floatingStatusLabel.text = @"正在连接画面…";
         // Do not leave a neutral launch cover on screen indefinitely when
         // SpringBoard's presentation manager has lost its presenter during a
         // rapid app switch. After a short bounded retry window, the existing
