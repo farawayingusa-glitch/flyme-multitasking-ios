@@ -2837,26 +2837,59 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRect target =
             [self dockedHiddenFloatingFrameOnRight:self.floatingDockedOnRight
                                               width:self.floatingDockWidth];
-        [UIView animateWithDuration:0.30
+        // Two-stage edge-hide: the grab bar first glides from the card's
+        // lower-left corner to the hidden landing spot beside the card, then
+        // the card itself slides fully off-screen.
+        UIView *rootView = self.floatingWindow.rootViewController.view;
+        CGRect bounds = rootView.bounds;
+        CGFloat handleWidth = 44.0;
+        CGFloat handleHeight = 72.0;
+        CGRect handleLanding =
+            CGRectMake(self.floatingDockedOnRight
+                           ? CGRectGetWidth(bounds) - handleWidth
+                           : 0.0,
+                       CGRectGetMinY(self.floatingContainer.frame) + 24.0,
+                       handleWidth,
+                       handleHeight);
+        CGRect handleOrigin = self.floatingResizeHandle.frame;
+        if (CGRectIsEmpty(handleOrigin)) {
+            handleOrigin = handleLanding;
+        }
+        self.floatingHandle.hidden = NO;
+        self.floatingHandle.userInteractionEnabled = NO;
+        self.floatingHandle.frame = handleOrigin;
+        self.floatingHandle.alpha = 0.0;
+        [self.floatingWindow.rootViewController.view
+            bringSubviewToFront:self.floatingHandle];
+        [UIView animateWithDuration:0.20
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionCurveEaseOut |
-                                    UIViewAnimationOptionAllowUserInteraction
+                                    UIViewAnimationOptionCurveEaseOut
                          animations:^{
-                             self.floatingContainer.transform =
-                                 CGAffineTransformIdentity;
-                             self.floatingContainer.frame = target;
-                             self.floatingContainer.layer.cornerRadius = 16.0;
-                             self.floatingDockShadowView.alpha = 0.0;
-                             self.floatingDimView.alpha = 0.0;
-                             self.floatingResizeHandle.alpha = 0.0;
                              self.floatingHandle.alpha = 1.0;
-                             [self layoutFloatingHandleForCurrentContainer];
+                             self.floatingHandle.frame = handleLanding;
+                             self.floatingResizeHandle.alpha = 0.0;
+                             self.floatingDimView.alpha = 0.0;
                          }
                          completion:^(__unused BOOL finished) {
-                             self.floatingDockTransitionActive = NO;
-                             [self configureFloatingInteractionForDockedState];
-                         }];
+            [UIView animateWithDuration:0.28
+                                  delay:0.0
+                                options:UIViewAnimationOptionBeginFromCurrentState |
+                                        UIViewAnimationOptionCurveEaseOut
+                             animations:^{
+                                 self.floatingContainer.transform =
+                                     CGAffineTransformIdentity;
+                                 self.floatingContainer.frame = target;
+                                 self.floatingContainer.layer.cornerRadius =
+                                     16.0;
+                                 self.floatingHandle.alpha = 1.0;
+                                 [self layoutFloatingHandleForCurrentContainer];
+                             }
+                             completion:^(__unused BOOL done) {
+                                 self.floatingDockTransitionActive = NO;
+                                 [self configureFloatingInteractionForDockedState];
+                             }];
+        }];
         return;
     }
 
@@ -2869,9 +2902,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     void (^changes)(void) = ^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = target;
-        self.floatingContainer.layer.cornerRadius = 16.0;
-        self.floatingDockShadowView.alpha = 1.0;
-        self.floatingDimView.alpha = 0.0;
+                             self.floatingContainer.layer.cornerRadius = 16.0;
+                             self.floatingDockShadowView.alpha = 0.0;
+                             self.floatingDimView.alpha = 0.0;
         self.floatingResizeHandle.alpha = 1.0;
         self.floatingHandle.alpha = 0.0;
         [self layoutFloatingHandleForCurrentContainer];
@@ -2921,7 +2954,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [UIView performWithoutAnimation:^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = visual;
-        self.floatingDockShadowView.alpha = revealing ? 1.0 - progress : progress;
+        self.floatingDockShadowView.alpha = 0.0;
         self.floatingResizeHandle.alpha = revealing ? 1.0 - progress : 0.0;
         self.floatingHandle.alpha = revealing ? progress : 1.0;
         [self layoutFloatingHandleForCurrentContainer];
@@ -3623,8 +3656,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingContainer.layer.cornerRadius =
                 visualCornerRadius / MAX(0.01, scale);
             self.floatingDimView.alpha = 1.0 - visualProgress;
-            self.floatingDockShadowView.hidden = NO;
-            self.floatingDockShadowView.alpha = visualProgress;
+            self.floatingDockShadowView.hidden = YES;
+            self.floatingDockShadowView.alpha = 0.0;
             self.floatingHandle.alpha = 1.0;
             [self layoutFloatingHandleForCurrentContainer];
             [self layoutFloatingDockReadyIndicator];
@@ -4074,7 +4107,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (CGRect)dockedHiddenFloatingFrameOnRight:(BOOL)onRight
                                       width:(CGFloat)width {
     CGRect frame = [self dockedFloatingFrameOnRight:onRight width:width];
-    CGFloat visibleSliver = 8.0;
+    // Fully hide the card off-screen: only the edge handle bar remains
+    // visible, so the user never sees an app sliver next to it.
+    CGFloat visibleSliver = 0.0;
     frame.origin.x = onRight
                          ? CGRectGetWidth(self.floatingWindow.bounds) -
                                visibleSliver
@@ -4083,24 +4118,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)layoutFloatingDockShadow {
-    if (!self.floatingDocked && !self.floatingDockTransitionActive) {
-        self.floatingDockShadowView.hidden = YES;
-        return;
-    }
-    self.floatingDockShadowView.hidden = NO;
-    self.floatingDockShadowView.bounds = self.floatingContainer.bounds;
-    self.floatingDockShadowView.center = self.floatingContainer.center;
-    self.floatingDockShadowView.transform = self.floatingContainer.transform;
-    self.floatingDockShadowView.layer.cornerRadius =
-        self.floatingContainer.layer.cornerRadius;
-    UIBezierPath *shadowPath =
-        [UIBezierPath
-            bezierPathWithRoundedRect:self.floatingDockShadowView.bounds
-                         cornerRadius:self.floatingDockShadowView.layer.cornerRadius];
-    self.floatingDockShadowView.layer.shadowPath = shadowPath.CGPath;
-    [self.floatingWindow.rootViewController.view
-        insertSubview:self.floatingDockShadowView
-         belowSubview:self.floatingContainer];
+    // The dock shadow was removed: the release animation previously left a
+    // visible dark halo behind the card. Keep the view tree intact so all
+    // callers stay valid, but never present the shadow.
+    self.floatingDockShadowView.hidden = YES;
+    self.floatingDockShadowView.alpha = 0.0;
+    return;
 }
 
 - (void)updateFloatingDockAccessoryPositions {
@@ -4320,7 +4343,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDimView.alpha = 0.0;
         self.floatingHandle.alpha = 0.0;
         self.floatingResizeHandle.alpha = 1.0;
-        self.floatingDockShadowView.alpha = 1.0;
+        self.floatingDockShadowView.alpha = 0.0;
         [self layoutFloatingDockShadow];
         if (self.previousKeyWindow &&
             self.previousKeyWindow != self.floatingWindow) {
@@ -4365,7 +4388,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat targetScale =
         CGRectGetWidth(target) /
         MAX(1.0, CGRectGetWidth(self.floatingContainer.bounds));
-    self.floatingDockShadowView.hidden = NO;
+    self.floatingDockShadowView.hidden = YES;
     CGAffineTransform currentTransform = self.floatingContainer.transform;
     CGFloat currentScale = hypot(currentTransform.a, currentTransform.c);
     if (!isfinite(currentScale) || currentScale < 0.05) {
@@ -4376,11 +4399,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                               MIN(1.0, currentScale * 0.96));
     CGPoint settleCenter = CGPointMake(currentCenter.x,
                                        currentCenter.y + 8.0);
-    [UIView animateWithDuration:0.14 / FLMDockAnimationSpeed
+    [UIView animateWithDuration:0.16 / FLMDockAnimationSpeed
                           delay:0.0
+         usingSpringWithDamping:0.72
+          initialSpringVelocity:0.45
                         options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction |
-                                UIViewAnimationOptionCurveEaseOut
+                                UIViewAnimationOptionAllowUserInteraction
                      animations:^{
                          // The release has a small physical settling phase;
                          // only after that does the card complete its shrink
@@ -4391,16 +4415,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.layer.cornerRadius =
                              16.0 / MAX(0.01, settleScale);
                          self.floatingDimView.alpha = 0.0;
-                         self.floatingDockShadowView.alpha = 1.0;
+                         self.floatingDockShadowView.alpha = 0.0;
                          self.floatingHandle.alpha = 0.0;
                          [self layoutFloatingDockShadow];
                      }
                      completion:^(__unused BOOL finished) {
                          [UIView animateWithDuration:0.34 / FLMDockAnimationSpeed
                                                delay:0.0
+                              usingSpringWithDamping:0.86
+                               initialSpringVelocity:0.25
                                              options:UIViewAnimationOptionBeginFromCurrentState |
-                                                     UIViewAnimationOptionAllowUserInteraction |
-                                                     UIViewAnimationOptionCurveEaseOut
+                                                     UIViewAnimationOptionAllowUserInteraction
                                           animations:^{
                                               self.floatingContainer.center =
                                                   CGPointMake(CGRectGetMidX(target),
@@ -4410,7 +4435,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                                              targetScale);
                                               self.floatingContainer.layer.cornerRadius =
                                                   16.0 / MAX(0.01, targetScale);
-                                              self.floatingDockShadowView.alpha = 1.0;
+                                              self.floatingDockShadowView.alpha = 0.0;
                                           }
                                           completion:^(__unused BOOL done) {
                                               [UIView performWithoutAnimation:^{
@@ -4455,7 +4480,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputGeneration += 1;
     self.floatingResizeHandle.alpha = 0.0;
     self.floatingResizeHandle.hidden = YES;
-    self.floatingDockShadowView.hidden = NO;
+    self.floatingDockShadowView.hidden = YES;
     self.floatingDocked = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
@@ -4737,11 +4762,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
     CGFloat heightScale = targetSize.height / referenceSize.height;
-    // The card width is the source of truth for the uniform scale. Its height
-    // is intentionally shorter than the scaled 844pt surface because the
-    // card clips the configured top and bottom portions.
-    CGFloat uniformScale = [self effectiveCenteredCardWidth] /
-                           FLMVirtualViewportWidth;
+    // The current container width is the source of truth for the uniform
+    // scale. A centered card scales by 315/390; a docked card scales by its
+    // real dock width so the app content always fills the visible card.
+    CGFloat uniformScale = widthScale;
     if (self.floatingInteractiveFullscreenTransition) {
         uniformScale = MAX(widthScale, heightScale);
     }
@@ -4753,7 +4777,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              0.0,
                              referenceSize.width,
                              referenceSize.height);
-    CGFloat cropOffset = self.floatingInteractiveFullscreenTransition
+    CGFloat cropOffset = (self.floatingInteractiveFullscreenTransition ||
+                          self.floatingDocked)
                              ? 0.0
                              : (self.centeredCardBottomCrop -
                                 self.centeredCardTopCrop) * 0.5;
