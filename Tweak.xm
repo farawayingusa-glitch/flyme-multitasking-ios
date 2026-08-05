@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.67"
+#define FLMLogBuildString @"0.8.68"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -764,6 +764,153 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 
 @end
 
+// Intercepts the home-indicator up-swipe in the bottom-center zone. The system
+// home gesture needs motion, so a stationary press always beats it: after
+// flmPressDuration with less than flmMovementTolerance of travel the recognizer
+// begins (and prevents the home gesture from opening the app switcher), then a
+// subsequent upward drag past flmSwipeThreshold docks the frontmost app. A
+// regular quick or slow swipe moves more than the tolerance before the press
+// elapses and fails itself, leaving the system home gesture untouched.
+@interface FLMDockGestureRecognizer : UIGestureRecognizer
+@property(nonatomic, assign) NSTimeInterval flmPressDuration;
+@property(nonatomic, assign) CGFloat flmMovementTolerance;
+@property(nonatomic, assign) CGFloat flmSwipeThreshold;
+@property(nonatomic, assign, readonly) BOOL flmLongPressConfirmed;
+@property(nonatomic, assign, readonly) BOOL flmTriggered;
+@end
+
+@interface FLMDockGestureRecognizer () {
+    NSTimeInterval _flmFirstTouchTimestamp;
+    CGPoint _flmPressStartPoint;
+    NSUInteger _flmPressToken;
+}
+@end
+
+@implementation FLMDockGestureRecognizer
+
+- (instancetype)initWithTarget:(id)target action:(SEL)action {
+    self = [super initWithTarget:target action:action];
+    if (self) {
+        _flmPressDuration = 0.25;
+        _flmMovementTolerance = 8.0;
+        _flmSwipeThreshold = 40.0;
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (self.state != UIGestureRecognizerStatePossible) {
+        return;
+    }
+    UITouch *firstTouch = [touches anyObject];
+    if (!firstTouch) {
+        return;
+    }
+    _flmFirstTouchTimestamp = firstTouch.timestamp;
+    _flmPressStartPoint = [firstTouch locationInView:nil];
+    _flmLongPressConfirmed = NO;
+    _flmTriggered = NO;
+    _flmPressToken += 1;
+    NSUInteger token = _flmPressToken;
+    __weak FLMDockGestureRecognizer *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(self.flmPressDuration *
+                                           NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        FLMDockGestureRecognizer *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf->_flmPressToken != token ||
+            strongSelf.state != UIGestureRecognizerStatePossible) {
+            return;
+        }
+        strongSelf->_flmLongPressConfirmed = YES;
+        strongSelf.state = UIGestureRecognizerStateBegan;
+    });
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    UITouch *firstTouch = [touches anyObject];
+    if (!firstTouch) {
+        return;
+    }
+    CGPoint location = [firstTouch locationInView:nil];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        CGFloat movement =
+            hypot(location.x - _flmPressStartPoint.x,
+                  location.y - _flmPressStartPoint.y);
+        if (movement >= self.flmMovementTolerance) {
+            _flmPressToken += 1;
+            self.state = UIGestureRecognizerStateFailed;
+        }
+        return;
+    }
+    if (self.state == UIGestureRecognizerStateBegan ||
+        self.state == UIGestureRecognizerStateChanged) {
+        CGFloat upward = _flmPressStartPoint.y - location.y;
+        if (_flmTriggered && upward >= self.flmSwipeThreshold) {
+            self.state = UIGestureRecognizerStateChanged;
+        } else if (!_flmTriggered && upward >= self.flmSwipeThreshold) {
+            _flmTriggered = YES;
+            self.state = UIGestureRecognizerStateChanged;
+        }
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        _flmPressToken += 1;
+        self.state = UIGestureRecognizerStateFailed;
+    } else if (self.state == UIGestureRecognizerStateBegan ||
+               self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateEnded;
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        _flmPressToken += 1;
+        self.state = UIGestureRecognizerStateFailed;
+    }
+}
+
+- (void)reset {
+    [super reset];
+    _flmPressToken += 1;
+    _flmFirstTouchTimestamp = 0.0;
+    _flmPressStartPoint = CGPointZero;
+    _flmLongPressConfirmed = NO;
+    _flmTriggered = NO;
+}
+
+- (BOOL)canBePreventedByGestureRecognizer:
+    (UIGestureRecognizer *)preventingGestureRecognizer {
+    (void)preventingGestureRecognizer;
+    return NO;
+}
+
+- (BOOL)canPreventGestureRecognizer:
+    (UIGestureRecognizer *)preventedGestureRecognizer {
+    (void)preventedGestureRecognizer;
+    return YES;
+}
+
+- (BOOL)shouldBeRequiredToFailByGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return NO;
+}
+
+- (BOOL)shouldRequireFailureOfGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return NO;
+}
+
+@end
+
 @interface FLMOutsideTapGestureRecognizer : UIGestureRecognizer
 @property(nonatomic, weak) UIView *protectedView;
 @property(nonatomic, weak) UIView *secondaryProtectedView;
@@ -1105,6 +1252,10 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, strong) id floatingClosingPresenter;
 @property(nonatomic, strong) UIView *floatingClosingHostView;
 @property(nonatomic, strong) NSTimer *lockMonitorTimer;
+@property(nonatomic, strong) FLMDockGestureRecognizer *homeDockGesture;
+@property(nonatomic, assign) BOOL homeDockGestureActive;
+@property(nonatomic, assign) BOOL homeDockTriggerHandled;
+@property(nonatomic, assign) BOOL floatingOpenTargetDocked;
 + (instancetype)sharedController;
 - (void)start;
 - (void)reloadPreferences;
@@ -1116,6 +1267,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
+- (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture;
+- (void)activateDockedFrontmostApplication;
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
@@ -1913,6 +2066,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputGesture.allowableMovement = CGFLOAT_MAX;
     self.floatingDockInputGesture.enabled = NO;
 
+    // Docks the frontmost app from the bottom-center home-indicator zone. The
+    // system home gesture wins any swipe that starts moving quickly; only a
+    // stationary press (long-press) beats it, then the upward drag past the
+    // swipe threshold grabs the frontmost app into the upper-right dock.
+    self.homeDockGesture =
+        [[FLMDockGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleHomeDockGesture:)];
+    self.homeDockGesture.delegate = self;
+    self.homeDockGesture.cancelsTouchesInView = YES;
+    self.homeDockGesture.delaysTouchesBegan = NO;
+    self.homeDockGesture.delaysTouchesEnded = NO;
+    self.homeDockGesture.numberOfTouchesRequired = 1;
+
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
     if (!self.usesSystemGestureManager) {
         [self.hotspotWindow.rootViewController.view
@@ -1959,7 +2126,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingWindow.rootViewController.view addSubview:self.floatingContainer];
 
     self.floatingStatusLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.floatingStatusLabel.text = @"正在打开…";
+    self.floatingStatusLabel.text = @"姝ｅ湪鎵撳紑鈥?;
     self.floatingStatusLabel.textAlignment = NSTextAlignmentCenter;
     self.floatingStatusLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     self.floatingStatusLabel.font = [UIFont systemFontOfSize:15.0
@@ -2133,6 +2300,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.floatingDockInputGesture
             toDisplayWithIdentity:identity];
+    [manager addGestureRecognizer:self.homeDockGesture
+            toDisplayWithIdentity:identity];
     self.systemGestureManager = manager;
     self.displayIdentity = identity;
     return YES;
@@ -2246,6 +2415,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer == self.homeDockGesture) {
+        return self.enabled && !self.wheelPinned &&
+               self.floatingWindow.hidden && !self.floatingCloseInProgress &&
+               !FLMDeviceIsLocked();
+    }
     if (gestureRecognizer == self.floatingDockInputGesture) {
         return (self.floatingDocked || self.floatingDockHidden) &&
                !self.floatingWindow.hidden &&
@@ -2300,6 +2474,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer == self.homeDockGesture) {
+        if (!self.enabled || self.wheelPinned || !self.floatingWindow.hidden ||
+            self.floatingCloseInProgress || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        CGPoint rawPoint = [touch locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        CGRect screenBounds = FLMVisualScreenBounds();
+        CGFloat zoneLeft = CGRectGetWidth(screenBounds) * 0.30;
+        CGFloat zoneRight = CGRectGetWidth(screenBounds) * 0.70;
+        if (point.x < zoneLeft || point.x > zoneRight ||
+            point.y < CGRectGetHeight(screenBounds) - 100.0) {
+            return NO;
+        }
+        NSString *frontmost = FLMFrontmostApplicationIdentifier();
+        if (frontmost.length == 0 ||
+            [frontmost isEqualToString:@"com.apple.springboard"] ||
+            [frontmost isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+            return NO;
+        }
+        return YES;
+    }
     if (gestureRecognizer == self.floatingDockInputGesture) {
         if ((!self.floatingDocked && !self.floatingDockHidden) ||
             self.floatingWindow.hidden ||
@@ -2488,6 +2684,54 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Intentionally empty. Recognizing immediately reserves the user-locked
     // corner zone so home/back gestures cannot consume the same touch stream.
     (void)gesture;
+}
+
+- (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture {
+    switch (gesture.state) {
+        case UIGestureRecognizerStateBegan:
+            self.homeDockGestureActive = YES;
+            self.homeDockTriggerHandled = NO;
+            FLMEnqueueDiagnosticLine(
+                @"sb home-dock long-press confirmed app=%@",
+                FLMFrontmostApplicationIdentifier() ?: @"<none>");
+            break;
+        case UIGestureRecognizerStateChanged:
+            if (gesture.flmTriggered && !self.homeDockTriggerHandled) {
+                self.homeDockTriggerHandled = YES;
+                [self activateDockedFrontmostApplication];
+            }
+            break;
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            self.homeDockGestureActive = NO;
+            self.homeDockTriggerHandled = NO;
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)activateDockedFrontmostApplication {
+    if (!self.enabled || FLMDeviceIsLocked() ||
+        !self.floatingWindow.hidden || self.floatingCloseInProgress) {
+        return;
+    }
+    NSString *frontmost = FLMFrontmostApplicationIdentifier();
+    if (frontmost.length == 0 ||
+        [frontmost isEqualToString:@"com.apple.springboard"] ||
+        [frontmost isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
+        return;
+    }
+    self.floatingOpenTargetDocked = YES;
+    [self openFloatingIdentifier:frontmost];
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *feedback =
+            [[UIImpactFeedbackGenerator alloc]
+                initWithStyle:UIImpactFeedbackStyleMedium];
+        [feedback impactOccurred];
+    }
+    FLMEnqueueDiagnosticLine(@"sb home-dock activate app=%@", frontmost);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -4914,6 +5158,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingHostView.userInteractionEnabled = YES;
             self.floatingHandle.userInteractionEnabled = YES;
             self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
+            if (self.floatingOpenTargetDocked) {
+                self.floatingOpenTargetDocked = NO;
+                FLMEnqueueDiagnosticLine(
+                    @"sb home-dock transition app=%@",
+                    self.floatingIdentifier ?: @"<none>");
+                [self transitionFloatingWindowToDocked];
+            }
         }];
     });
 }
@@ -6468,6 +6719,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)openFloatingIdentifier:(NSString *)identifier {
     if (identifier.length == 0 || FLMDeviceIsLocked()) {
         self.prewarmedIdentifier = nil;
+        self.floatingOpenTargetDocked = NO;
         return;
     }
     if (self.floatingCloseInProgress) {
@@ -6494,7 +6746,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             identifier, (unsigned long)self.floatingActiveCloseToken);
         return;
     }
-    if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+    if ([identifier isEqualToString:FLMFrontmostApplicationIdentifier()] &&
+        !self.floatingOpenTargetDocked) {
         self.prewarmedIdentifier = nil;
         return;
     }
@@ -6659,7 +6912,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self sceneHandleForIdentifier:identifier];
     if (!sceneHandle) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在准备应用…";
+        self.floatingStatusLabel.text = @"姝ｅ湪鍑嗗搴旂敤鈥?;
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -6677,7 +6930,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id resolvedScene = [self sceneForHandle:sceneHandle];
     if (!resolvedScene) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForScene;
-        self.floatingStatusLabel.text = @"正在启动应用…";
+        self.floatingStatusLabel.text = @"姝ｅ湪鍚姩搴旂敤鈥?;
         if (attempt > 0 && attempt % 5 == 0) {
             // A generated primary-scene entity can retain a handle whose scene
             // was replaced during application launch. Resolve a fresh entity
@@ -6728,7 +6981,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *host = [self hostViewForSceneHandle:sceneHandle];
     if (!host) {
         self.floatingLaunchState = FLMFloatingLaunchStateWaitingForPresenter;
-        self.floatingStatusLabel.text = @"正在连接画面…";
+        self.floatingStatusLabel.text = @"姝ｅ湪杩炴帴鐢婚潰鈥?;
         // Do not leave a neutral launch cover on screen indefinitely when
         // SpringBoard's presentation manager has lost its presenter during a
         // rapid app switch. After a short bounded retry window, the existing
@@ -6978,6 +7231,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     self.floatingCloseInProgress = YES;
+    self.floatingOpenTargetDocked = NO;
     self.floatingCloseCleanupDone = NO;
     self.floatingCloseKeepApplication = keepApplication;
     self.floatingCloseTokenCounter += 1;
