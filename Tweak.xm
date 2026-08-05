@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.66"
+#define FLMLogBuildString @"0.8.67"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -672,6 +672,15 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
                                             -12.0),
                                 point);
         if (!insideContent && !insidePrimaryControl && !insideSecondaryControl) {
+            // The wheel owns the corner trigger even while the card is docked
+            // or hidden: keep the touch inside the window so the in-window
+            // corner recognizers can summon the wheel instead of letting the
+            // touch pass through to the app below.
+            if (FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
+                FLMLogFloatingHitTest(self, point, event, nil, @"wheel-corner");
+                UIView *hitView = [super hitTest:point withEvent:event];
+                return hitView ?: self.rootViewController.view;
+            }
             FLMLogFloatingHitTest(self, point, event, nil, @"docked-pass");
             return nil;
         }
@@ -979,6 +988,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 @property(nonatomic, weak) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGuardGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGesture;
+@property(nonatomic, strong) FLMCornerGestureRecognizer *floatingCornerGuardGesture;
+@property(nonatomic, strong) FLMCornerGestureRecognizer *floatingCornerGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *modalGesture;
 @property(nonatomic, strong) UITapGestureRecognizer *wheelTapGesture;
 @property(nonatomic, strong) id systemGestureManager;
@@ -1830,6 +1841,39 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGuardGesture.minimumPressDuration = 0.0;
     self.cornerGuardGesture.allowableMovement = CGFLOAT_MAX;
 
+    // A second wheel pair attached to the floating window itself. The system
+    // gesture manager pair can be arbitrated away by the card gestures when a
+    // card is up, and shouldReceiveTouch: is not reliably consulted for
+    // system-manager gestures. In-window recognizers always run UIKit's
+    // standard delegate arbitration, so the wheel keeps its corner in every
+    // card mode: centered (the window owns the whole screen), docked and
+    // hidden (the window hit-tests the corner trigger before pass-through).
+    self.floatingCornerGuardGesture =
+        [[FLMCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleCornerGuardGesture:)];
+    self.floatingCornerGuardGesture.delegate = self;
+    self.floatingCornerGuardGesture.cancelsTouchesInView = YES;
+    self.floatingCornerGuardGesture.delaysTouchesBegan = NO;
+    self.floatingCornerGuardGesture.delaysTouchesEnded = NO;
+    self.floatingCornerGuardGesture.numberOfTouchesRequired = 1;
+    self.floatingCornerGuardGesture.minimumPressDuration = 0.0;
+    self.floatingCornerGuardGesture.allowableMovement = CGFLOAT_MAX;
+    [self.floatingWindow.rootViewController.view
+        addGestureRecognizer:self.floatingCornerGuardGesture];
+
+    self.floatingCornerGesture =
+        [[FLMCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleCornerGesture:)];
+    self.floatingCornerGesture.delegate = self;
+    self.floatingCornerGesture.cancelsTouchesInView = YES;
+    self.floatingCornerGesture.numberOfTouchesRequired = 1;
+    self.floatingCornerGesture.minimumPressDuration = 0.12;
+    self.floatingCornerGesture.allowableMovement = CGFLOAT_MAX;
+    [self.floatingWindow.rootViewController.view
+        addGestureRecognizer:self.floatingCornerGesture];
+
     self.modalGesture =
         [[FLMCornerGestureRecognizer alloc] initWithTarget:self
                                                     action:@selector(handleModalGesture:)];
@@ -2216,6 +2260,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return !self.floatingWindow.hidden && !self.floatingDocked;
     }
     if (gestureRecognizer == self.floatingExclusiveGesture) {
+        if (self.enabled && !self.wheelPinned &&
+            self.itemIdentifiers.count > 0 &&
+            FLMPointInsideCornerTrigger(
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]),
+                FLMVisualScreenBounds(),
+                NULL)) {
+            FLMEnqueueDiagnosticLine(
+                @"sb should-begin recognizer=exclusive gate=wheel-corner point={%.1f,%.1f}",
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).x,
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).y);
+            return NO;
+        }
         return !self.floatingWindow.hidden && !self.floatingDocked &&
                !FLMDeviceIsLocked();
     }
@@ -2358,12 +2414,35 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
     shouldRecognizeSimultaneouslyWithGestureRecognizer:
         (UIGestureRecognizer *)otherGestureRecognizer {
-    BOOL guardAndWheel =
-        (gestureRecognizer == self.cornerGuardGesture &&
-         otherGestureRecognizer == self.cornerGesture) ||
-        (gestureRecognizer == self.cornerGesture &&
-         otherGestureRecognizer == self.cornerGuardGesture);
-    if (guardAndWheel) {
+    // The wheel family spans both registration sites (system gesture manager
+    // pair + floating-window pair). Every member must be able to recognize
+    // beside any other member, otherwise the first recognizer to begin
+    // prevents the rest and the wheel silently stops summoning in card modes.
+    FLMCornerGestureRecognizer *wheelFamily[] = {
+        self.cornerGuardGesture,
+        self.cornerGesture,
+        self.floatingCornerGuardGesture,
+        self.floatingCornerGesture,
+    };
+    BOOL firstInFamily = NO;
+    BOOL secondInFamily = NO;
+    for (NSUInteger i = 0; i < sizeof(wheelFamily) / sizeof(wheelFamily[0]); i++) {
+        if (gestureRecognizer == wheelFamily[i]) {
+            firstInFamily = YES;
+        }
+        if (otherGestureRecognizer == wheelFamily[i]) {
+            secondInFamily = YES;
+        }
+    }
+    if (firstInFamily && secondInFamily) {
+        return YES;
+    }
+    // The in-window guard must not disable the backdrop close on a quick
+    // corner tap; let the backdrop tap run alongside any wheel-family member.
+    BOOL backdropInvolved =
+        gestureRecognizer == self.floatingBackdropTap ||
+        otherGestureRecognizer == self.floatingBackdropTap;
+    if (backdropInvolved && (firstInFamily || secondInFamily)) {
         return YES;
     }
     return NO;
@@ -2605,7 +2684,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)pinWheel {
-    if (self.overlayWindow.hidden) {
+    if (self.overlayWindow.hidden || self.wheelPinned) {
         return;
     }
     self.highlightedItem.highlighted = NO;
