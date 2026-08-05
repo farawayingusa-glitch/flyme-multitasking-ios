@@ -171,4 +171,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "0.8.60 full-screen Scene/crop presentation, single-host keyboard routing, bounded launch recovery, hidden dock, and 20pt gesture foundation verified"
+echo "0.8.63 full-screen Scene/crop presentation, single-host keyboard routing, bounded launch recovery, hidden dock, and 20pt gesture foundation verified"

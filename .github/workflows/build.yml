@@ -52,24 +52,24 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.62
-          path: artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.63
+          path: artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.62
-          name: flyme-multitasking 0.8.62
+          tag_name: v0.8.63
+          name: flyme-multitasking 0.8.63
           body: |
-            - Remove dock shadow
-            - Spring settle into dock on release
-            - Two-stage edge-hide with grab-bar positioning
-            - Fix docked content scaling
-          files: artifacts/flyme-multitasking_0.8.62_iphoneos-arm64.deb
+            - Fix logger-ready build tag not following the package version
+            - Unify centered/docked card corner radius (22 pt, iOS 16 app switcher look)
+            - Hidden transition: grab bar travels as a vertical line from the card corner
+            - Dock transition: ease content crop during settle, L-bar glides in with the card
+          files: artifacts/flyme-multitasking_0.8.63_iphoneos-arm64.deb
           fail_on_unmatched_files: true
