@@ -22,7 +22,7 @@ function Reject-Text([string]$Path, [string]$Text) {
 # Scene launch and gesture foundations remain frozen.
 foreach ($Marker in @(
     'FLMFloatingLaunchTimeout = 6.5',
-    'FLMFloatingSceneSettleDelay = 0.18',
+    'FLMFloatingSceneSettleDelay = 0.10',
     'FLMFloatingSceneGenerationDelay = 0.75',
     'FLMCenteredCardWidth = 315.0',
     'FLMCenteredCardTopCrop = 37.0',

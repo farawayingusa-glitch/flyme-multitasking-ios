@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.69"
+#define FLMLogBuildString @"0.8.70"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -262,7 +262,11 @@ static const CGFloat FLMMaximumDockedShrinkAmount = 60.0;
 static const CGFloat FLMMinimumDockPresentationWidth = 96.0;
 static const CGFloat FLMDockAnimationSpeed = 0.85;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
-static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.18;
+static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.10;
+static const NSTimeInterval FLMFloatingScenePollInterval = 0.05;
+static const NSTimeInterval FLMFloatingSceneResolveGraceDelay = 0.04;
+static const NSTimeInterval FLMFloatingLaunchCoverSettleDelay = 0.04;
+static const NSTimeInterval FLMFloatingLaunchCoverFadeDuration = 0.08;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
 static const NSTimeInterval FLMFloatingPresenterRecoveryTimeout = 1.0;
 static const NSTimeInterval FLMFloatingCloseFallbackDelay = 0.45;
@@ -5165,7 +5169,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // remote surface contains the app. Keep the neutral app cover above it for
     // that short interval, then reveal the already-laid-out content once.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.10 * NSEC_PER_SEC)),
+                                 (int64_t)(FLMFloatingLaunchCoverSettleDelay *
+                                           NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (generation != self.floatingLaunchGeneration ||
             self.floatingWindow.hidden) {
@@ -5196,7 +5201,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingRevealRetryCount = 0;
         [self.floatingHostView setNeedsLayout];
         [self.floatingHostView layoutIfNeeded];
-        [UIView animateWithDuration:0.16
+        [UIView animateWithDuration:FLMFloatingLaunchCoverFadeDuration
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
                                     UIViewAnimationOptionCurveEaseOut |
@@ -6942,7 +6947,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Let UIKit publish its normal primary scene before querying an entity.
     // Creating both transactions in the same run-loop turn is racy on iOS 16.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.12 * NSEC_PER_SEC)),
+                                 (int64_t)(FLMFloatingSceneResolveGraceDelay *
+                                           NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [self attachFloatingIdentifier:identifier
                             generation:generation
@@ -6973,7 +6979,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingStatusLabel.text = @"正在准备应用…";
         if (attempt < 60) {
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(FLMFloatingScenePollInterval *
+                                        NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
                                         generation:generation
@@ -7001,7 +7009,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         if (attempt < 60) {
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(FLMFloatingScenePollInterval *
+                                        NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
                                         generation:generation
@@ -7026,7 +7036,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // Give the freshly resolved application Scene one short main-run-loop
         // interval before foreground/frame settings are committed.
         dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+            dispatch_time(DISPATCH_TIME_NOW,
+                          (int64_t)(FLMFloatingSceneResolveGraceDelay *
+                                    NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{
                 [self attachFloatingIdentifier:identifier
                                     generation:generation
@@ -7055,7 +7067,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         if (attempt < 60) {
             dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                dispatch_time(DISPATCH_TIME_NOW,
+                              (int64_t)(FLMFloatingScenePollInterval *
+                                        NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
                                         generation:generation
