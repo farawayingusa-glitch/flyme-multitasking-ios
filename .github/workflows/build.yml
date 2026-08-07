@@ -52,23 +52,23 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.70_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.70
-          path: artifacts/flyme-multitasking_0.8.70_iphoneos-arm64.deb
+          name: flyme-multitasking-0.8.71
+          path: artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8.70
-          name: flyme-multitasking 0.8.70
+          tag_name: v0.8.71
+          name: flyme-multitasking 0.8.71
           body: |
-            - 0.8.70: shorter launch-cover wait in the wheel card path.
-            - Reduced the fixed delay before probing the Scene, shortened presenter settle/polling, and made the app-icon launch cover fade out faster once content is attached.
-            - The black-screen guard stays in place; the app is still covered until its remote surface is ready, but the icon no longer sits on screen for the full old delay chain.
-          files: artifacts/flyme-multitasking_0.8.70_iphoneos-arm64.deb
+            - 0.8.71: continuous handle-to-fullscreen transition and another launch-cover speed step.
+            - Fullscreen promotion is now armed while the card is still being dragged, so SpringBoard activates the app during the same motion instead of after release. The release finish is shorter and the cover handoff polls at 30 ms, removing the visible two-stage pause.
+            - The centered-card launch cover now waits only 20 ms and fades in 50 ms; scene probing also starts 10 ms sooner. The black-screen guard remains in place.
+          files: artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
           fail_on_unmatched_files: true

@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.70"
+#define FLMLogBuildString @"0.8.71"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -264,9 +264,12 @@ static const CGFloat FLMDockAnimationSpeed = 0.85;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.10;
 static const NSTimeInterval FLMFloatingScenePollInterval = 0.05;
-static const NSTimeInterval FLMFloatingSceneResolveGraceDelay = 0.04;
-static const NSTimeInterval FLMFloatingLaunchCoverSettleDelay = 0.04;
-static const NSTimeInterval FLMFloatingLaunchCoverFadeDuration = 0.08;
+static const NSTimeInterval FLMFloatingSceneResolveGraceDelay = 0.03;
+static const NSTimeInterval FLMFloatingLaunchCoverSettleDelay = 0.02;
+static const NSTimeInterval FLMFloatingLaunchCoverFadeDuration = 0.05;
+static const NSTimeInterval FLMFloatingFullscreenActivationDelay = 0.02;
+static const NSTimeInterval FLMFloatingFullscreenHandoffPollInterval = 0.03;
+static const CGFloat FLMFloatingFullscreenActivationThreshold = 0.85;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
 static const NSTimeInterval FLMFloatingPresenterRecoveryTimeout = 1.0;
 static const NSTimeInterval FLMFloatingCloseFallbackDelay = 0.45;
@@ -1261,6 +1264,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, copy) NSString *prewarmedIdentifier;
 @property(nonatomic, copy) NSString *lastObservedFrontmostIdentifier;
 @property(nonatomic, assign) BOOL floatingExternalActivationArmed;
+@property(nonatomic, assign) BOOL floatingFullscreenActivationArmed;
 @property(nonatomic, strong) FLMDeviceApplicationSceneEntity *floatingSceneEntity;
 @property(nonatomic, strong) FLMApplicationSceneHandle *floatingSceneHandle;
 @property(nonatomic, strong) id floatingScene;
@@ -4066,6 +4070,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveSnapshotContent = nil;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
+    self.floatingFullscreenActivationArmed = NO;
     self.floatingFullscreenProgress = 0.0;
     self.floatingContainer.alpha = 1.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
@@ -4139,6 +4144,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 self.floatingHandle.alpha =
                     1.0 - MAX(0.0, (progress - 0.88) / 0.12);
                 [self layoutFloatingHandleForCurrentContainer];
+                if (progress >= FLMFloatingFullscreenActivationThreshold &&
+                    !self.floatingFullscreenActivationArmed &&
+                    self.floatingIdentifier.length > 0) {
+                    self.floatingFullscreenActivationArmed = YES;
+                    [self activateIdentifierFullscreen:self.floatingIdentifier];
+                }
             } else {
                 CGFloat resistance =
                     MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
@@ -4226,10 +4237,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingHandle.alpha =
                 1.0 - MAX(0.0, (progress - 0.88) / 0.12);
             [self layoutFloatingHandleForCurrentContainer];
+            if (progress >= FLMFloatingFullscreenActivationThreshold &&
+                !self.floatingFullscreenActivationArmed &&
+                self.floatingIdentifier.length > 0) {
+                self.floatingFullscreenActivationArmed = YES;
+                [self activateIdentifierFullscreen:self.floatingIdentifier];
+            }
         } else {
             [self setFloatingDockReady:NO animated:YES];
             [self setFloatingApplicationInputBlocked:NO];
             if (self.floatingInteractiveScenePrepared) {
+                if (self.floatingFullscreenActivationArmed &&
+                    self.floatingIdentifier.length > 0 &&
+                    [self.floatingIdentifier
+                        isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+                    [self transitionFloatingWindowToFullscreen];
+                    return;
+                }
                 [self restoreFloatingSceneAfterCancelledTransition];
             }
             self.floatingDockTransitionActive = NO;
@@ -4268,6 +4292,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated {
+    if (self.floatingFullscreenActivationArmed &&
+        !self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
+        [self.floatingIdentifier
+            isEqualToString:FLMFrontmostApplicationIdentifier()]) {
+        [self transitionFloatingWindowToFullscreen];
+        return;
+    }
     [self setFloatingDockReady:NO animated:animated];
     [self restoreFloatingSceneAfterCancelledTransition];
     [self setFloatingApplicationInputBlocked:NO];
@@ -4324,10 +4355,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Start the already-running scene promotion while the final part of the
     // same card morph is still on screen. The old implementation waited until
     // that animation ended, producing a visible motion/pause/activation split.
-    [self activateIdentifierFullscreen:identifier];
+    if (!self.floatingFullscreenActivationArmed) {
+        self.floatingFullscreenActivationArmed = YES;
+        [self activateIdentifierFullscreen:identifier];
+    }
     CGFloat remainingProgress =
         MAX(0.0, 1.0 - self.floatingFullscreenProgress);
-    NSTimeInterval finishDuration = 0.18 + 0.28 * remainingProgress;
+    NSTimeInterval finishDuration = 0.10 + 0.22 * remainingProgress;
     [UIView animateWithDuration:finishDuration
                            delay:0.0
                          options:UIViewAnimationOptionBeginFromCurrentState |
@@ -4377,7 +4411,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
     // Match the 0.8.46 handoff cadence. The cover already completed the
     // single continuous card-to-fullscreen animation; wait only one bounded
-    // polling turn before swapping it with the real foreground Scene.
+    // polling turn before swapping it with the real foreground Scene. The
+    // polling cadence is shorter now because the app activation is armed
+    // during the drag itself.
     BOOL displayCommitted = targetIsFrontmost && attempt >= 1;
     if (!displayCommitted && attempt < 24) {
         if (attempt == 0 || attempt >= 22) {
@@ -4388,7 +4424,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 (unsigned long)attempt);
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.05 * NSEC_PER_SEC)),
+                                     (int64_t)(FLMFloatingFullscreenHandoffPollInterval *
+                                               NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self finishFullscreenHandoffWithCover:cover
                                        identifier:identifier
@@ -5063,6 +5100,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self setFloatingApplicationInputBlocked:YES];
     [self restoreFloatingHandleInteraction];
     self.floatingExternalActivationArmed = NO;
+    self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     // Returning to the centered card changes only the presentation crop and
     // scale. Keep the application Scene full-screen and the keyboard route
@@ -6832,6 +6870,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockHideGestureActive = NO;
     self.floatingDockedOnRight = YES;
     self.floatingExternalActivationArmed = NO;
+    self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
     // Promote the target with the display-sized Scene first so it retains the
@@ -7347,6 +7386,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockHideGestureActive = NO;
     self.floatingDockTransitionActive = NO;
     self.floatingExternalActivationArmed = NO;
+    self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingResizeCenterReady = NO;
     [self setFloatingDockReady:NO animated:NO];
@@ -7484,6 +7524,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingStatusLabel.hidden = YES;
     self.floatingCloseInProgress = NO;
     self.floatingActiveCloseToken = 0;
+    self.floatingFullscreenActivationArmed = NO;
     FLMEnqueueDiagnosticLine(
         @"sb centered-close cleanup-once token=%lu scene=%@ presenter=%p queuedTarget=%@",
         (unsigned long)token, FLMSceneIdentifier(scene) ?: @"<none>",
@@ -7568,7 +7609,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     NSString *bundleIdentifier = [identifier copy];
     dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(FLMFloatingFullscreenActivationDelay *
+                                NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
             UIApplication *application = [UIApplication sharedApplication];
             if ([application respondsToSelector:
