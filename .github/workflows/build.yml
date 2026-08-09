@@ -62,6 +62,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.8.71
