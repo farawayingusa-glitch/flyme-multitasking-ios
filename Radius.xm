@@ -28,7 +28,9 @@ static CGFloat FLMRadiusPreferenceValue(void) {
     CGFloat radius = FLMRadiusDefaultValue;
     if (value && CFGetTypeID(value) == CFNumberGetTypeID()) {
         double storedValue = FLMRadiusDefaultValue;
-        if (CFNumberGetValue(value, kCFNumberDoubleType, &storedValue) &&
+        if (CFNumberGetValue((CFNumberRef)value,
+                             kCFNumberDoubleType,
+                             &storedValue) &&
             isfinite(storedValue)) {
             radius = (CGFloat)storedValue;
         }
