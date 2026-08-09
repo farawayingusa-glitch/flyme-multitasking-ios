@@ -9,7 +9,7 @@ THEOS_PACKAGE_SCHEME = rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = FlymeMultitasking FlymeKeyboard
+TWEAK_NAME = FlymeMultitasking FlymeKeyboard FlymeRadius
 
 FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
@@ -18,6 +18,10 @@ FlymeMultitasking_FRAMEWORKS = UIKit
 FlymeKeyboard_FILES = Keyboard.xm
 FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra
 FlymeKeyboard_FRAMEWORKS = UIKit QuartzCore
+
+FlymeRadius_FILES = Radius.xm
+FlymeRadius_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeRadius_FRAMEWORKS = UIKit QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
