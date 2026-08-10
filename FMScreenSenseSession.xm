@@ -266,7 +266,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
                                              NSInteger selectedLength,
                                              NSInteger fullLength) {
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            @"[ScreenSense][Selection] source=delegate active=%d selectedTextLength=%ld fullTextLength=%ld",
             active ? 1 : 0, (long)selectedLength, (long)fullLength);
     }];
     __weak FMScreenSenseSession *weakSelf = self;

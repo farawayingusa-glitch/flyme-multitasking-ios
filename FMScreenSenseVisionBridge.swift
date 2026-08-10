@@ -166,6 +166,10 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
                 liveTextInteraction.analysis = result
+                // Setting analysis is the last VisionKit state transition.
+                // Re-assert the delegate after it so the callback owner stays
+                // attached for the entire active session.
+                liveTextInteraction.delegate = self
                 self.interaction = liveTextInteraction
                 self.analysisTask = nil
 
@@ -243,6 +247,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
 }
 
 extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
+    @MainActor
     public func presentingViewController(
         for interaction: ImageAnalysisInteraction
     ) -> UIViewController? {
