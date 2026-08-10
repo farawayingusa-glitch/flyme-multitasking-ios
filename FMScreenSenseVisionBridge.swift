@@ -18,6 +18,8 @@ public final class FMScreenSenseVisionBridge: NSObject {
     private weak var attachedImageView: UIImageView?
     private var completion: ((Bool, NSError?) -> Void)?
     private var selectionHandler: ((Bool, Int, Int) -> Void)?
+    private var visionStateHandler: ((Bool, UInt) -> Void)?
+    private var visionGestureHandler: ((CGPoint, UInt, Bool, Bool) -> Void)?
     private weak var preferredPresentingViewController: UIViewController?
     private var generation: UInt64 = 0
 
@@ -64,6 +66,34 @@ public final class FMScreenSenseVisionBridge: NSObject {
         return currentSelectedText.length
     }
 
+    @MainActor
+    @objc public var interactionViewMatchesImageView: Bool {
+        guard let liveTextInteraction = interaction else {
+            return false
+        }
+        return liveTextInteraction.view === attachedImageView
+    }
+
+    @MainActor
+    @objc public var interactionImageViewBounds: CGRect {
+        return attachedImageView?.bounds ?? .zero
+    }
+
+    @MainActor
+    @objc public var interactionImageViewContentModeRawValue: Int {
+        return attachedImageView?.contentMode.rawValue ?? -1
+    }
+
+    @MainActor
+    @objc public var interactionImageSize: CGSize {
+        return attachedImageView?.image?.size ?? .zero
+    }
+
+    @MainActor
+    @objc public var interactionContentsRect: CGRect {
+        return interaction?.contentsRect ?? .zero
+    }
+
     /// Returns whether VisionKit has an interactive item at the point. The
     /// point must be in the attached UIImageView's coordinate space.
     @MainActor
@@ -91,6 +121,20 @@ public final class FMScreenSenseVisionBridge: NSObject {
         _ handler: @escaping (Bool, Int, Int) -> Void
     ) {
         selectionHandler = handler
+    }
+
+    @MainActor
+    @objc public func setVisionStateHandler(
+        _ handler: @escaping (Bool, UInt) -> Void
+    ) {
+        visionStateHandler = handler
+    }
+
+    @MainActor
+    @objc public func setVisionGestureHandler(
+        _ handler: @escaping (CGPoint, UInt, Bool, Bool) -> Void
+    ) {
+        visionGestureHandler = handler
     }
 
     @MainActor
@@ -207,6 +251,8 @@ public final class FMScreenSenseVisionBridge: NSObject {
         attachedImageView = nil
         completion = nil
         selectionHandler = nil
+        visionStateHandler = nil
+        visionGestureHandler = nil
         preferredPresentingViewController = nil
     }
 
@@ -262,8 +308,29 @@ extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
     @MainActor
     public func interaction(
         _ interaction: ImageAnalysisInteraction,
+        shouldBeginAt point: CGPoint,
+        for interactionType: ImageAnalysisInteraction.InteractionTypes
+    ) -> Bool {
+        let hasText = interaction.hasText(at: point)
+        let analysisHasText = interaction.analysisHasText(at: point)
+        visionGestureHandler?(
+            point,
+            interactionType.rawValue,
+            hasText,
+            analysisHasText
+        )
+        return true
+    }
+
+    @MainActor
+    public func interaction(
+        _ interaction: ImageAnalysisInteraction,
         highlightSelectedItemsDidChange highlighted: Bool
     ) {
+        visionStateHandler?(
+            highlighted,
+            interaction.activeInteractionTypes.rawValue
+        )
         notifySelectionState(for: interaction)
     }
 }

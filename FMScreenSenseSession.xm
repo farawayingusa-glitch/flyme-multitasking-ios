@@ -5,6 +5,11 @@
 #import "FLMDiagnostics.h"
 #import "FlymeMultitasking-Swift.h"
 
+// ScreenSense A/B build: remove the recognizer entirely so VisionKit owns the
+// full touch stream while we verify whether the old blank-area dismiss gesture
+// was preventing active text selection from starting.
+#define FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS 1
+
 typedef NS_ENUM(NSInteger, FMScreenSenseState) {
     FMScreenSenseStateInactive = 0,
     FMScreenSenseStateDismissingWheel,
@@ -227,6 +232,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     imageView.accessibilityIdentifier = @"com.codex.flymemultitasking.screensense.frozen-image";
     [viewController.view addSubview:imageView];
 
+#if FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS
+    self.emptyTapGesture = nil;
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][AB] empty-area dismiss gesture disabled");
+#else
     UITapGestureRecognizer *emptyTapGesture =
         [[UITapGestureRecognizer alloc] initWithTarget:self
                                                 action:@selector(handleEmptyTap:)];
@@ -235,11 +245,14 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     emptyTapGesture.delaysTouchesBegan = NO;
     emptyTapGesture.delaysTouchesEnded = NO;
     [viewController.view addGestureRecognizer:emptyTapGesture];
+#endif
 
     self.window = window;
     self.viewController = viewController;
     self.imageView = imageView;
+#if !FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS
     self.emptyTapGesture = emptyTapGesture;
+#endif
 
     window.hidden = NO;
     [window makeKeyAndVisible];
@@ -268,6 +281,21 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Selection] source=delegate active=%d selectedTextLength=%ld fullTextLength=%ld",
             active ? 1 : 0, (long)selectedLength, (long)fullLength);
+    }];
+    [self.visionBridge setVisionStateHandler:^(BOOL highlighted,
+                                               NSUInteger activeInteractionTypes) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][VisionState] highlightSelectedItemsDidChange=%d activeInteractionTypes=%lu",
+            highlighted ? 1 : 0, (unsigned long)activeInteractionTypes);
+    }];
+    [self.visionBridge setVisionGestureHandler:^(CGPoint point,
+                                                 NSUInteger interactionTypes,
+                                                 BOOL hasText,
+                                                 BOOL analysisHasText) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][VisionGesture] shouldBegin point={%.1f,%.1f} typesRaw=%lu hasText=%d analysisHasText=%d",
+            point.x, point.y, (unsigned long)interactionTypes,
+            hasText ? 1 : 0, analysisHasText ? 1 : 0);
     }];
     __weak FMScreenSenseSession *weakSelf = self;
     [self.visionBridge attachLiveTextTo:imageView
@@ -308,6 +336,18 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             (unsigned long)bridge.preferredInteractionTypesRawValue,
             bridge.supplementaryInterfaceHidden ? 1 : 0,
             bridge.selectableItemsHighlighted ? 1 : 0);
+        CGRect imageViewBounds = bridge.interactionImageViewBounds;
+        CGSize imageSize = bridge.interactionImageSize;
+        CGRect contentsRect = bridge.interactionContentsRect;
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][VisionGeometry] interactionViewIsImageView=%d imageViewBounds={%.1f,%.1f,%.1f,%.1f} contentMode=%ld imageSize={%.1f,%.1f} contentsRect={%.3f,%.3f,%.3f,%.3f}",
+            bridge.interactionViewMatchesImageView ? 1 : 0,
+            imageViewBounds.origin.x, imageViewBounds.origin.y,
+            imageViewBounds.size.width, imageViewBounds.size.height,
+            (long)bridge.interactionImageViewContentModeRawValue,
+            imageSize.width, imageSize.height,
+            contentsRect.origin.x, contentsRect.origin.y,
+            contentsRect.size.width, contentsRect.size.height);
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Overlay] windowClass=%@ isHidden=%d isKeyWindow=%d windowLevel=%.1f windowScene=%@ rootViewController=%@ imageView.window=%@",
             NSStringFromClass([overlayWindow class]), overlayWindow.isHidden ? 1 : 0,
