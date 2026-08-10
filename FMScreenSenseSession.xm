@@ -343,18 +343,36 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     CGPoint point = [gestureRecognizer locationInView:self.imageView];
     BOOL interactive = self.visionBridge &&
-                       [self.visionBridge isInteractivePointAt:point];
-    BOOL activeSelection = self.visionBridge.hasActiveTextSelection;
-    NSInteger selectedTextLength = self.visionBridge.selectedTextLength;
+                       [self.visionBridge screenSenseHasInteractiveItemAt:point];
+    BOOL text = self.visionBridge &&
+                [self.visionBridge screenSenseHasTextAt:point];
+    BOOL passToVisionKit = interactive || text;
     FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Selection] tap interactive=%d active=%d selectedTextLength=%ld point={%.1f,%.1f}",
-        interactive ? 1 : 0, activeSelection ? 1 : 0,
-        (long)selectedTextLength, point.x, point.y);
+        @"[ScreenSense][Tap] interactive=%d text=%d action=%@ point={%.1f,%.1f}",
+        interactive ? 1 : 0, text ? 1 : 0,
+        passToVisionKit ? @"passToVisionKit" : @"dismiss",
+        point.x, point.y);
 
-    if (interactive) {
+    if (passToVisionKit) {
         return NO;
     }
     return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    if (gestureRecognizer != self.emptyTapGesture ||
+        otherGestureRecognizer == self.emptyTapGesture) {
+        return NO;
+    }
+
+    // VisionKit's recognizers live on the frozen image view. Let those
+    // recognizers resolve first so a blank-area tap cannot pre-empt text
+    // selection, handles, links, phone numbers, or the Live Text button.
+    UIView *otherView = otherGestureRecognizer.view;
+    UIView *imageView = self.imageView;
+    return imageView &&
+           (otherView == imageView || [otherView isDescendantOfView:imageView]);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer

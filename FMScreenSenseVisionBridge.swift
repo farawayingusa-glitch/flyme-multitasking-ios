@@ -63,15 +63,26 @@ public final class FMScreenSenseVisionBridge: NSObject {
         return 0
     }
 
-    /// Returns whether VisionKit owns the point. The point must be in the
-    /// attached UIImageView's coordinate space.
+    /// Returns whether VisionKit has an interactive item at the point. The
+    /// point must be in the attached UIImageView's coordinate space.
     @MainActor
-    @objc public func isInteractivePoint(at point: CGPoint) -> Bool {
+    @objc(screenSenseHasInteractiveItemAt:)
+    public func screenSenseHasInteractiveItem(at point: CGPoint) -> Bool {
         guard let liveTextInteraction = interaction else {
             return false
         }
-        return liveTextInteraction.hasInteractiveItem(at: point) ||
-               liveTextInteraction.analysisHasText(at: point)
+        return liveTextInteraction.hasInteractiveItem(at: point)
+    }
+
+    /// Returns whether the analyzed image contains text at the point. The
+    /// point must be in the attached UIImageView's coordinate space.
+    @MainActor
+    @objc(screenSenseHasTextAt:)
+    public func screenSenseHasText(at point: CGPoint) -> Bool {
+        guard let liveTextInteraction = interaction else {
+            return false
+        }
+        return liveTextInteraction.analysisHasText(at: point)
     }
 
     @MainActor
@@ -146,8 +157,10 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
                 let liveTextInteraction = ImageAnalysisInteraction()
                 liveTextInteraction.preferredInteractionTypes = .textSelection
-                liveTextInteraction.isSupplementaryInterfaceHidden = true
-                liveTextInteraction.selectableItemsHighlighted = true
+                // Keep Apple's Live Text button visible. It is the system's
+                // stable entry point into selection and the edit menu.
+                liveTextInteraction.isSupplementaryInterfaceHidden = false
+                liveTextInteraction.selectableItemsHighlighted = false
                 liveTextInteraction.delegate = self
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
