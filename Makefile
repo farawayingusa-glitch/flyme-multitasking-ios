@@ -11,9 +11,10 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FlymeMultitasking FlymeKeyboard FlymeRadius
 
-FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm FMScreenCaptureProvider.xm
+FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm FMScreenCaptureProvider.xm FMScreenSenseSession.xm
+FlymeMultitasking_SWIFT_FILES = FMScreenSenseVisionBridge.swift
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
-FlymeMultitasking_FRAMEWORKS = UIKit QuartzCore IOSurface CoreGraphics
+FlymeMultitasking_FRAMEWORKS = UIKit QuartzCore IOSurface CoreGraphics VisionKit
 
 FlymeKeyboard_FILES = Keyboard.xm
 FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra

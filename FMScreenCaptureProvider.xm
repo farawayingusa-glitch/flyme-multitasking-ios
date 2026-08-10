@@ -42,17 +42,16 @@ kern_return_t IOSurfaceUnlock(IOSurfaceRef buffer,
 }
 #endif
 
-// This target is deliberately a DEBUG POC. The file is overwritten on every
-// successful capture so it never becomes a screenshot archive. Remove or set
-// this to 0 after the one-shot capture path has been verified on-device.
-#ifndef FMSCREEN_CAPTURE_POC_DEBUG
-#define FMSCREEN_CAPTURE_POC_DEBUG 1
+// Keep the debug image path available for an explicitly instrumented build,
+// but never write screenshot data in the shipped ScreenSense package.
+#ifndef FMSCREEN_CAPTURE_DEBUG_WRITE_PNG
+#define FMSCREEN_CAPTURE_DEBUG_WRITE_PNG 0
 #endif
 
-static NSString *const FMScreenCapturePOCPrimaryPath =
-    @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-ScreenSense-POC.png";
-static NSString *const FMScreenCapturePOCFallbackPath =
-    @"/var/mobile/Library/Preferences/FlymeMultitasking-ScreenSense-POC.png";
+static NSString *const FMScreenCaptureDebugPrimaryPath =
+    @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-ScreenSense-Debug.png";
+static NSString *const FMScreenCaptureDebugFallbackPath =
+    @"/var/mobile/Library/Preferences/FlymeMultitasking-ScreenSense-Debug.png";
 
 typedef void (*FMScreenRenderDisplayFunction)(kern_return_t,
                                                 CFStringRef,
@@ -291,7 +290,7 @@ static UIImage *FMScreenCaptureCreateImage(NSData *pixelData,
     return image;
 }
 
-#if FMSCREEN_CAPTURE_POC_DEBUG
+#if FMSCREEN_CAPTURE_DEBUG_WRITE_PNG
 static void FMScreenCaptureWriteDebugPNG(UIImage *image) {
     if (!image) {
         return;
@@ -303,8 +302,8 @@ static void FMScreenCaptureWriteDebugPNG(UIImage *image) {
         return;
     }
 
-    NSArray<NSString *> *paths = @[FMScreenCapturePOCPrimaryPath,
-                                   FMScreenCapturePOCFallbackPath];
+    NSArray<NSString *> *paths = @[FMScreenCaptureDebugPrimaryPath,
+                                   FMScreenCaptureDebugFallbackPath];
     for (NSString *path in paths) {
         if ([pngData writeToFile:path options:NSDataWritingAtomic error:nil]) {
             FLMEnqueueDiagnosticLine(
@@ -436,7 +435,7 @@ static UIImage *FMScreenCaptureOneFrame(void) {
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Capture] UIImage created size={%.1f,%.1f} scale=%.2f",
         image.size.width, image.size.height, image.scale);
-#if FMSCREEN_CAPTURE_POC_DEBUG
+#if FMSCREEN_CAPTURE_DEBUG_WRITE_PNG
     FMScreenCaptureWriteDebugPNG(image);
 #endif
     FLMEnqueueDiagnosticLine(

@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - codex/0.9.4-screensense-v1
 
 jobs:
   build:
@@ -52,24 +53,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.9.4_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.8.71
-          path: artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
+          name: flyme-multitasking-0.9.4-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_0.9.4_iphoneos-arm64.deb
           if-no-files-found: error
-
-      - name: Publish GitHub Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v0.8.71
-          name: flyme-multitasking 0.8.71
-          body: |
-            - 0.8.71: continuous handle-to-fullscreen transition and another launch-cover speed step.
-            - Fullscreen promotion is now armed while the card is still being dragged, so SpringBoard activates the app during the same motion instead of after release. The release finish is shorter and the cover handoff polls at 30 ms, removing the visible two-stage pause.
-            - The centered-card launch cover now waits only 20 ms and fades in 50 ms; scene probing also starts 10 ms sooner. The black-screen guard remains in place.
-          files: artifacts/flyme-multitasking_0.8.71_iphoneos-arm64.deb
-          fail_on_unmatched_files: true

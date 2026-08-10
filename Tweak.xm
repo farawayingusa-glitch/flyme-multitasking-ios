@@ -16,6 +16,7 @@
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
 #import "FMScreenCaptureProvider.h"
+#import "FMScreenSenseSession.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -36,7 +37,7 @@
 #define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.3"
+#define FLMLogBuildString @"0.9.4"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -1426,7 +1427,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (BOOL)floatingSceneLogicalFrameMatchesSystemReference;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
-- (void)captureScreenSensePOC;
+- (void)captureScreenSense;
 - (void)beginLockMonitoring;
 - (void)stopLockMonitoringIfIdle;
 - (void)checkLockState:(NSTimer *)timer;
@@ -7656,7 +7657,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)activateIdentifier:(NSString *)identifier {
     if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
         self.prewarmedIdentifier = nil;
-        [self captureScreenSensePOC];
+        [self captureScreenSense];
         return;
     }
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
@@ -7698,10 +7699,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self openFloatingIdentifier:identifier];
 }
 
-- (void)captureScreenSensePOC {
+- (void)captureScreenSense {
     if (!self.overlayWindow.hidden) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Capture][ERROR] wheel overlay still visible");
+        return;
+    }
+
+    FMScreenSenseSession *session = [FMScreenSenseSession sharedSession];
+    if (![session beginCaptureSession]) {
         return;
     }
 
@@ -7714,6 +7720,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (!firstTurnSelf || !firstTurnSelf.overlayWindow.hidden) {
             FLMEnqueueDiagnosticLine(
                 @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared");
+            [session abortCaptureWithReason:@"wheel-reappeared-before-capture"];
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -7721,17 +7728,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             if (!strongSelf || !strongSelf.overlayWindow.hidden) {
                 FLMEnqueueDiagnosticLine(
                     @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared before render");
+                [session abortCaptureWithReason:@"wheel-reappeared-before-render"];
                 return;
             }
+            [session markCaptureStarted];
             UIImage *image = [FMScreenCaptureProvider captureCurrentDisplay];
             if (!image) {
                 FLMEnqueueDiagnosticLine(
-                    @"[ScreenSense][Capture][ERROR] POC returned nil image");
+                    @"[ScreenSense][Capture][ERROR] returned nil image");
+                [session abortCaptureWithReason:@"nil-image"];
                 return;
             }
             FLMEnqueueDiagnosticLine(
-                @"[ScreenSense][Capture] POC completed image={%.1f,%.1f} scale=%.2f",
+                @"[ScreenSense][Capture] completed image={%.1f,%.1f} scale=%.2f",
                 image.size.width, image.size.height, image.scale);
+            [session presentCapturedImage:image];
         });
     });
 }

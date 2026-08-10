@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - main
-      - codex/0.9.3-screensense-poc
+      - codex/0.9.4-screensense-v1
 
 jobs:
   build:
