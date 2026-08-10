@@ -15,6 +15,7 @@
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 #define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
+#define FLYME_SCREEN_SENSE_ENABLED 0
 
 static NSString *const FLMDiagnosticPrimaryPath =
     @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -235,7 +236,7 @@ static NSString *FLMNameForIdentifier(
             return application[@"name"];
         }
     }
-    return identifier;
+    return identifier.length > 0 ? identifier : @"未知项目";
 }
 
 @interface FLMWheelSliderCell : PSTableCell
@@ -674,10 +675,12 @@ static NSString *FLMNameForIdentifier(
                                                 image:FLMIconForIdentifier(
                                                           FLYME_LOCK_SCREEN_ITEM)]];
 
+#if FLYME_SCREEN_SENSE_ENABLED
     [specifiers addObject:[self itemSpecifierWithName:@"识屏"
                                            identifier:FLYME_SCREEN_SENSE_ITEM
                                                 image:FLMIconForIdentifier(
                                                           FLYME_SCREEN_SENSE_ITEM)]];
+#endif
 
     [specifiers addObject:[PSSpecifier groupSpecifierWithName:@"应用"]];
     for (NSDictionary *application in self.applications) {
@@ -813,6 +816,25 @@ static NSString *FLMNameForIdentifier(
     FLMSetPreference(@"wheelItems", self.items);
 }
 
+- (BOOL)removeWheelItemAtIndexPath:(NSIndexPath *)indexPath {
+    NSUInteger row = (NSUInteger)indexPath.row;
+    if (indexPath.section != 0 || row >= self.items.count) {
+        return NO;
+    }
+
+    NSString *identifier = self.items[row];
+    if (![identifier isKindOfClass:[NSString class]] || identifier.length == 0) {
+        return NO;
+    }
+
+    // Persist the identifier removal before updating the visible row. This
+    // keeps the order screen, tweak runtime, and later resprings on the same
+    // source of truth, including legacy and unknown identifiers.
+    [self.items removeObjectAtIndex:row];
+    FLMSetPreference(@"wheelItems", [self.items copy]);
+    return YES;
+}
+
 - (BOOL)tableView:(UITableView *)tableView
     canEditRowAtIndexPath:(NSIndexPath *)indexPath {
     (void)tableView;
@@ -825,6 +847,38 @@ static NSString *FLMNameForIdentifier(
     (void)tableView;
     (void)indexPath;
     return UITableViewCellEditingStyleNone;
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != 0 ||
+        (NSUInteger)indexPath.row >= self.items.count) {
+        return nil;
+    }
+
+    __weak FLMAppOrderController *weakSelf = self;
+    __weak UITableView *weakTableView = tableView;
+    UIContextualAction *deleteAction =
+        [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+                                                 title:@"删除"
+                                               handler:^(UIContextualAction *action,
+                                                         UIView *sourceView,
+                                                         void (^completionHandler)(BOOL)) {
+        (void)action;
+        (void)sourceView;
+        FLMAppOrderController *strongSelf = weakSelf;
+        UITableView *strongTableView = weakTableView;
+        BOOL removed = [strongSelf removeWheelItemAtIndexPath:indexPath];
+        if (removed && strongTableView) {
+            [strongTableView deleteRowsAtIndexPaths:@[indexPath]
+                                   withRowAnimation:UITableViewRowAnimationAutomatic];
+        }
+        completionHandler(removed);
+    }];
+    UISwipeActionsConfiguration *configuration =
+        [UISwipeActionsConfiguration configurationWithActions:@[deleteAction]];
+    configuration.performsFirstActionWithFullSwipe = YES;
+    return configuration;
 }
 
 - (BOOL)tableView:(UITableView *)tableView
