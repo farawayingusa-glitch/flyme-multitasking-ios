@@ -41,7 +41,7 @@
 #define FLYME_SCREEN_SENSE_ENABLED 0
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.10"
+#define FLMLogBuildString @"0.9.11"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
