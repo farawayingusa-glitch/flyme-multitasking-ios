@@ -6,6 +6,10 @@
 #import <notify.h>
 #import <stdint.h>
 
+// SpringBoard owns the diagnostic writer. Auxiliary SpringBoard modules may
+// enqueue lines through this function without creating another file writer.
+void FLMEnqueueDiagnosticLine(NSString *format, ...);
+
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-event-v2"
 #define FLYME_DIAGNOSTIC_SPRINGBOARD_NOTIFICATION \

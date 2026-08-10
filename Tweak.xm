@@ -15,6 +15,7 @@
 
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
+#import "FMScreenCaptureProvider.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -32,9 +33,10 @@
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
+#define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.8.71"
+#define FLMLogBuildString @"0.9.3"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -155,7 +157,7 @@ static void FLMAppendDiagnosticLineNow(NSString *message) {
     close(descriptor);
 }
 
-static void FLMEnqueueDiagnosticLine(NSString *format, ...) {
+void FLMEnqueueDiagnosticLine(NSString *format, ...) {
     if (!FLMDiagnosticWriterReady || !FLMDiagnosticWriterQueue ||
         format.length == 0) {
         return;
@@ -1097,7 +1099,13 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
     if (self) {
         _identifier = [identifier copy];
         BOOL isLockItem = [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM];
-        self.backgroundColor = isLockItem ? [UIColor systemBlueColor] : [UIColor clearColor];
+        BOOL isScreenSenseItem =
+            [identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM];
+        BOOL isBuiltInAction = isLockItem || isScreenSenseItem;
+        self.backgroundColor = isLockItem
+                                   ? [UIColor systemBlueColor]
+                                   : (isScreenSenseItem ? [UIColor systemIndigoColor]
+                                                        : [UIColor clearColor]);
         self.layer.cornerRadius = size * 0.5;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOpacity = 0.22;
@@ -1108,13 +1116,15 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
         _iconView = [[UIImageView alloc] initWithImage:image];
         CGFloat lockInset = size * (15.0 / FLMDefaultWheelIconSize);
         _iconView.frame =
-            isLockItem ? CGRectInset(self.bounds, lockInset, lockInset) : self.bounds;
+            isBuiltInAction ? CGRectInset(self.bounds, lockInset, lockInset)
+                            : self.bounds;
         _iconView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _iconView.contentMode =
-            isLockItem ? UIViewContentModeScaleAspectFit : UIViewContentModeScaleAspectFill;
+            isBuiltInAction ? UIViewContentModeScaleAspectFit
+                            : UIViewContentModeScaleAspectFill;
         _iconView.clipsToBounds = YES;
-        _iconView.layer.cornerRadius = isLockItem ? 0.0 : size * 0.5;
+        _iconView.layer.cornerRadius = isBuiltInAction ? 0.0 : size * 0.5;
         [self addSubview:_iconView];
     }
     return self;
@@ -1416,6 +1426,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (BOOL)floatingSceneLogicalFrameMatchesSystemReference;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
+- (void)captureScreenSensePOC;
 - (void)beginLockMonitoring;
 - (void)stopLockMonitoringIfIdle;
 - (void)checkLockState:(NSTimer *)timer;
@@ -1908,9 +1919,21 @@ static UIImage *FLMLockImage(void) {
                        renderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
+static UIImage *FLMScreenSenseImage(void) {
+    UIImage *image = [UIImage systemImageNamed:@"text.viewfinder"];
+    if (!image) {
+        image = [UIImage systemImageNamed:@"viewfinder"];
+    }
+    return [image imageWithTintColor:[UIColor whiteColor]
+                        renderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
 static UIImage *FLMApplicationIcon(NSString *bundleIdentifier) {
     if ([bundleIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return FLMLockImage();
+    }
+    if ([bundleIdentifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
+        return FLMScreenSenseImage();
     }
     if ([UIImage respondsToSelector:
                      @selector(_applicationIconImageForBundleIdentifier:format:scale:)]) {
@@ -3045,6 +3068,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (selectedIdentifier.length > 0 && !selectedIsCurrentFloating &&
         !selectedIsFrontmost &&
         ![selectedIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM] &&
+        ![selectedIdentifier isEqualToString:FLYME_SCREEN_SENSE_ITEM] &&
         FLMPrewarmApplicationIdentifier(selectedIdentifier)) {
         // Start the suspended scene while the wheel is completing its existing
         // dismissal animation. This gives scene creation a 240 ms head start.
@@ -7630,6 +7654,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)activateIdentifier:(NSString *)identifier {
+    if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
+        self.prewarmedIdentifier = nil;
+        [self captureScreenSensePOC];
+        return;
+    }
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         UIApplication *application = [UIApplication sharedApplication];
         if ([application respondsToSelector:@selector(_simulateLockButtonPress)]) {
@@ -7667,6 +7696,44 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     [self openFloatingIdentifier:identifier];
+}
+
+- (void)captureScreenSensePOC {
+    if (!self.overlayWindow.hidden) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Capture][ERROR] wheel overlay still visible");
+        return;
+    }
+
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Capture] wheel dismissed frontmost=%@ wait=two-main-queue-turns",
+        FLMFrontmostApplicationIdentifier() ?: @"<none>");
+    __weak FLMWheelController *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        FLMWheelController *firstTurnSelf = weakSelf;
+        if (!firstTurnSelf || !firstTurnSelf.overlayWindow.hidden) {
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared");
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMWheelController *strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.overlayWindow.hidden) {
+                FLMEnqueueDiagnosticLine(
+                    @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared before render");
+                return;
+            }
+            UIImage *image = [FMScreenCaptureProvider captureCurrentDisplay];
+            if (!image) {
+                FLMEnqueueDiagnosticLine(
+                    @"[ScreenSense][Capture][ERROR] POC returned nil image");
+                return;
+            }
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense][Capture] POC completed image={%.1f,%.1f} scale=%.2f",
+                image.size.width, image.size.height, image.scale);
+        });
+    });
 }
 
 @end
