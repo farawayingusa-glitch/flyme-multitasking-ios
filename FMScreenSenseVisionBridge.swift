@@ -17,7 +17,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
     private var analysisTask: Task<Void, Never>?
     private weak var attachedImageView: UIImageView?
     private var completion: ((Bool, NSError?) -> Void)?
-    private var selectionHandler: ((Bool, Int) -> Void)?
+    private var selectionHandler: ((Bool, Int, Int) -> Void)?
     private weak var preferredPresentingViewController: UIViewController?
     private var generation: UInt64 = 0
 
@@ -50,17 +50,18 @@ public final class FMScreenSenseVisionBridge: NSObject {
     }
 
     @MainActor
+    @objc public var currentSelectedText: NSString {
+        return selectedTextSnapshot() as NSString
+    }
+
+    @MainActor
+    @objc public var currentFullText: NSString {
+        return (analysis?.transcript ?? "") as NSString
+    }
+
+    @MainActor
     @objc public var selectedTextLength: Int {
-        guard let liveTextInteraction = interaction else {
-            return 0
-        }
-        if #available(iOS 17.0, *) {
-            return liveTextInteraction.selectedText.count
-        }
-        // iOS 16 exposes hasActiveTextSelection but not selectedText. Keep
-        // this diagnostic value at zero rather than using an unsafe runtime
-        // call to a newer API.
-        return 0
+        return currentSelectedText.length
     }
 
     /// Returns whether VisionKit has an interactive item at the point. The
@@ -87,7 +88,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
     @MainActor
     @objc public func setSelectionHandler(
-        _ handler: @escaping (Bool, Int) -> Void
+        _ handler: @escaping (Bool, Int, Int) -> Void
     ) {
         selectionHandler = handler
     }
@@ -213,6 +214,32 @@ public final class FMScreenSenseVisionBridge: NSObject {
         }
         interaction = nil
     }
+
+    @MainActor
+    private func selectedTextSnapshot() -> String {
+        guard let liveTextInteraction = interaction else {
+            return ""
+        }
+        // ImageAnalysisInteraction exposes selectedText on the iOS 16
+        // VisionKit surface used by this project. Keep the availability check
+        // explicit so older deployment targets remain safe if this bridge is
+        // ever reused elsewhere.
+        if #available(iOS 16.0, *) {
+            return liveTextInteraction.selectedText
+        }
+        return ""
+    }
+
+    @MainActor
+    private func notifySelectionState(for liveTextInteraction: ImageAnalysisInteraction) {
+        let selectedText = selectedTextSnapshot()
+        let fullText = analysis?.transcript ?? ""
+        selectionHandler?(
+            liveTextInteraction.hasActiveTextSelection,
+            selectedText.count,
+            fullText.count
+        )
+    }
 }
 
 extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
@@ -223,20 +250,13 @@ extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
     }
 
     public func textSelectionDidChange(_ interaction: ImageAnalysisInteraction) {
-        Task { @MainActor [weak self, weak interaction] in
-            guard let self = self, let interaction = interaction else {
-                return
-            }
-            let length: Int
-            if #available(iOS 17.0, *) {
-                length = interaction.selectedText.count
-            } else {
-                length = 0
-            }
-            self.selectionHandler?(
-                interaction.hasActiveTextSelection,
-                length
-            )
-        }
+        notifySelectionState(for: interaction)
+    }
+
+    public func interaction(
+        _ interaction: ImageAnalysisInteraction,
+        highlightSelectedItemsDidChange highlighted: Bool
+    ) {
+        notifySelectionState(for: interaction)
     }
 }

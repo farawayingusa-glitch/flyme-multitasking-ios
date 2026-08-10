@@ -262,10 +262,12 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] analysis begin");
-    [self.visionBridge setSelectionHandler:^(BOOL active, NSInteger length) {
+    [self.visionBridge setSelectionHandler:^(BOOL active,
+                                             NSInteger selectedLength,
+                                             NSInteger fullLength) {
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld",
-            active ? 1 : 0, (long)length);
+            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            active ? 1 : 0, (long)selectedLength, (long)fullLength);
     }];
     __weak FMScreenSenseSession *weakSelf = self;
     [self.visionBridge attachLiveTextTo:imageView
@@ -296,6 +298,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] interaction attached");
         FMScreenSenseVisionBridge *bridge = strongSelf.visionBridge;
         FMScreenSenseWindow *overlayWindow = strongSelf.window;
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            bridge.hasActiveTextSelection ? 1 : 0,
+            (long)bridge.currentSelectedText.length,
+            (long)bridge.currentFullText.length);
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Vision] preferredInteractionTypes=%lu supplementaryHidden=%d selectableItemsHighlighted=%d",
             (unsigned long)bridge.preferredInteractionTypesRawValue,
@@ -408,6 +415,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     FMScreenSenseVisionBridge *bridge = self.visionBridge;
     if (bridge) {
         [bridge teardown];
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            bridge.hasActiveTextSelection ? 1 : 0,
+            (long)bridge.currentSelectedText.length,
+            (long)bridge.currentFullText.length);
     }
     self.visionBridge = nil;
 
