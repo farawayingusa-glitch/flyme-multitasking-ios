@@ -15,6 +15,9 @@ static CFStringRef const FLMRadiusPreferencesNotification =
 static const CGFloat FLMRadiusDefaultValue = 22.0;
 static const CGFloat FLMRadiusMinimumValue = 0.0;
 static const CGFloat FLMRadiusMaximumValue = 44.0;
+static const CGFloat FLMRadiusDefaultCardWidth = 315.0;
+static const CGFloat FLMRadiusMinimumCardWidth = 240.0;
+static const CGFloat FLMRadiusMaximumCardWidth = 360.0;
 
 static __weak id FLMRadiusController;
 static __weak CALayer *FLMRadiusCardLayer;
@@ -42,11 +45,116 @@ static CGFloat FLMRadiusPreferenceValue(void) {
                MIN(FLMRadiusMaximumValue, radius));
 }
 
+static id FLMRadiusControllerValue(NSString *key) {
+    id controller = FLMRadiusController;
+    if (!controller || key.length == 0) {
+        return nil;
+    }
+    @try {
+        return [controller valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static CGFloat FLMRadiusCenteredCardWidth(void) {
+    CFPropertyListRef value =
+        CFPreferencesCopyValue(CFSTR("centeredCardWidth"),
+                                FLMRadiusPreferencesDomain,
+                                kCFPreferencesCurrentUser,
+                                kCFPreferencesAnyHost);
+    CGFloat width = FLMRadiusDefaultCardWidth;
+    if (value && CFGetTypeID(value) == CFNumberGetTypeID()) {
+        double storedValue = FLMRadiusDefaultCardWidth;
+        if (CFNumberGetValue((CFNumberRef)value,
+                             kCFNumberDoubleType,
+                             &storedValue) &&
+            isfinite(storedValue)) {
+            width = (CGFloat)storedValue;
+        }
+    }
+    if (value) {
+        CFRelease(value);
+    }
+    return MAX(FLMRadiusMinimumCardWidth,
+               MIN(FLMRadiusMaximumCardWidth, width));
+}
+
+static CGFloat FLMRadiusDockWidth(void) {
+    id value = FLMRadiusControllerValue(@"floatingDockWidth");
+    if (![value isKindOfClass:[NSNumber class]]) {
+        return 0.0;
+    }
+    CGFloat width = [value doubleValue];
+    return isfinite(width) && width > 0.0 ? width : 0.0;
+}
+
+static BOOL FLMRadiusControllerFlag(NSString *key) {
+    id value = FLMRadiusControllerValue(key);
+    return [value isKindOfClass:[NSNumber class]] && [value boolValue];
+}
+
+static CGFloat FLMRadiusDockScaleForLayer(CALayer *layer) {
+    BOOL docked = FLMRadiusControllerFlag(@"floatingDocked");
+    BOOL hidden = FLMRadiusControllerFlag(@"floatingDockHidden");
+    if (!docked && !hidden) {
+        return 1.0;
+    }
+
+    CGFloat centeredWidth = FLMRadiusCenteredCardWidth();
+    CGFloat dockWidth = FLMRadiusDockWidth();
+    if (dockWidth <= 0.0) {
+        id delegate = layer.delegate;
+        if ([delegate isKindOfClass:[UIView class]]) {
+            dockWidth = CGRectGetWidth([(UIView *)delegate bounds]);
+        }
+    }
+    if (!isfinite(dockWidth) || dockWidth <= 0.0) {
+        return 1.0;
+    }
+
+    return MAX(0.05, MIN(1.0, dockWidth / centeredWidth));
+}
+
+static CGFloat FLMRadiusScaleForRequestedRadius(CALayer *layer,
+                                                CGFloat requestedRadius) {
+    CGFloat scale = FLMRadiusDockScaleForLayer(layer);
+    if (scale < 0.999) {
+        return scale;
+    }
+
+    // The dock transition writes the proportional radius before it flips the
+    // docked flag. Preserve that final proportional step without shrinking
+    // the earlier transform-driven animation frame.
+    if (requestedRadius < FLMRadiusDefaultValue - 0.5 &&
+        FLMRadiusControllerFlag(@"floatingDockTransitionActive")) {
+        CGFloat centeredWidth = FLMRadiusCenteredCardWidth();
+        CGFloat dockWidth = FLMRadiusDockWidth();
+        if (dockWidth > 0.0) {
+            return MAX(0.05, MIN(1.0, dockWidth / centeredWidth));
+        }
+        return MAX(0.05,
+                   MIN(1.0, requestedRadius / FLMRadiusDefaultValue));
+    }
+    return 1.0;
+}
+
+static CGFloat FLMRadiusEffectiveValue(CALayer *layer,
+                                       CGFloat requestedRadius) {
+    if (requestedRadius <= 0.01) {
+        return requestedRadius;
+    }
+    CGFloat radius = FLMRadiusPreferenceValue();
+    CGFloat scale = FLMRadiusScaleForRequestedRadius(layer, requestedRadius);
+    return radius * scale;
+}
+
 static void FLMRadiusSetLayerRadius(CALayer *layer) {
     if (!layer) {
         return;
     }
-    layer.cornerRadius = FLMRadiusPreferenceValue();
+    layer.cornerRadius =
+        FLMRadiusEffectiveValue(layer, FLMRadiusDefaultValue);
 }
 
 static void FLMRadiusCaptureCardLayer(id controller) {
@@ -77,7 +185,7 @@ static void FLMRadiusSetCornerRadius(CALayer *layer,
                                      CGFloat requestedRadius) {
     CALayer *cardLayer = FLMRadiusCardLayer;
     if (cardLayer && layer == cardLayer && requestedRadius > 0.01) {
-        requestedRadius = FLMRadiusPreferenceValue();
+        requestedRadius = FLMRadiusEffectiveValue(layer, requestedRadius);
     }
 
     if (FLMRadiusOriginalSetCornerRadius) {
