@@ -249,6 +249,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.state = FMScreenSenseStateAnalyzing;
     self.analysisStartedAt = CACurrentMediaTime();
     self.visionBridge = [[FMScreenSenseVisionBridge alloc] init];
+    [self.visionBridge setPresentingViewController:self.viewController];
     FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] bridge created");
 
     BOOL supported = [FMScreenSenseVisionBridge isSupported];

@@ -18,6 +18,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
     private weak var attachedImageView: UIImageView?
     private var completion: ((Bool, NSError?) -> Void)?
     private var selectionHandler: ((Bool, Int) -> Void)?
+    private weak var preferredPresentingViewController: UIViewController?
     private var generation: UInt64 = 0
 
     @objc public class var isSupported: Bool {
@@ -50,7 +51,16 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
     @MainActor
     @objc public var selectedTextLength: Int {
-        return interaction?.selectedText.count ?? 0
+        guard let liveTextInteraction = interaction else {
+            return 0
+        }
+        if #available(iOS 17.0, *) {
+            return liveTextInteraction.selectedText.count
+        }
+        // iOS 16 exposes hasActiveTextSelection but not selectedText. Keep
+        // this diagnostic value at zero rather than using an unsafe runtime
+        // call to a newer API.
+        return 0
     }
 
     /// Returns whether VisionKit owns the point. The point must be in the
@@ -69,6 +79,13 @@ public final class FMScreenSenseVisionBridge: NSObject {
         _ handler: @escaping (Bool, Int) -> Void
     ) {
         selectionHandler = handler
+    }
+
+    @MainActor
+    @objc public func setPresentingViewController(
+        _ viewController: UIViewController?
+    ) {
+        preferredPresentingViewController = viewController
     }
 
     /// Starts one text-only Live Text analysis for the supplied frozen image.
@@ -172,6 +189,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
         attachedImageView = nil
         completion = nil
         selectionHandler = nil
+        preferredPresentingViewController = nil
     }
 
     @MainActor
@@ -184,34 +202,28 @@ public final class FMScreenSenseVisionBridge: NSObject {
     }
 }
 
-@MainActor
 extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
-    public func contentView(for interaction: ImageAnalysisInteraction) -> UIView? {
-        return interaction.view
-    }
-
-    public func contentsRect(for interaction: ImageAnalysisInteraction) -> CGRect {
-        return CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
-    }
-
     public func presentingViewController(
         for interaction: ImageAnalysisInteraction
     ) -> UIViewController? {
-        return interaction.view?.window?.rootViewController
-    }
-
-    public func interaction(
-        _ interaction: ImageAnalysisInteraction,
-        shouldBeginAt point: CGPoint,
-        for interactionType: ImageAnalysisInteraction.InteractionTypes
-    ) -> Bool {
-        return true
+        return preferredPresentingViewController
     }
 
     public func textSelectionDidChange(_ interaction: ImageAnalysisInteraction) {
-        selectionHandler?(
-            interaction.hasActiveTextSelection,
-            interaction.selectedText.count
-        )
+        Task { @MainActor [weak self, weak interaction] in
+            guard let self = self, let interaction = interaction else {
+                return
+            }
+            let length: Int
+            if #available(iOS 17.0, *) {
+                length = interaction.selectedText.count
+            } else {
+                length = 0
+            }
+            self.selectionHandler?(
+                interaction.hasActiveTextSelection,
+                length
+            )
+        }
     }
 }
