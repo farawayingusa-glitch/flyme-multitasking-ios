@@ -1,7 +1,7 @@
 #import "FMScreenCaptureProvider.h"
 
 #import <CoreGraphics/CoreGraphics.h>
-#import <IOSurface/IOSurface.h>
+#import <IOSurface/IOSurfaceTypes.h>
 #import <QuartzCore/QuartzCore.h>
 #import <dlfcn.h>
 #import <limits.h>
@@ -10,6 +10,37 @@
 #import <stdint.h>
 
 #import "FLMDiagnostics.h"
+
+// iPhoneOS SDKs expose IOSurfaceTypes.h but intentionally omit the C API
+// header from the public SDK. These are the small IOSurface declarations used
+// by this provider; they are linked from IOSurface.framework at build time.
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern const CFStringRef kIOSurfaceAllocSize;
+extern const CFStringRef kIOSurfaceBytesPerElement;
+extern const CFStringRef kIOSurfaceBytesPerRow;
+extern const CFStringRef kIOSurfaceColorSpace;
+extern const CFStringRef kIOSurfaceHeight;
+extern const CFStringRef kIOSurfacePixelFormat;
+extern const CFStringRef kIOSurfaceWidth;
+size_t IOSurfaceAlignProperty(CFStringRef property, size_t value);
+IOSurfaceRef IOSurfaceCreate(CFDictionaryRef properties);
+size_t IOSurfaceGetAllocSize(IOSurfaceRef buffer);
+void *IOSurfaceGetBaseAddress(IOSurfaceRef buffer);
+size_t IOSurfaceGetBytesPerRow(IOSurfaceRef buffer);
+size_t IOSurfaceGetHeight(IOSurfaceRef buffer);
+uint32_t IOSurfaceGetPixelFormat(IOSurfaceRef buffer);
+size_t IOSurfaceGetWidth(IOSurfaceRef buffer);
+kern_return_t IOSurfaceLock(IOSurfaceRef buffer,
+                            uint32_t options,
+                            uint32_t *seed);
+kern_return_t IOSurfaceUnlock(IOSurfaceRef buffer,
+                              uint32_t options,
+                              uint32_t *seed);
+#ifdef __cplusplus
+}
+#endif
 
 // This target is deliberately a DEBUG POC. The file is overwritten on every
 // successful capture so it never becomes a screenshot archive. Remove or set
