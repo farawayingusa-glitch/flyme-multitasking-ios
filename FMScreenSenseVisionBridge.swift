@@ -220,11 +220,11 @@ public final class FMScreenSenseVisionBridge: NSObject {
         guard let liveTextInteraction = interaction else {
             return ""
         }
-        // ImageAnalysisInteraction exposes selectedText on the iOS 16
-        // VisionKit surface used by this project. Keep the availability check
-        // explicit so older deployment targets remain safe if this bridge is
-        // ever reused elsewhere.
-        if #available(iOS 16.0, *) {
+        // ImageAnalysisInteraction.selectedText is an iOS 17 API. On the
+        // iOS 16.6.1 target, VisionKit still reports selection state through
+        // hasActiveTextSelection and textSelectionDidChange, but does not
+        // expose the selected string through a public API.
+        if #available(iOS 17.0, *) {
             return liveTextInteraction.selectedText
         }
         return ""
@@ -249,10 +249,12 @@ extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
         return preferredPresentingViewController
     }
 
+    @MainActor
     public func textSelectionDidChange(_ interaction: ImageAnalysisInteraction) {
         notifySelectionState(for: interaction)
     }
 
+    @MainActor
     public func interaction(
         _ interaction: ImageAnalysisInteraction,
         highlightSelectedItemsDidChange highlighted: Bool
