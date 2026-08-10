@@ -26,8 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Presents the captured frame immediately and then starts VisionKit.
 - (void)presentCapturedImage:(UIImage *)image;
 
-/// Explicitly closes the frozen ScreenSense overlay and restores the previous
-/// window state.
+/// Closes the frozen ScreenSense overlay. A tap in a blank, non-Live-Text
+/// region is the normal user-facing exit path.
 - (void)dismiss;
 
 @end

@@ -86,16 +86,19 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
-@interface FMScreenSenseSession ()
+@interface FMScreenSenseSession () <UIGestureRecognizerDelegate>
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) CFTimeInterval analysisStartedAt;
 @property(nonatomic, strong) FMScreenSenseWindow *window;
 @property(nonatomic, strong) FMScreenSenseViewController *viewController;
 @property(nonatomic, strong) UIImageView *imageView;
-@property(nonatomic, strong) UIButton *closeButton;
+@property(nonatomic, strong) UITapGestureRecognizer *emptyTapGesture;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
+- (void)handleEmptyTap:(UITapGestureRecognizer *)gesture;
+- (void)dismissOnMainThread;
+- (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
 @end
 
 @implementation FMScreenSenseSession
@@ -224,34 +227,19 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     imageView.accessibilityIdentifier = @"com.codex.flymemultitasking.screensense.frozen-image";
     [viewController.view addSubview:imageView];
 
-    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeButton.frame = CGRectMake(CGRectGetWidth(window.bounds) - 58.0,
-                                   14.0,
-                                   44.0,
-                                   44.0);
-    closeButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin |
-                                   UIViewAutoresizingFlexibleBottomMargin;
-    closeButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.34];
-    closeButton.layer.cornerRadius = 22.0;
-    closeButton.layer.masksToBounds = YES;
-    closeButton.tintColor = [UIColor whiteColor];
-    closeButton.accessibilityLabel = @"退出识屏";
-    UIImage *closeImage = [UIImage systemImageNamed:@"xmark"];
-    if (closeImage) {
-        [closeButton setImage:closeImage forState:UIControlStateNormal];
-    } else {
-        [closeButton setTitle:@"×" forState:UIControlStateNormal];
-        closeButton.titleLabel.font = [UIFont systemFontOfSize:24.0 weight:UIFontWeightRegular];
-    }
-    [closeButton addTarget:self
-                    action:@selector(handleCloseButton:)
-          forControlEvents:UIControlEventTouchUpInside];
-    [viewController.view addSubview:closeButton];
+    UITapGestureRecognizer *emptyTapGesture =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleEmptyTap:)];
+    emptyTapGesture.delegate = self;
+    emptyTapGesture.cancelsTouchesInView = NO;
+    emptyTapGesture.delaysTouchesBegan = NO;
+    emptyTapGesture.delaysTouchesEnded = NO;
+    [viewController.view addGestureRecognizer:emptyTapGesture];
 
     self.window = window;
     self.viewController = viewController;
     self.imageView = imageView;
-    self.closeButton = closeButton;
+    self.emptyTapGesture = emptyTapGesture;
 
     window.hidden = NO;
     [window makeKeyAndVisible];
@@ -273,6 +261,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] analysis begin");
+    [self.visionBridge setSelectionHandler:^(BOOL active, NSInteger length) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld",
+            active ? 1 : 0, (long)length);
+    }];
     __weak FMScreenSenseSession *weakSelf = self;
     [self.visionBridge attachLiveTextTo:imageView
                                   image:image
@@ -300,6 +293,22 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             @"[ScreenSense][Vision] analysis success elapsed=%.2f", elapsed);
         FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] interaction created");
         FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] interaction attached");
+        FMScreenSenseVisionBridge *bridge = strongSelf.visionBridge;
+        FMScreenSenseWindow *overlayWindow = strongSelf.window;
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Vision] preferredInteractionTypes=%lu supplementaryHidden=%d selectableItemsHighlighted=%d",
+            (unsigned long)bridge.preferredInteractionTypesRawValue,
+            bridge.supplementaryInterfaceHidden ? 1 : 0,
+            bridge.selectableItemsHighlighted ? 1 : 0);
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Overlay] windowClass=%@ isHidden=%d isKeyWindow=%d windowLevel=%.1f windowScene=%@ rootViewController=%@ imageView.window=%@",
+            NSStringFromClass([overlayWindow class]), overlayWindow.isHidden ? 1 : 0,
+            overlayWindow.isKeyWindow ? 1 : 0, overlayWindow.windowLevel,
+            overlayWindow.windowScene ? @"yes" : @"no",
+            NSStringFromClass([overlayWindow.rootViewController class]),
+            strongSelf.imageView.window
+                ? NSStringFromClass([strongSelf.imageView.window class])
+                : @"<nil>");
         strongSelf.state = FMScreenSenseStateActive;
         FLMEnqueueDiagnosticLine(@"[ScreenSense] state=active");
     }];
@@ -317,9 +326,47 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     [self dismissOnMainThread];
 }
 
-- (void)handleCloseButton:(UIButton *)button {
-    (void)button;
+- (void)handleEmptyTap:(UITapGestureRecognizer *)gesture {
+    (void)gesture;
     [self dismiss];
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer != self.emptyTapGesture) {
+        return YES;
+    }
+    if (self.state == FMScreenSenseStateInactive ||
+        self.state == FMScreenSenseStateDismissing) {
+        return NO;
+    }
+
+    CGPoint point = [gestureRecognizer locationInView:self.imageView];
+    BOOL interactive = self.visionBridge &&
+                       [self.visionBridge isInteractivePointAt:point];
+    BOOL activeSelection = self.visionBridge.hasActiveTextSelection;
+    NSInteger selectedTextLength = self.visionBridge.selectedTextLength;
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Selection] tap interactive=%d active=%d selectedTextLength=%ld point={%.1f,%.1f}",
+        interactive ? 1 : 0, activeSelection ? 1 : 0,
+        (long)selectedTextLength, point.x, point.y);
+
+    if (interactive) {
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    if (gestureRecognizer == self.emptyTapGesture ||
+        otherGestureRecognizer == self.emptyTapGesture) {
+        // The empty-area recognizer only begins after VisionKit's point hit
+        // test says there is no interactive item or text at the tap point.
+        // Keeping it non-simultaneous prevents it from cancelling or joining
+        // VisionKit's text-selection recognizers during edge cases.
+        return NO;
+    }
+    return NO;
 }
 
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message {
@@ -345,12 +392,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
     self.visionBridge = nil;
 
-    [self.closeButton removeTarget:self
-                            action:@selector(handleCloseButton:)
-                  forControlEvents:UIControlEventTouchUpInside];
+    [self.emptyTapGesture.view removeGestureRecognizer:self.emptyTapGesture];
     self.imageView.userInteractionEnabled = NO;
     self.imageView.image = nil;
-    self.closeButton.hidden = YES;
     self.window.userInteractionEnabled = NO;
     self.window.hidden = YES;
 
@@ -361,7 +405,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         [previousKeyWindow makeKeyAndVisible];
     }
 
-    self.closeButton = nil;
+    self.emptyTapGesture = nil;
     self.imageView = nil;
     self.viewController = nil;
     self.window = nil;

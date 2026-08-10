@@ -17,6 +17,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
     private var analysisTask: Task<Void, Never>?
     private weak var attachedImageView: UIImageView?
     private var completion: ((Bool, NSError?) -> Void)?
+    private var selectionHandler: ((Bool, Int) -> Void)?
     private var generation: UInt64 = 0
 
     @objc public class var isSupported: Bool {
@@ -25,6 +26,49 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
     @objc public override init() {
         super.init()
+    }
+
+    @MainActor
+    @objc public var preferredInteractionTypesRawValue: UInt {
+        return interaction?.preferredInteractionTypes.rawValue ?? 0
+    }
+
+    @MainActor
+    @objc public var supplementaryInterfaceHidden: Bool {
+        return interaction?.isSupplementaryInterfaceHidden ?? false
+    }
+
+    @MainActor
+    @objc public var selectableItemsHighlighted: Bool {
+        return interaction?.selectableItemsHighlighted ?? false
+    }
+
+    @MainActor
+    @objc public var hasActiveTextSelection: Bool {
+        return interaction?.hasActiveTextSelection ?? false
+    }
+
+    @MainActor
+    @objc public var selectedTextLength: Int {
+        return interaction?.selectedText.count ?? 0
+    }
+
+    /// Returns whether VisionKit owns the point. The point must be in the
+    /// attached UIImageView's coordinate space.
+    @MainActor
+    @objc public func isInteractivePoint(at point: CGPoint) -> Bool {
+        guard let liveTextInteraction = interaction else {
+            return false
+        }
+        return liveTextInteraction.hasInteractiveItem(at: point) ||
+               liveTextInteraction.analysisHasText(at: point)
+    }
+
+    @MainActor
+    @objc public func setSelectionHandler(
+        _ handler: @escaping (Bool, Int) -> Void
+    ) {
+        selectionHandler = handler
     }
 
     /// Starts one text-only Live Text analysis for the supplied frozen image.
@@ -85,6 +129,9 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
                 let liveTextInteraction = ImageAnalysisInteraction()
                 liveTextInteraction.preferredInteractionTypes = .textSelection
+                liveTextInteraction.isSupplementaryInterfaceHidden = true
+                liveTextInteraction.selectableItemsHighlighted = true
+                liveTextInteraction.delegate = self
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
                 liveTextInteraction.analysis = result
@@ -124,6 +171,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
         analyzer = nil
         attachedImageView = nil
         completion = nil
+        selectionHandler = nil
     }
 
     @MainActor
@@ -133,5 +181,37 @@ public final class FMScreenSenseVisionBridge: NSObject {
             imageView.removeInteraction(liveTextInteraction)
         }
         interaction = nil
+    }
+}
+
+@MainActor
+extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
+    public func contentView(for interaction: ImageAnalysisInteraction) -> UIView? {
+        return interaction.view
+    }
+
+    public func contentsRect(for interaction: ImageAnalysisInteraction) -> CGRect {
+        return CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+    }
+
+    public func presentingViewController(
+        for interaction: ImageAnalysisInteraction
+    ) -> UIViewController? {
+        return interaction.view?.window?.rootViewController
+    }
+
+    public func interaction(
+        _ interaction: ImageAnalysisInteraction,
+        shouldBeginAt point: CGPoint,
+        for interactionType: ImageAnalysisInteraction.InteractionTypes
+    ) -> Bool {
+        return true
+    }
+
+    public func textSelectionDidChange(_ interaction: ImageAnalysisInteraction) {
+        selectionHandler?(
+            interaction.hasActiveTextSelection,
+            interaction.selectedText.count
+        )
     }
 }
