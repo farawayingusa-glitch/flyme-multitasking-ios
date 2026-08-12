@@ -271,10 +271,37 @@ public final class FMScreenSenseVisionBridge: NSObject {
         guard let liveTextInteraction = interaction else {
             return ""
         }
-        // ImageAnalysisInteraction.selectedText is an iOS 17 API. On the
-        // iOS 16.6.1 target, VisionKit still reports selection state through
-        // hasActiveTextSelection and textSelectionDidChange, but does not
-        // expose the selected string through a public API.
+
+        // The public selectedText property is iOS 17+. Some iOS 16 VisionKit
+        // builds still expose the same getter at runtime, however, and that
+        // is the only way to preserve the user's Live Text selection for the
+        // explicit Copy/Translate buttons below. Probe it dynamically first
+        // so the tweak remains deployable to iOS 16 without linking against a
+        // newer-only symbol. The attributed form is used by a few early
+        // VisionKit revisions.
+        for key in ["selectedText", "selectedAttributedText"] {
+            let selector = NSSelectorFromString(key)
+            guard liveTextInteraction.responds(to: selector) else {
+                continue
+            }
+
+            if let value = liveTextInteraction.value(forKey: key) as? String,
+               !value.isEmpty {
+                return value
+            }
+
+            if let value = liveTextInteraction.value(forKey: key) as? NSString,
+               value.length > 0 {
+                return value as String
+            }
+
+            if let value = liveTextInteraction.value(forKey: key)
+                as? NSAttributedString,
+               value.length > 0 {
+                return value.string
+            }
+        }
+
         if #available(iOS 17.0, *) {
             return liveTextInteraction.selectedText
         }

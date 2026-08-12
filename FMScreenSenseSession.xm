@@ -94,10 +94,27 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) FMScreenSenseViewController *viewController;
 @property(nonatomic, strong) UIImageView *imageView;
 @property(nonatomic, strong) UIButton *closeButton;
+@property(nonatomic, strong) UIView *actionBar;
+@property(nonatomic, strong) UIButton *copyButton;
+@property(nonatomic, strong) UIButton *translateButton;
+@property(nonatomic, strong) UIView *textActionPanel;
+@property(nonatomic, strong) UITextView *textActionView;
+@property(nonatomic, strong) UIButton *textActionCloseButton;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
 - (void)dismissOnMainThread;
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
+- (void)installActionBarInViewController:(UIViewController *)viewController;
+- (void)refreshActionButtonTitles;
+- (BOOL)hasReadableTextSelection;
+- (NSString *)currentActionText;
+- (void)handleCopyButton:(UIButton *)sender;
+- (void)handleTranslateButton:(UIButton *)sender;
+- (void)presentTranslatePanelForText:(NSString *)text;
+- (void)dismissTextActionPanel;
+- (void)textActionViewSelectionDidChange:(NSNotification *)notification;
+- (BOOL)performDirectTranslateOnTextView:(UITextView *)textView;
+- (void)showEditMenuForTextView:(UITextView *)textView;
 @end
 
 @implementation FMScreenSenseSession
@@ -255,6 +272,8 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         [closeButton.heightAnchor constraintEqualToConstant:36.0],
     ]];
 
+    [self installActionBarInViewController:viewController];
+
     self.window = window;
     self.viewController = viewController;
     self.imageView = imageView;
@@ -281,9 +300,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] analysis begin");
+    __weak FMScreenSenseSession *weakSelf = self;
     [self.visionBridge setSelectionHandler:^(BOOL active,
                                              NSInteger selectedLength,
                                              NSInteger fullLength) {
+        [weakSelf refreshActionButtonTitles];
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Selection] source=delegate active=%d selectedTextLength=%ld fullTextLength=%ld",
             active ? 1 : 0, (long)selectedLength, (long)fullLength);
@@ -303,7 +324,6 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             point.x, point.y, (unsigned long)interactionTypes,
             hasText ? 1 : 0, analysisHasText ? 1 : 0);
     }];
-    __weak FMScreenSenseSession *weakSelf = self;
     [self.visionBridge attachLiveTextTo:imageView
                                   image:image
                              completion:^(BOOL success, NSError *error) {
@@ -368,6 +388,314 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }];
 }
 
+- (void)installActionBarInViewController:(UIViewController *)viewController {
+    UIView *actionBar = [[UIView alloc] initWithFrame:CGRectZero];
+    actionBar.translatesAutoresizingMaskIntoConstraints = NO;
+    actionBar.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.78];
+    actionBar.layer.cornerRadius = 14.0;
+    actionBar.layer.masksToBounds = YES;
+    actionBar.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.actions";
+
+    UIButton *copyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButton *translateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    NSArray<UIButton *> *buttons = @[copyButton, translateButton];
+    for (UIButton *button in buttons) {
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        button.titleLabel.font =
+            [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+        [button setTitleColor:[UIColor whiteColor]
+                      forState:UIControlStateNormal];
+        [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.55]
+                      forState:UIControlStateHighlighted];
+        button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+        button.layer.cornerRadius = 10.0;
+        button.layer.masksToBounds = YES;
+    }
+    copyButton.accessibilityLabel = @"复制识屏文字";
+    copyButton.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.copy";
+    translateButton.accessibilityLabel = @"翻译识屏文字";
+    translateButton.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.translate";
+    [copyButton addTarget:self
+                   action:@selector(handleCopyButton:)
+         forControlEvents:UIControlEventTouchUpInside];
+    [translateButton addTarget:self
+                        action:@selector(handleTranslateButton:)
+              forControlEvents:UIControlEventTouchUpInside];
+
+    [actionBar addSubview:copyButton];
+    [actionBar addSubview:translateButton];
+    [viewController.view addSubview:actionBar];
+    [NSLayoutConstraint activateConstraints:@[
+        [actionBar.leadingAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.leadingAnchor
+                           constant:12.0],
+        [actionBar.trailingAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.trailingAnchor
+                           constant:-12.0],
+        [actionBar.bottomAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.bottomAnchor
+                           constant:-8.0],
+        [actionBar.heightAnchor constraintEqualToConstant:48.0],
+        [copyButton.leadingAnchor constraintEqualToAnchor:actionBar.leadingAnchor
+                                                  constant:6.0],
+        [copyButton.topAnchor constraintEqualToAnchor:actionBar.topAnchor
+                                              constant:6.0],
+        [copyButton.bottomAnchor constraintEqualToAnchor:actionBar.bottomAnchor
+                                                 constant:-6.0],
+        [translateButton.leadingAnchor constraintEqualToAnchor:copyButton.trailingAnchor
+                                                       constant:6.0],
+        [translateButton.trailingAnchor constraintEqualToAnchor:actionBar.trailingAnchor
+                                                        constant:-6.0],
+        [translateButton.topAnchor constraintEqualToAnchor:actionBar.topAnchor
+                                                   constant:6.0],
+        [translateButton.bottomAnchor constraintEqualToAnchor:actionBar.bottomAnchor
+                                                      constant:-6.0],
+        [translateButton.widthAnchor constraintEqualToAnchor:copyButton.widthAnchor],
+    ]];
+
+    self.actionBar = actionBar;
+    self.copyButton = copyButton;
+    self.translateButton = translateButton;
+    [self refreshActionButtonTitles];
+}
+
+- (BOOL)hasReadableTextSelection {
+    UITextView *textActionView = self.textActionView;
+    if (textActionView.superview && textActionView.selectedRange.length > 0 &&
+        NSMaxRange(textActionView.selectedRange) <= textActionView.text.length) {
+        return YES;
+    }
+
+    return self.visionBridge.currentSelectedText.length > 0;
+}
+
+- (NSString *)currentActionText {
+    UITextView *textActionView = self.textActionView;
+    if (textActionView.superview && textActionView.selectedRange.length > 0 &&
+        NSMaxRange(textActionView.selectedRange) <= textActionView.text.length) {
+        return [textActionView.text substringWithRange:textActionView.selectedRange];
+    }
+
+    NSString *selectedText = self.visionBridge.currentSelectedText;
+    if (selectedText.length > 0) {
+        return selectedText;
+    }
+
+    return self.visionBridge.currentFullText ?: @"";
+}
+
+- (void)refreshActionButtonTitles {
+    if (!self.copyButton || !self.translateButton) {
+        return;
+    }
+
+    BOOL hasSelection = [self hasReadableTextSelection];
+    [self.copyButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
+                     forState:UIControlStateNormal];
+    [self.translateButton setTitle:hasSelection ? @"翻译所选" : @"翻译全部"
+                          forState:UIControlStateNormal];
+}
+
+- (void)handleCopyButton:(UIButton *)sender {
+    NSString *text = [self currentActionText];
+    if (text.length == 0) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action][ERROR] copy ignored reason=empty-text");
+        return;
+    }
+
+    BOOL hasSelection = [self hasReadableTextSelection];
+    [UIPasteboard generalPasteboard].string = text;
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] copy mode=%@ textLength=%ld",
+        hasSelection ? @"selection" : @"full", (long)text.length);
+
+    [sender setTitle:@"已复制" forState:UIControlStateNormal];
+    NSUInteger sessionGeneration = self.generation;
+    __weak FMScreenSenseSession *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        FMScreenSenseSession *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.generation != sessionGeneration ||
+            strongSelf.state == FMScreenSenseStateInactive) {
+            return;
+        }
+        [strongSelf refreshActionButtonTitles];
+    });
+}
+
+- (void)handleTranslateButton:(UIButton *)sender {
+    NSString *text = [self currentActionText];
+    if (text.length == 0) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action][ERROR] translate ignored reason=empty-text");
+        return;
+    }
+
+    BOOL hasSelection = [self hasReadableTextSelection];
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate requested mode=%@ textLength=%ld",
+        hasSelection ? @"selection" : @"full", (long)text.length);
+    [self presentTranslatePanelForText:text];
+}
+
+- (void)presentTranslatePanelForText:(NSString *)text {
+    [self dismissTextActionPanel];
+
+    if (!self.viewController || text.length == 0) {
+        return;
+    }
+
+    UIView *panel = [[UIView alloc] initWithFrame:CGRectZero];
+    panel.translatesAutoresizingMaskIntoConstraints = NO;
+    panel.backgroundColor = [UIColor colorWithWhite:0.04 alpha:0.96];
+    panel.layer.cornerRadius = 14.0;
+    panel.layer.masksToBounds = YES;
+    panel.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.translate-panel";
+
+    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeButton setTitle:@"返回识屏" forState:UIControlStateNormal];
+    [closeButton setTitleColor:[UIColor whiteColor]
+                       forState:UIControlStateNormal];
+    closeButton.titleLabel.font =
+        [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    [closeButton addTarget:self
+                    action:@selector(dismissTextActionPanel)
+          forControlEvents:UIControlEventTouchUpInside];
+    closeButton.accessibilityLabel = @"返回识屏画面";
+
+    UITextView *textView = [[UITextView alloc] initWithFrame:CGRectZero];
+    textView.translatesAutoresizingMaskIntoConstraints = NO;
+    textView.backgroundColor = [UIColor clearColor];
+    textView.textColor = [UIColor whiteColor];
+    textView.tintColor = [UIColor systemBlueColor];
+    textView.font = [UIFont systemFontOfSize:17.0];
+    textView.editable = NO;
+    textView.selectable = YES;
+    textView.scrollEnabled = YES;
+    textView.text = text;
+    textView.accessibilityLabel = @"识别出的文字，可选择后翻译或复制";
+    textView.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.recognized-text";
+
+    [panel addSubview:closeButton];
+    [panel addSubview:textView];
+    [self.viewController.view addSubview:panel];
+
+    NSLayoutConstraint *bottomConstraint =
+        [panel.bottomAnchor constraintEqualToAnchor:self.actionBar.topAnchor
+                                           constant:-8.0];
+    [NSLayoutConstraint activateConstraints:@[
+        [panel.leadingAnchor
+            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.leadingAnchor
+                           constant:12.0],
+        [panel.trailingAnchor
+            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.trailingAnchor
+                           constant:-12.0],
+        [panel.topAnchor
+            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.topAnchor
+                           constant:52.0],
+        bottomConstraint,
+        [closeButton.topAnchor constraintEqualToAnchor:panel.topAnchor constant:6.0],
+        [closeButton.trailingAnchor
+            constraintEqualToAnchor:panel.trailingAnchor
+                           constant:-8.0],
+        [closeButton.heightAnchor constraintEqualToConstant:32.0],
+        [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:76.0],
+        [textView.topAnchor constraintEqualToAnchor:closeButton.bottomAnchor
+                                            constant:2.0],
+        [textView.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor
+                                               constant:8.0],
+        [textView.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor
+                                                constant:-8.0],
+        [textView.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor
+                                               constant:-8.0],
+    ]];
+
+    self.textActionPanel = panel;
+    self.textActionView = textView;
+    self.textActionCloseButton = closeButton;
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(textActionViewSelectionDidChange:)
+               name:UITextViewTextDidChangeSelectionNotification
+             object:textView];
+
+    [self.viewController.view layoutIfNeeded];
+    [textView becomeFirstResponder];
+    textView.selectedRange = NSMakeRange(0, textView.text.length);
+    [self refreshActionButtonTitles];
+
+    if (![self performDirectTranslateOnTextView:textView]) {
+        [self showEditMenuForTextView:textView];
+    }
+}
+
+- (void)dismissTextActionPanel {
+    UITextView *textView = self.textActionView;
+    if (textView) {
+        [[NSNotificationCenter defaultCenter]
+            removeObserver:self
+                      name:UITextViewTextDidChangeSelectionNotification
+                    object:textView];
+        [textView resignFirstResponder];
+    }
+    [[UIMenuController sharedMenuController] hideMenu];
+    [self.textActionPanel removeFromSuperview];
+    self.textActionCloseButton = nil;
+    self.textActionView = nil;
+    self.textActionPanel = nil;
+    [self refreshActionButtonTitles];
+}
+
+- (void)textActionViewSelectionDidChange:(NSNotification *)notification {
+    if (notification.object == self.textActionView) {
+        [self refreshActionButtonTitles];
+    }
+}
+
+- (BOOL)performDirectTranslateOnTextView:(UITextView *)textView {
+    SEL translateSelector = NSSelectorFromString(@"translate:");
+    if (![textView canPerformAction:translateSelector withSender:nil]) {
+        return NO;
+    }
+
+    IMP implementation = [textView methodForSelector:translateSelector];
+    if (!implementation) {
+        return NO;
+    }
+
+    typedef void (*FMScreenSenseTextAction)(id, SEL, id);
+    FMScreenSenseTextAction invoke =
+        (FMScreenSenseTextAction)implementation;
+    invoke(textView, translateSelector, nil);
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate dispatched system-action=1");
+    return YES;
+}
+
+- (void)showEditMenuForTextView:(UITextView *)textView {
+    if (!textView.window) {
+        return;
+    }
+
+    UIMenuController *menu = [UIMenuController sharedMenuController];
+    CGRect targetRect = CGRectInset(textView.bounds, 12.0, 12.0);
+    if (@available(iOS 13.0, *)) {
+        [menu showMenuFromView:textView rect:targetRect];
+    } else {
+        [menu setTargetRect:targetRect inView:textView];
+        [menu setMenuVisible:YES animated:YES];
+    }
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate presented native-edit-menu=1");
+}
+
 - (void)dismiss {
     if (![NSThread isMainThread]) {
         __weak FMScreenSenseSession *weakSelf = self;
@@ -396,6 +724,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.state = FMScreenSenseStateDismissing;
     FLMEnqueueDiagnosticLine(@"[ScreenSense] dismiss begin");
     self.generation += 1;
+    [self dismissTextActionPanel];
 
     FMScreenSenseVisionBridge *bridge = self.visionBridge;
     if (bridge) {
@@ -413,6 +742,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.window.userInteractionEnabled = NO;
     self.window.hidden = YES;
     self.closeButton.userInteractionEnabled = NO;
+    self.actionBar.userInteractionEnabled = NO;
+    self.copyButton.userInteractionEnabled = NO;
+    self.translateButton.userInteractionEnabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
     self.previousKeyWindow = nil;
@@ -422,6 +754,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     self.closeButton = nil;
+    self.actionBar = nil;
+    self.copyButton = nil;
+    self.translateButton = nil;
     self.imageView = nil;
     self.viewController = nil;
     self.window = nil;
