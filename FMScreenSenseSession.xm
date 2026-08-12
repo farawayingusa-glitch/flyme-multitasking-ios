@@ -86,7 +86,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
-@interface FMScreenSenseSession ()
+@interface FMScreenSenseSession () <UITextViewDelegate, UIEditMenuInteractionDelegate>
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) CFTimeInterval analysisStartedAt;
@@ -95,11 +95,12 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) UIImageView *imageView;
 @property(nonatomic, strong) UIButton *closeButton;
 @property(nonatomic, strong) UIView *actionBar;
-@property(nonatomic, strong) UIButton *copyButton;
+@property(nonatomic, strong) UIButton *copyActionButton;
 @property(nonatomic, strong) UIButton *translateButton;
 @property(nonatomic, strong) UIView *textActionPanel;
 @property(nonatomic, strong) UITextView *textActionView;
 @property(nonatomic, strong) UIButton *textActionCloseButton;
+@property(nonatomic, strong) UIEditMenuInteraction *editMenuInteraction;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
 - (void)dismissOnMainThread;
@@ -112,7 +113,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 - (void)handleTranslateButton:(UIButton *)sender;
 - (void)presentTranslatePanelForText:(NSString *)text;
 - (void)dismissTextActionPanel;
-- (void)textActionViewSelectionDidChange:(NSNotification *)notification;
+- (void)textViewDidChangeSelection:(UITextView *)textView;
 - (BOOL)performDirectTranslateOnTextView:(UITextView *)textView;
 - (void)showEditMenuForTextView:(UITextView *)textView;
 @end
@@ -457,7 +458,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     ]];
 
     self.actionBar = actionBar;
-    self.copyButton = copyButton;
+    self.copyActionButton = copyButton;
     self.translateButton = translateButton;
     [self refreshActionButtonTitles];
 }
@@ -488,13 +489,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (void)refreshActionButtonTitles {
-    if (!self.copyButton || !self.translateButton) {
+    if (!self.copyActionButton || !self.translateButton) {
         return;
     }
 
     BOOL hasSelection = [self hasReadableTextSelection];
-    [self.copyButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
-                     forState:UIControlStateNormal];
+    [self.copyActionButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
+                           forState:UIControlStateNormal];
     [self.translateButton setTitle:hasSelection ? @"翻译所选" : @"翻译全部"
                           forState:UIControlStateNormal];
 }
@@ -528,6 +529,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (void)handleTranslateButton:(UIButton *)sender {
+    (void)sender;
     NSString *text = [self currentActionText];
     if (text.length == 0) {
         FLMEnqueueDiagnosticLine(
@@ -578,6 +580,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     textView.editable = NO;
     textView.selectable = YES;
     textView.scrollEnabled = YES;
+    textView.delegate = self;
     textView.text = text;
     textView.accessibilityLabel = @"识别出的文字，可选择后翻译或复制";
     textView.accessibilityIdentifier =
@@ -620,11 +623,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.textActionPanel = panel;
     self.textActionView = textView;
     self.textActionCloseButton = closeButton;
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(textActionViewSelectionDidChange:)
-               name:UITextViewTextDidChangeSelectionNotification
-             object:textView];
+    UIEditMenuInteraction *editMenuInteraction =
+        [[UIEditMenuInteraction alloc] initWithDelegate:self];
+    [textView addInteraction:editMenuInteraction];
+    self.editMenuInteraction = editMenuInteraction;
 
     [self.viewController.view layoutIfNeeded];
     [textView becomeFirstResponder];
@@ -639,22 +641,18 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 - (void)dismissTextActionPanel {
     UITextView *textView = self.textActionView;
     if (textView) {
-        [[NSNotificationCenter defaultCenter]
-            removeObserver:self
-                      name:UITextViewTextDidChangeSelectionNotification
-                    object:textView];
         [textView resignFirstResponder];
     }
-    [[UIMenuController sharedMenuController] hideMenu];
     [self.textActionPanel removeFromSuperview];
+    self.editMenuInteraction = nil;
     self.textActionCloseButton = nil;
     self.textActionView = nil;
     self.textActionPanel = nil;
     [self refreshActionButtonTitles];
 }
 
-- (void)textActionViewSelectionDidChange:(NSNotification *)notification {
-    if (notification.object == self.textActionView) {
+- (void)textViewDidChangeSelection:(UITextView *)textView {
+    if (textView == self.textActionView) {
         [self refreshActionButtonTitles];
     }
 }
@@ -680,20 +678,26 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (void)showEditMenuForTextView:(UITextView *)textView {
-    if (!textView.window) {
+    if (!textView.window || !self.editMenuInteraction) {
         return;
     }
 
-    UIMenuController *menu = [UIMenuController sharedMenuController];
-    CGRect targetRect = CGRectInset(textView.bounds, 12.0, 12.0);
-    if (@available(iOS 13.0, *)) {
-        [menu showMenuFromView:textView rect:targetRect];
-    } else {
-        [menu setTargetRect:targetRect inView:textView];
-        [menu setMenuVisible:YES animated:YES];
-    }
+    CGPoint sourcePoint = CGPointMake(CGRectGetMidX(textView.bounds),
+                                      CGRectGetMidY(textView.bounds));
+    UIEditMenuConfiguration *configuration =
+        [UIEditMenuConfiguration configurationWithIdentifier:nil
+                                                 sourcePoint:sourcePoint];
+    [self.editMenuInteraction presentEditMenuWithConfiguration:configuration];
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Action] translate presented native-edit-menu=1");
+}
+
+- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction
+          menuForConfiguration:(UIEditMenuConfiguration *)configuration
+              suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions {
+    (void)interaction;
+    (void)configuration;
+    return [UIMenu menuWithChildren:suggestedActions];
 }
 
 - (void)dismiss {
@@ -743,7 +747,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.window.hidden = YES;
     self.closeButton.userInteractionEnabled = NO;
     self.actionBar.userInteractionEnabled = NO;
-    self.copyButton.userInteractionEnabled = NO;
+    self.copyActionButton.userInteractionEnabled = NO;
     self.translateButton.userInteractionEnabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
@@ -755,7 +759,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     self.closeButton = nil;
     self.actionBar = nil;
-    self.copyButton = nil;
+    self.copyActionButton = nil;
     self.translateButton = nil;
     self.imageView = nil;
     self.viewController = nil;
