@@ -201,18 +201,19 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 self.analysis = result
 
                 let liveTextInteraction = ImageAnalysisInteraction()
-                liveTextInteraction.preferredInteractionTypes = .textSelection
-                // Keep Apple's Live Text button visible. It is the system's
-                // stable entry point into selection and the edit menu.
-                liveTextInteraction.isSupplementaryInterfaceHidden = false
-                liveTextInteraction.selectableItemsHighlighted = false
-                liveTextInteraction.delegate = self
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
                 liveTextInteraction.analysis = result
-                // Setting analysis is the last VisionKit state transition.
-                // Re-assert the delegate after it so the callback owner stays
-                // attached for the entire active session.
+                // Configure the interaction after assigning analysis. VisionKit
+                // resets its Live Text highlight state while analysis and the
+                // preferred interaction types are being installed. Leaving
+                // selectableItemsHighlighted false makes the interaction
+                // report text hits but never enter an active selection on
+                // iOS 16, so copy/translate never get a chance to appear.
+                liveTextInteraction.preferredInteractionTypes = .textSelection
+                liveTextInteraction.isSupplementaryInterfaceHidden = false
+                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = true
+                liveTextInteraction.selectableItemsHighlighted = true
                 liveTextInteraction.delegate = self
                 self.interaction = liveTextInteraction
                 self.analysisTask = nil

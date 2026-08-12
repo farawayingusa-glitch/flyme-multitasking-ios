@@ -35,13 +35,10 @@
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 #define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
-// ScreenSense is intentionally dormant in this build. Keep its source and
-// implementation available for a later release, but do not expose it through
-// the wheel or call its capture/session entry points at runtime.
-#define FLYME_SCREEN_SENSE_ENABLED 0
+#define FLYME_SCREEN_SENSE_ENABLED 1
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.11"
+#define FLMLogBuildString @"0.9.12"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -1104,12 +1101,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
     if (self) {
         _identifier = [identifier copy];
         BOOL isLockItem = [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM];
-#if FLYME_SCREEN_SENSE_ENABLED
         BOOL isScreenSenseItem =
             [identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM];
-#else
-        BOOL isScreenSenseItem = NO;
-#endif
         BOOL isBuiltInAction = isLockItem || isScreenSenseItem;
         self.backgroundColor = isLockItem
                                    ? [UIColor systemBlueColor]
@@ -2427,14 +2420,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [(NSString *)candidate length] == 0) {
             continue;
         }
-#if !FLYME_SCREEN_SENSE_ENABLED
-        if ([(NSString *)candidate isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
-            // Leave the legacy identifier in wheelItems so the Preference
-            // order page can display and remove it, but never render it in
-            // the runtime wheel while ScreenSense is disabled.
-            continue;
-        }
-#endif
         [runtimeItems addObject:(NSString *)candidate];
     }
     self.itemIdentifiers = [runtimeItems copy];
@@ -7683,9 +7668,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)activateIdentifier:(NSString *)identifier {
     if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
         self.prewarmedIdentifier = nil;
-#if FLYME_SCREEN_SENSE_ENABLED
         [self captureScreenSense];
-#endif
         return;
     }
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {

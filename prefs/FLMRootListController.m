@@ -7,7 +7,6 @@
 #import <math.h>
 #import <notify.h>
 #import <signal.h>
-#import <stdarg.h>
 #import <stdint.h>
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
@@ -16,57 +15,12 @@
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 #define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
-#define FLYME_SCREEN_SENSE_ENABLED 0
+#define FLYME_SCREEN_SENSE_ENABLED 1
 
 static NSString *const FLMDiagnosticPrimaryPath =
     @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
 static NSString *const FLMDiagnosticFallbackPath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
-
-static void FLMAppendWheelOrderDiagnosticLine(NSString *line) {
-    NSData *data = [[line stringByAppendingString:@"\n"]
-        dataUsingEncoding:NSUTF8StringEncoding];
-    if (data.length == 0) {
-        return;
-    }
-
-    NSArray<NSString *> *paths =
-        @[FLMDiagnosticPrimaryPath, FLMDiagnosticFallbackPath];
-    NSFileManager *manager = [NSFileManager defaultManager];
-    for (NSString *path in paths) {
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (!handle && [manager createFileAtPath:path contents:nil attributes:nil]) {
-            handle = [NSFileHandle fileHandleForWritingAtPath:path];
-        }
-        if (!handle) {
-            continue;
-        }
-
-        @try {
-            [handle seekToEndOfFile];
-            [handle writeData:data];
-            [handle closeFile];
-        } @catch (__unused NSException *exception) {
-            [handle closeFile];
-            continue;
-        }
-        return;
-    }
-}
-
-static void FLMWheelOrderLog(NSString *format, ...) {
-    va_list arguments;
-    va_start(arguments, format);
-    NSString *message = [[NSString alloc] initWithFormat:format
-                                                arguments:arguments];
-    va_end(arguments);
-    if (message.length == 0) {
-        return;
-    }
-
-    NSLog(@"%@", message);
-    FLMAppendWheelOrderDiagnosticLine(message);
-}
 
 @interface NSObject (FLMPreferencesPrivate)
 + (id)defaultWorkspace;
@@ -551,7 +505,6 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, strong) NSMutableArray<NSString *> *items;
 @property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
 @property(nonatomic, strong) UITableView *tableView;
-- (void)logWheelOrderTableState:(NSString *)source;
 - (BOOL)removeWheelItemAtIndexPath:(NSIndexPath *)indexPath;
 @end
 
@@ -723,12 +676,10 @@ static NSString *FLMNameForIdentifier(
                                                 image:FLMIconForIdentifier(
                                                           FLYME_LOCK_SCREEN_ITEM)]];
 
-#if FLYME_SCREEN_SENSE_ENABLED
     [specifiers addObject:[self itemSpecifierWithName:@"识屏"
                                            identifier:FLYME_SCREEN_SENSE_ITEM
                                                 image:FLMIconForIdentifier(
                                                           FLYME_SCREEN_SENSE_ITEM)]];
-#endif
 
     [specifiers addObject:[PSSpecifier groupSpecifierWithName:@"应用"]];
     for (NSDictionary *application in self.applications) {
@@ -782,26 +733,6 @@ static NSString *FLMNameForIdentifier(
 
 @implementation FLMAppOrderController
 
-- (void)logWheelOrderTableState:(NSString *)source {
-    UITableView *tableView = self.tableView;
-    id delegate = tableView.delegate;
-    id dataSource = tableView.dataSource;
-    NSInteger sections = tableView ? [tableView numberOfSections] : 0;
-    NSInteger rows = (tableView && sections > 0)
-        ? [tableView numberOfRowsInSection:0]
-        : 0;
-    FLMWheelOrderLog(
-        @"[WheelOrder] source=%@ controller=%@ table=%@ delegate=%@ dataSource=%@ editing=%d sections=%ld rows=%ld",
-        source ?: @"unknown",
-        NSStringFromClass([self class]),
-        tableView ? NSStringFromClass([tableView class]) : @"<nil>",
-        delegate ? NSStringFromClass([delegate class]) : @"<nil>",
-        dataSource ? NSStringFromClass([dataSource class]) : @"<nil>",
-        tableView.isEditing ? 1 : 0,
-        (long)sections,
-        (long)rows);
-}
-
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -821,21 +752,21 @@ static NSString *FLMNameForIdentifier(
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     [self.view addSubview:self.tableView];
-    [self logWheelOrderTableState:@"viewDidLoad"];
+    self.navigationItem.rightBarButtonItem = self.editButtonItem;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.items = [FLMWheelItems() mutableCopy];
     self.applications = FLMInstalledApplications();
-    [self.tableView setEditing:YES animated:NO];
+    [self setEditing:NO animated:NO];
     [self.tableView reloadData];
-    [self logWheelOrderTableState:@"viewWillAppear"];
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    [self logWheelOrderTableState:@"viewDidAppear"];
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    [super setEditing:editing animated:animated];
+    [self.tableView setEditing:editing animated:animated];
+    self.navigationItem.rightBarButtonItem = self.editButtonItem;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -855,7 +786,7 @@ static NSString *FLMNameForIdentifier(
     (void)tableView;
     (void)section;
     return self.items.count == 0 ? @"请先在应用管理中加入项目。"
-                                 : @"按住右侧拖动图标即可调整轮盘顺序。";
+                                 : @"左滑项目可删除；点击右上角“排序”后可拖动调整轮盘顺序。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -870,15 +801,14 @@ static NSString *FLMNameForIdentifier(
     NSString *identifier = self.items[(NSUInteger)indexPath.row];
     cell.textLabel.text = FLMNameForIdentifier(identifier, self.applications);
     cell.imageView.image = FLMIconForIdentifier(identifier);
-    cell.showsReorderControl = YES;
+    cell.showsReorderControl = tableView.isEditing;
     return cell;
 }
 
 - (BOOL)tableView:(UITableView *)tableView
     canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView;
     (void)indexPath;
-    return YES;
+    return tableView.isEditing;
 }
 
 - (void)tableView:(UITableView *)tableView
@@ -894,81 +824,47 @@ static NSString *FLMNameForIdentifier(
 - (BOOL)removeWheelItemAtIndexPath:(NSIndexPath *)indexPath {
     NSUInteger row = (NSUInteger)indexPath.row;
     if (indexPath.section != 0 || row >= self.items.count) {
-        FLMWheelOrderLog(
-            @"[WheelOrder][Delete] begin invalid section=%ld row=%ld preCount=%lu",
-            (long)indexPath.section, (long)indexPath.row,
-            (unsigned long)self.items.count);
         return NO;
     }
 
     NSString *identifier = self.items[row];
     if (![identifier isKindOfClass:[NSString class]] || identifier.length == 0) {
-        FLMWheelOrderLog(
-            @"[WheelOrder][Delete] begin invalid-identifier section=%ld row=%ld preCount=%lu",
-            (long)indexPath.section, (long)indexPath.row,
-            (unsigned long)self.items.count);
         return NO;
     }
 
-    // Persist the identifier removal before updating the visible row. This
-    // keeps the order screen, tweak runtime, and later resprings on the same
-    // source of truth, including legacy and unknown identifiers.
-    NSUInteger preCount = self.items.count;
-    FLMWheelOrderLog(
-        @"[WheelOrder][Delete] begin identifier=%@ preCount=%lu",
-        identifier, (unsigned long)preCount);
+    // Persist the removal before updating the visible row so the settings
+    // screen, runtime wheel, and later resprings share one source of truth.
     [self.items removeObjectAtIndex:row];
     NSArray<NSString *> *expectedItems = [self.items copy];
     FLMSetPreference(@"wheelItems", expectedItems);
     NSArray<NSString *> *persistedItems = FLMWheelItems();
     BOOL persisted = [persistedItems isEqualToArray:expectedItems];
-    FLMWheelOrderLog(
-        @"[WheelOrder][Delete] postCount=%lu prefsWrite=%@",
-        (unsigned long)self.items.count, persisted ? @"success" : @"fail");
     if (!persisted) {
         [self.items insertObject:identifier atIndex:row];
-        FLMWheelOrderLog(@"[WheelOrder][Delete] completed success=0");
         return NO;
     }
-    FLMWheelOrderLog(@"[WheelOrder][Delete] completed success=1");
     return YES;
 }
 
 - (BOOL)tableView:(UITableView *)tableView
     canEditRowAtIndexPath:(NSIndexPath *)indexPath {
     (void)tableView;
-    NSString *identifier =
-        (indexPath.section == 0 && (NSUInteger)indexPath.row < self.items.count)
-            ? self.items[(NSUInteger)indexPath.row]
-            : @"<invalid>";
-    FLMWheelOrderLog(
-        @"[WheelOrder][Edit] canEdit section=%ld row=%ld identifier=%@ result=1",
-        (long)indexPath.section, (long)indexPath.row, identifier);
-    return YES;
+    return indexPath.section == 0 &&
+           (NSUInteger)indexPath.row < self.items.count;
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView
            editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
-    FLMWheelOrderLog(
-        @"[WheelOrder][EditStyle] section=%ld row=%ld editing=%d style=none",
-        (long)indexPath.section, (long)indexPath.row,
-        tableView.isEditing ? 1 : 0);
-    return UITableViewCellEditingStyleNone;
+    (void)tableView;
+    return [self tableView:tableView canEditRowAtIndexPath:indexPath]
+               ? UITableViewCellEditingStyleDelete
+               : UITableViewCellEditingStyleNone;
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *identifier =
-        (indexPath.section == 0 && (NSUInteger)indexPath.row < self.items.count)
-            ? self.items[(NSUInteger)indexPath.row]
-            : @"<invalid>";
-    FLMWheelOrderLog(
-        @"[WheelOrder][Swipe] request section=%ld row=%ld identifier=%@ editing=%d",
-        (long)indexPath.section, (long)indexPath.row, identifier,
-        tableView.isEditing ? 1 : 0);
     if (indexPath.section != 0 ||
         (NSUInteger)indexPath.row >= self.items.count) {
-        FLMWheelOrderLog(@"[WheelOrder][Swipe] response=nil reason=invalid-index");
         return nil;
     }
 
@@ -989,25 +885,17 @@ static NSString *FLMNameForIdentifier(
             [strongTableView deleteRowsAtIndexPaths:@[indexPath]
                                    withRowAnimation:UITableViewRowAnimationAutomatic];
         }
-        FLMWheelOrderLog(
-            @"[WheelOrder][Swipe] completion success=%d",
-            removed ? 1 : 0);
         completionHandler(removed);
     }];
     UISwipeActionsConfiguration *configuration =
         [UISwipeActionsConfiguration configurationWithActions:@[deleteAction]];
-    configuration.performsFirstActionWithFullSwipe = NO;
-    FLMWheelOrderLog(@"[WheelOrder][Swipe] response=delete-action");
+    configuration.performsFirstActionWithFullSwipe = YES;
     return configuration;
 }
 
 - (void)tableView:(UITableView *)tableView
     commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
     forRowAtIndexPath:(NSIndexPath *)indexPath {
-    FLMWheelOrderLog(
-        @"[WheelOrder][Commit] request section=%ld row=%ld style=%ld editing=%d",
-        (long)indexPath.section, (long)indexPath.row, (long)editingStyle,
-        tableView.isEditing ? 1 : 0);
     if (editingStyle != UITableViewCellEditingStyleDelete) {
         return;
     }
@@ -1017,24 +905,6 @@ static NSString *FLMNameForIdentifier(
         [tableView deleteRowsAtIndexPaths:@[indexPath]
                          withRowAnimation:UITableViewRowAnimationAutomatic];
     }
-    FLMWheelOrderLog(
-        @"[WheelOrder][Commit] completed success=%d", removed ? 1 : 0);
-}
-
-- (void)tableView:(UITableView *)tableView
-    willBeginEditingRowAtIndexPath:(NSIndexPath *)indexPath {
-    FLMWheelOrderLog(
-        @"[WheelOrder][Swipe] willBeginEditing section=%ld row=%ld editing=%d",
-        (long)indexPath.section, (long)indexPath.row,
-        tableView.isEditing ? 1 : 0);
-}
-
-- (void)tableView:(UITableView *)tableView
-    didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
-    FLMWheelOrderLog(
-        @"[WheelOrder][Swipe] didEndEditing section=%ld row=%ld editing=%d",
-        (long)indexPath.section, (long)indexPath.row,
-        tableView.isEditing ? 1 : 0);
 }
 
 - (BOOL)tableView:(UITableView *)tableView

@@ -5,11 +5,6 @@
 #import "FLMDiagnostics.h"
 #import "FlymeMultitasking-Swift.h"
 
-// ScreenSense A/B build: remove the recognizer entirely so VisionKit owns the
-// full touch stream while we verify whether the old blank-area dismiss gesture
-// was preventing active text selection from starting.
-#define FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS 1
-
 typedef NS_ENUM(NSInteger, FMScreenSenseState) {
     FMScreenSenseStateInactive = 0,
     FMScreenSenseStateDismissingWheel,
@@ -91,17 +86,16 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
-@interface FMScreenSenseSession () <UIGestureRecognizerDelegate>
+@interface FMScreenSenseSession ()
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) CFTimeInterval analysisStartedAt;
 @property(nonatomic, strong) FMScreenSenseWindow *window;
 @property(nonatomic, strong) FMScreenSenseViewController *viewController;
 @property(nonatomic, strong) UIImageView *imageView;
-@property(nonatomic, strong) UITapGestureRecognizer *emptyTapGesture;
+@property(nonatomic, strong) UIButton *closeButton;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
-- (void)handleEmptyTap:(UITapGestureRecognizer *)gesture;
 - (void)dismissOnMainThread;
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
 @end
@@ -232,27 +226,39 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     imageView.accessibilityIdentifier = @"com.codex.flymemultitasking.screensense.frozen-image";
     [viewController.view addSubview:imageView];
 
-#if FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS
-    self.emptyTapGesture = nil;
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][AB] empty-area dismiss gesture disabled");
-#else
-    UITapGestureRecognizer *emptyTapGesture =
-        [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                action:@selector(handleEmptyTap:)];
-    emptyTapGesture.delegate = self;
-    emptyTapGesture.cancelsTouchesInView = NO;
-    emptyTapGesture.delaysTouchesBegan = NO;
-    emptyTapGesture.delaysTouchesEnded = NO;
-    [viewController.view addGestureRecognizer:emptyTapGesture];
-#endif
+    // Keep dismissal out of the image view's gesture arena. A sibling button
+    // gives the VisionKit interaction the complete touch stream it needs for
+    // text selection while still providing a deterministic exit path.
+    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeButton setTitle:@"关闭" forState:UIControlStateNormal];
+    [closeButton setTitleColor:[UIColor whiteColor]
+                      forState:UIControlStateNormal];
+    closeButton.titleLabel.font =
+        [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    closeButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
+    closeButton.layer.cornerRadius = 18.0;
+    closeButton.layer.masksToBounds = YES;
+    closeButton.accessibilityLabel = @"关闭识屏";
+    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeButton addTarget:self
+                    action:@selector(dismiss)
+          forControlEvents:UIControlEventTouchUpInside];
+    [viewController.view addSubview:closeButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [closeButton.topAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.topAnchor
+                           constant:8.0],
+        [closeButton.trailingAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.trailingAnchor
+                           constant:-12.0],
+        [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:56.0],
+        [closeButton.heightAnchor constraintEqualToConstant:36.0],
+    ]];
 
     self.window = window;
     self.viewController = viewController;
     self.imageView = imageView;
-#if !FMSCREEN_SENSE_DEBUG_DISABLE_EMPTY_DISMISS
-    self.emptyTapGesture = emptyTapGesture;
-#endif
+    self.closeButton = closeButton;
 
     window.hidden = NO;
     [window makeKeyAndVisible];
@@ -374,67 +380,6 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     [self dismissOnMainThread];
 }
 
-- (void)handleEmptyTap:(UITapGestureRecognizer *)gesture {
-    (void)gesture;
-    [self dismiss];
-}
-
-- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
-    if (gestureRecognizer != self.emptyTapGesture) {
-        return YES;
-    }
-    if (self.state == FMScreenSenseStateInactive ||
-        self.state == FMScreenSenseStateDismissing) {
-        return NO;
-    }
-
-    CGPoint point = [gestureRecognizer locationInView:self.imageView];
-    BOOL interactive = self.visionBridge &&
-                       [self.visionBridge screenSenseHasInteractiveItemAt:point];
-    BOOL text = self.visionBridge &&
-                [self.visionBridge screenSenseHasTextAt:point];
-    BOOL passToVisionKit = interactive || text;
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Tap] interactive=%d text=%d action=%@ point={%.1f,%.1f}",
-        interactive ? 1 : 0, text ? 1 : 0,
-        passToVisionKit ? @"passToVisionKit" : @"dismiss",
-        point.x, point.y);
-
-    if (passToVisionKit) {
-        return NO;
-    }
-    return YES;
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-    shouldRequireFailureOfGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer != self.emptyTapGesture ||
-        otherGestureRecognizer == self.emptyTapGesture) {
-        return NO;
-    }
-
-    // VisionKit's recognizers live on the frozen image view. Let those
-    // recognizers resolve first so a blank-area tap cannot pre-empt text
-    // selection, handles, links, phone numbers, or the Live Text button.
-    UIView *otherView = otherGestureRecognizer.view;
-    UIView *imageView = self.imageView;
-    return imageView &&
-           (otherView == imageView || [otherView isDescendantOfView:imageView]);
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer == self.emptyTapGesture ||
-        otherGestureRecognizer == self.emptyTapGesture) {
-        // The empty-area recognizer only begins after VisionKit's point hit
-        // test says there is no interactive item or text at the tap point.
-        // Keeping it non-simultaneous prevents it from cancelling or joining
-        // VisionKit's text-selection recognizers during edge cases.
-        return NO;
-    }
-    return NO;
-}
-
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message {
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Vision][ERROR] unavailable code=%ld message=%@",
@@ -463,11 +408,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
     self.visionBridge = nil;
 
-    [self.emptyTapGesture.view removeGestureRecognizer:self.emptyTapGesture];
     self.imageView.userInteractionEnabled = NO;
     self.imageView.image = nil;
     self.window.userInteractionEnabled = NO;
     self.window.hidden = YES;
+    self.closeButton.userInteractionEnabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
     self.previousKeyWindow = nil;
@@ -476,7 +421,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         [previousKeyWindow makeKeyAndVisible];
     }
 
-    self.emptyTapGesture = nil;
+    self.closeButton = nil;
     self.imageView = nil;
     self.viewController = nil;
     self.window = nil;
