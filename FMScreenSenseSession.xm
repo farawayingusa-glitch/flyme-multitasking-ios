@@ -108,6 +108,8 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 - (void)refreshActionButtonTitles;
 - (BOOL)hasReadableTextSelection;
 - (NSString *)currentActionText;
+- (BOOL)dispatchNativeTextAction:(SEL)selector;
+- (NSString *)copySelectedTextFromNativeLiveText;
 - (void)handleCopyButton:(UIButton *)sender;
 - (void)handleTranslateButton:(UIButton *)sender;
 - (void)presentNativeTranslateForText:(NSString *)text;
@@ -464,7 +466,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (BOOL)hasReadableTextSelection {
-    return self.visionBridge.currentSelectedText.length > 0;
+    // iOS 17 exposes selectedText/selectedRanges. On iOS 16 VisionKit keeps
+    // the selection inside its private Live Text responder, so the public
+    // bridge can report hasActiveTextSelection without exposing the string.
+    // Treat either signal as a real selection; the action handlers below use
+    // the native responder as the iOS 16 fallback instead of copying OCR all.
+    return self.visionBridge.hasActiveTextSelection ||
+           self.visionBridge.currentSelectedText.length > 0;
 }
 
 - (NSString *)currentActionText {
@@ -489,14 +497,32 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (void)handleCopyButton:(UIButton *)sender {
-    NSString *text = [self currentActionText];
+    BOOL hasSelection = [self hasReadableTextSelection];
+    NSString *text = self.visionBridge.currentSelectedText;
+    if (hasSelection && text.length == 0) {
+        // ImageAnalysisInteraction on iOS 16 does not publish the selected
+        // string. Ask the Live Text first responder to perform Copy and read
+        // the result back from the pasteboard. This preserves the user's
+        // actual grab-handle range and avoids silently copying the transcript.
+        text = [self copySelectedTextFromNativeLiveText];
+        if (text.length == 0) {
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense][Action][ERROR] copy ignored reason=native-selection-unavailable");
+            return;
+        }
+    }
+
+    if (text.length == 0) {
+        text = self.visionBridge.currentFullText ?: @"";
+    }
     if (text.length == 0) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Action][ERROR] copy ignored reason=empty-text");
         return;
     }
 
-    BOOL hasSelection = [self hasReadableTextSelection];
+    // Native Copy already wrote the selection to the pasteboard. Assigning it
+    // again is harmless and keeps the custom action deterministic on iOS 16.
     [UIPasteboard generalPasteboard].string = text;
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Action] copy mode=%@ textLength=%ld",
@@ -516,16 +542,88 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     });
 }
 
+- (BOOL)dispatchNativeTextAction:(SEL)selector {
+    if (!selector) {
+        return NO;
+    }
+
+    UIApplication *application = [UIApplication sharedApplication];
+    BOOL sent = [application sendAction:selector
+                                     to:nil
+                                   from:self
+                               forEvent:nil];
+
+    // When the Live Text responder is not the current first responder, give
+    // the attached image view one direct chance as well. ImageAnalysisInteraction
+    // installs its action forwarding on this view on some iOS 16 builds.
+    if (!sent && self.imageView &&
+        [self.imageView canPerformAction:selector withSender:nil]) {
+        IMP implementation = [self.imageView methodForSelector:selector];
+        if (implementation) {
+            typedef void (*FMScreenSenseTextAction)(id, SEL, id);
+            FMScreenSenseTextAction invoke =
+                (FMScreenSenseTextAction)implementation;
+            invoke(self.imageView, selector, nil);
+            sent = YES;
+        }
+    }
+
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] native action=%@ dispatched=%d",
+        NSStringFromSelector(selector), sent ? 1 : 0);
+    return sent;
+}
+
+- (NSString *)copySelectedTextFromNativeLiveText {
+    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+    NSInteger changeCountBefore = pasteboard.changeCount;
+    NSString *pasteboardBefore = pasteboard.string ?: @"";
+    BOOL dispatched = [self dispatchNativeTextAction:@selector(copy:)];
+    NSString *copiedText = pasteboard.string ?: @"";
+    BOOL pasteboardChanged = pasteboard.changeCount != changeCountBefore ||
+                             ![copiedText isEqualToString:pasteboardBefore];
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] native copy dispatched=%d pasteboardChanged=%d textLength=%ld",
+        dispatched ? 1 : 0, pasteboardChanged ? 1 : 0,
+        (long)copiedText.length);
+    if (!pasteboardChanged || copiedText.length == 0) {
+        return @"";
+    }
+    return copiedText;
+}
+
 - (void)handleTranslateButton:(UIButton *)sender {
     (void)sender;
-    NSString *text = [self currentActionText];
+    BOOL hasSelection = [self hasReadableTextSelection];
+    NSString *text = self.visionBridge.currentSelectedText;
+
+    if (hasSelection && text.length == 0) {
+        // On iOS 16, let VisionKit translate the active Live Text selection
+        // itself. This keeps the original image and the real selected range in
+        // place instead of rebuilding the selection in a second text view.
+        BOOL dispatched =
+            [self dispatchNativeTextAction:NSSelectorFromString(@"translate:")];
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action] translate mode=selection-native dispatched=%d",
+            dispatched ? 1 : 0);
+        if (dispatched) {
+            return;
+        }
+
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action][ERROR] translate ignored reason=native-selection-unavailable");
+        return;
+    }
+
+    if (text.length == 0) {
+        text = self.visionBridge.currentFullText ?: @"";
+    }
     if (text.length == 0) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Action][ERROR] translate ignored reason=empty-text");
         return;
     }
 
-    BOOL hasSelection = [self hasReadableTextSelection];
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Action] translate requested mode=%@ textLength=%ld",
         hasSelection ? @"selection" : @"full", (long)text.length);

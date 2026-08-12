@@ -71,7 +71,10 @@ public final class FMScreenSenseVisionBridge: NSObject {
         guard let liveTextInteraction = interaction else {
             return 0
         }
-        return liveTextInteraction.selectedRanges.count
+        if #available(iOS 17.0, *) {
+            return liveTextInteraction.selectedRanges.count
+        }
+        return 0
     }
 
     /// Selects the complete OCR transcript through VisionKit. This is used
@@ -84,14 +87,18 @@ public final class FMScreenSenseVisionBridge: NSObject {
             return false
         }
 
-        let text = liveTextInteraction.text
-        guard !text.isEmpty else {
-            return false
+        if #available(iOS 17.0, *) {
+            let text = liveTextInteraction.text
+            guard !text.isEmpty else {
+                return false
+            }
+
+            liveTextInteraction.selectedRanges = [text.startIndex..<text.endIndex]
+            notifySelectionState(for: liveTextInteraction)
+            return true
         }
 
-        liveTextInteraction.selectedRanges = [text.startIndex..<text.endIndex]
-        notifySelectionState(for: liveTextInteraction)
-        return true
+        return false
     }
 
     @MainActor
@@ -303,13 +310,15 @@ public final class FMScreenSenseVisionBridge: NSObject {
         // Read the selected ranges first. Unlike the old hasActiveTextSelection
         // boolean, selectedRanges is the actual text boundary that the user
         // chose and is what the Copy/Translate buttons must consume.
-        let ranges = liveTextInteraction.selectedRanges
-        if !ranges.isEmpty {
-            let interactionText = liveTextInteraction.text
-            if !interactionText.isEmpty {
-                return ranges
-                    .map { String(interactionText[$0]) }
-                    .joined()
+        if #available(iOS 17.0, *) {
+            let ranges = liveTextInteraction.selectedRanges
+            if !ranges.isEmpty {
+                let interactionText = liveTextInteraction.text
+                if !interactionText.isEmpty {
+                    return ranges
+                        .map { String(interactionText[$0]) }
+                        .joined()
+                }
             }
         }
 
