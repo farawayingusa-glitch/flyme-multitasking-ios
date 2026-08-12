@@ -1,6 +1,7 @@
 #import "FMScreenSenseSession.h"
 
 #import <QuartzCore/QuartzCore.h>
+#import <Vision/Vision.h>
 
 #import "FLMDiagnostics.h"
 #import "FlymeMultitasking-Swift.h"
@@ -86,7 +87,115 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
-@interface FMScreenSenseSession () <UIEditMenuInteractionDelegate>
+@interface FMScreenSenseTranslationOverlayView : UIView
+- (void)showLoading;
+- (void)showErrorMessage:(NSString *)message;
+- (void)showTranslatedLines:(NSArray<NSString *> *)lines
+                     frames:(NSArray<NSValue *> *)frames;
+@end
+
+@implementation FMScreenSenseTranslationOverlayView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        // This view is visual-only. Touches must continue to reach the
+        // ImageAnalysisInteraction underneath it.
+        self.userInteractionEnabled = NO;
+        self.accessibilityIdentifier =
+            @"com.codex.flymemultitasking.screensense.translation-overlay";
+    }
+    return self;
+}
+
+- (void)clearContent {
+    for (UIView *subview in [self.subviews copy]) {
+        [subview removeFromSuperview];
+    }
+}
+
+- (UILabel *)statusLabelWithText:(NSString *)text {
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = text;
+    label.textColor = [UIColor whiteColor];
+    label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.78];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+    label.layer.cornerRadius = 9.0;
+    label.layer.masksToBounds = YES;
+    label.numberOfLines = 1;
+    [self addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor
+                                                          constant:24.0],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor
+                                                           constant:-24.0],
+        [label.heightAnchor constraintEqualToConstant:38.0],
+    ]];
+    return label;
+}
+
+- (void)showLoading {
+    [self clearContent];
+    [self statusLabelWithText:@"翻译中…"];
+}
+
+- (void)showErrorMessage:(NSString *)message {
+    [self clearContent];
+    [self statusLabelWithText:message.length > 0 ? message : @"翻译失败"];
+}
+
+- (void)showTranslatedLines:(NSArray<NSString *> *)lines
+                     frames:(NSArray<NSValue *> *)frames {
+    [self clearContent];
+
+    NSUInteger count = MIN(lines.count, frames.count);
+    for (NSUInteger index = 0; index < count; index++) {
+        NSString *lineText = lines[index];
+        if (lineText.length == 0) {
+            continue;
+        }
+
+        CGRect frame = [frames[index] CGRectValue];
+        frame = CGRectInset(frame, -3.0, -2.0);
+        frame = CGRectIntersection(frame, self.bounds);
+        if (CGRectIsEmpty(frame) || CGRectIsNull(frame)) {
+            continue;
+        }
+
+        UILabel *label = [[UILabel alloc] initWithFrame:frame];
+        label.text = lineText;
+        label.textColor = [UIColor whiteColor];
+        // Cover the original OCR line and place the translation at the same
+        // coordinates. Keeping one label per source line avoids the large,
+        // reflowed text panel used by the previous implementation.
+        label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.82];
+        label.font = [UIFont systemFontOfSize:
+                                MAX(10.0, MIN(22.0, frame.size.height * 0.72))
+                                weight:UIFontWeightMedium];
+        label.textAlignment = NSTextAlignmentLeft;
+        label.adjustsFontSizeToFitWidth = YES;
+        label.minimumScaleFactor = 0.48;
+        label.numberOfLines = 1;
+        label.lineBreakMode = NSLineBreakByClipping;
+        label.layer.cornerRadius = 3.0;
+        label.layer.masksToBounds = YES;
+        label.accessibilityLabel = lineText;
+        [self addSubview:label];
+    }
+
+    if (self.subviews.count == 0) {
+        [self showErrorMessage:@"没有可显示的翻译"];
+    }
+}
+
+@end
+
+@interface FMScreenSenseSession ()
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) CFTimeInterval analysisStartedAt;
@@ -95,10 +204,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) UIImageView *imageView;
 @property(nonatomic, strong) UIButton *closeButton;
 @property(nonatomic, strong) UIView *actionBar;
-@property(nonatomic, strong) UIButton *screenSenseCopyButton;
 @property(nonatomic, strong) UIButton *translateButton;
-@property(nonatomic, strong) UITextView *textActionView;
-@property(nonatomic, strong) UIEditMenuInteraction *editMenuInteraction;
+@property(nonatomic, strong) FMScreenSenseTranslationOverlayView *translationOverlay;
+@property(nonatomic, strong) NSURLSessionDataTask *translationTask;
+@property(nonatomic, assign) NSUInteger translationRequestID;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
 - (void)dismissOnMainThread;
@@ -106,16 +215,18 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 - (void)handleCloseButton:(UIButton *)sender;
 - (void)installActionBarInViewController:(UIViewController *)viewController;
 - (void)refreshActionButtonTitles;
-- (BOOL)hasReadableTextSelection;
-- (NSString *)currentActionText;
-- (BOOL)dispatchNativeTextAction:(SEL)selector;
-- (NSString *)copySelectedTextFromNativeLiveText;
-- (void)handleCopyButton:(UIButton *)sender;
 - (void)handleTranslateButton:(UIButton *)sender;
-- (void)presentNativeTranslateForText:(NSString *)text;
-- (void)dismissTextActionProxy;
-- (BOOL)performDirectTranslateOnTextView:(UITextView *)textView;
-- (void)showEditMenuForTextView:(UITextView *)textView;
+- (void)cancelTranslation;
+- (void)beginInPlaceTranslationForText:(NSString *)text
+                           hasSelection:(BOOL)hasSelection;
+- (void)performOCRForImage:(UIImage *)image
+                  inBounds:(CGRect)bounds
+                 completion:(void (^)(NSArray<NSString *> *lines,
+                                      NSArray<NSValue *> *frames,
+                                      NSError *error))completion;
+- (void)requestTranslationForText:(NSString *)text
+                        completion:(void (^)(NSString *translatedText,
+                                             NSError *error))completion;
 @end
 
 @implementation FMScreenSenseSession
@@ -391,6 +502,22 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }];
 }
 
+static CGRect FMScreenSenseAspectFitRect(CGSize imageSize, CGRect bounds) {
+    if (imageSize.width <= 0.0 || imageSize.height <= 0.0 ||
+        bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
+        return bounds;
+    }
+
+    CGFloat scale = MIN(bounds.size.width / imageSize.width,
+                        bounds.size.height / imageSize.height);
+    CGSize fittedSize = CGSizeMake(imageSize.width * scale,
+                                   imageSize.height * scale);
+    return CGRectMake(CGRectGetMidX(bounds) - fittedSize.width * 0.5,
+                      CGRectGetMidY(bounds) - fittedSize.height * 0.5,
+                      fittedSize.width,
+                      fittedSize.height);
+}
+
 - (void)installActionBarInViewController:(UIViewController *)viewController {
     UIView *actionBar = [[UIView alloc] initWithFrame:CGRectZero];
     actionBar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -400,35 +527,24 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     actionBar.accessibilityIdentifier =
         @"com.codex.flymemultitasking.screensense.actions";
 
-    UIButton *copyButton = [UIButton buttonWithType:UIButtonTypeSystem];
     UIButton *translateButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    NSArray<UIButton *> *buttons = @[copyButton, translateButton];
-    for (UIButton *button in buttons) {
-        button.translatesAutoresizingMaskIntoConstraints = NO;
-        button.titleLabel.font =
-            [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
-        [button setTitleColor:[UIColor whiteColor]
-                      forState:UIControlStateNormal];
-        [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.55]
-                      forState:UIControlStateHighlighted];
-        button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-        button.layer.cornerRadius = 10.0;
-        button.layer.masksToBounds = YES;
-    }
-    copyButton.accessibilityLabel = @"复制识屏文字";
-    copyButton.accessibilityIdentifier =
-        @"com.codex.flymemultitasking.screensense.copy";
+    translateButton.translatesAutoresizingMaskIntoConstraints = NO;
+    translateButton.titleLabel.font =
+        [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    [translateButton setTitleColor:[UIColor whiteColor]
+                          forState:UIControlStateNormal];
+    [translateButton setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.55]
+                          forState:UIControlStateHighlighted];
+    translateButton.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    translateButton.layer.cornerRadius = 10.0;
+    translateButton.layer.masksToBounds = YES;
     translateButton.accessibilityLabel = @"翻译识屏文字";
     translateButton.accessibilityIdentifier =
         @"com.codex.flymemultitasking.screensense.translate";
-    [copyButton addTarget:self
-                   action:@selector(handleCopyButton:)
-         forControlEvents:UIControlEventTouchUpInside];
     [translateButton addTarget:self
                         action:@selector(handleTranslateButton:)
               forControlEvents:UIControlEventTouchUpInside];
 
-    [actionBar addSubview:copyButton];
     [actionBar addSubview:translateButton];
     [viewController.view addSubview:actionBar];
     [NSLayoutConstraint activateConstraints:@[
@@ -442,13 +558,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.bottomAnchor
                            constant:-8.0],
         [actionBar.heightAnchor constraintEqualToConstant:48.0],
-        [copyButton.leadingAnchor constraintEqualToAnchor:actionBar.leadingAnchor
-                                                  constant:6.0],
-        [copyButton.topAnchor constraintEqualToAnchor:actionBar.topAnchor
-                                              constant:6.0],
-        [copyButton.bottomAnchor constraintEqualToAnchor:actionBar.bottomAnchor
-                                                 constant:-6.0],
-        [translateButton.leadingAnchor constraintEqualToAnchor:copyButton.trailingAnchor
+        [translateButton.leadingAnchor constraintEqualToAnchor:actionBar.leadingAnchor
                                                        constant:6.0],
         [translateButton.trailingAnchor constraintEqualToAnchor:actionBar.trailingAnchor
                                                         constant:-6.0],
@@ -456,168 +566,28 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
                                                    constant:6.0],
         [translateButton.bottomAnchor constraintEqualToAnchor:actionBar.bottomAnchor
                                                       constant:-6.0],
-        [translateButton.widthAnchor constraintEqualToAnchor:copyButton.widthAnchor],
     ]];
 
     self.actionBar = actionBar;
-    self.screenSenseCopyButton = copyButton;
     self.translateButton = translateButton;
     [self refreshActionButtonTitles];
 }
 
-- (BOOL)hasReadableTextSelection {
-    // iOS 17 exposes selectedText/selectedRanges. On iOS 16 VisionKit keeps
-    // the selection inside its private Live Text responder, so the public
-    // bridge can report hasActiveTextSelection without exposing the string.
-    // Treat either signal as a real selection; the action handlers below use
-    // the native responder as the iOS 16 fallback instead of copying OCR all.
-    return self.visionBridge.hasActiveTextSelection ||
-           self.visionBridge.currentSelectedText.length > 0;
-}
-
-- (NSString *)currentActionText {
-    NSString *selectedText = self.visionBridge.currentSelectedText;
-    if (selectedText.length > 0) {
-        return selectedText;
-    }
-
-    return self.visionBridge.currentFullText ?: @"";
-}
-
 - (void)refreshActionButtonTitles {
-    if (!self.screenSenseCopyButton || !self.translateButton) {
+    if (!self.translateButton) {
         return;
     }
 
-    BOOL hasSelection = [self hasReadableTextSelection];
-    [self.screenSenseCopyButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
-                              forState:UIControlStateNormal];
-    [self.translateButton setTitle:hasSelection ? @"翻译所选" : @"翻译全部"
-                          forState:UIControlStateNormal];
-}
-
-- (void)handleCopyButton:(UIButton *)sender {
-    BOOL hasSelection = [self hasReadableTextSelection];
-    NSString *text = self.visionBridge.currentSelectedText;
-    if (hasSelection && text.length == 0) {
-        // ImageAnalysisInteraction on iOS 16 does not publish the selected
-        // string. Ask the Live Text first responder to perform Copy and read
-        // the result back from the pasteboard. This preserves the user's
-        // actual grab-handle range and avoids silently copying the transcript.
-        text = [self copySelectedTextFromNativeLiveText];
-        if (text.length == 0) {
-            FLMEnqueueDiagnosticLine(
-                @"[ScreenSense][Action][ERROR] copy ignored reason=native-selection-unavailable");
-            return;
-        }
-    }
-
-    if (text.length == 0) {
-        text = self.visionBridge.currentFullText ?: @"";
-    }
-    if (text.length == 0) {
-        FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Action][ERROR] copy ignored reason=empty-text");
-        return;
-    }
-
-    // Native Copy already wrote the selection to the pasteboard. Assigning it
-    // again is harmless and keeps the custom action deterministic on iOS 16.
-    [UIPasteboard generalPasteboard].string = text;
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] copy mode=%@ textLength=%ld",
-        hasSelection ? @"selection" : @"full", (long)text.length);
-
-    [sender setTitle:@"已复制" forState:UIControlStateNormal];
-    NSUInteger sessionGeneration = self.generation;
-    __weak FMScreenSenseSession *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        FMScreenSenseSession *strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.generation != sessionGeneration ||
-            strongSelf.state == FMScreenSenseStateInactive) {
-            return;
-        }
-        [strongSelf refreshActionButtonTitles];
-    });
-}
-
-- (BOOL)dispatchNativeTextAction:(SEL)selector {
-    if (!selector) {
-        return NO;
-    }
-
-    UIApplication *application = [UIApplication sharedApplication];
-    BOOL sent = [application sendAction:selector
-                                     to:nil
-                                   from:self
-                               forEvent:nil];
-
-    // When the Live Text responder is not the current first responder, give
-    // the attached image view one direct chance as well. ImageAnalysisInteraction
-    // installs its action forwarding on this view on some iOS 16 builds.
-    if (!sent && self.imageView &&
-        [self.imageView canPerformAction:selector withSender:nil]) {
-        IMP implementation = [self.imageView methodForSelector:selector];
-        if (implementation) {
-            typedef void (*FMScreenSenseTextAction)(id, SEL, id);
-            FMScreenSenseTextAction invoke =
-                (FMScreenSenseTextAction)implementation;
-            invoke(self.imageView, selector, nil);
-            sent = YES;
-        }
-    }
-
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] native action=%@ dispatched=%d",
-        NSStringFromSelector(selector), sent ? 1 : 0);
-    return sent;
-}
-
-- (NSString *)copySelectedTextFromNativeLiveText {
-    UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
-    NSInteger changeCountBefore = pasteboard.changeCount;
-    NSString *pasteboardBefore = pasteboard.string ?: @"";
-    BOOL dispatched = [self dispatchNativeTextAction:@selector(copy:)];
-    NSString *copiedText = pasteboard.string ?: @"";
-    BOOL pasteboardChanged = pasteboard.changeCount != changeCountBefore ||
-                             ![copiedText isEqualToString:pasteboardBefore];
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] native copy dispatched=%d pasteboardChanged=%d textLength=%ld",
-        dispatched ? 1 : 0, pasteboardChanged ? 1 : 0,
-        (long)copiedText.length);
-    if (!pasteboardChanged || copiedText.length == 0) {
-        return @"";
-    }
-    return copiedText;
+    // The action always has the same name. It translates the active selection
+    // when iOS exposes one, otherwise it translates the complete OCR result.
+    [self.translateButton setTitle:@"翻译" forState:UIControlStateNormal];
 }
 
 - (void)handleTranslateButton:(UIButton *)sender {
     (void)sender;
-    BOOL hasSelection = [self hasReadableTextSelection];
-    NSString *text = self.visionBridge.currentSelectedText;
-
-    if (hasSelection && text.length == 0) {
-        // On iOS 16, let VisionKit translate the active Live Text selection
-        // itself. This keeps the original image and the real selected range in
-        // place instead of rebuilding the selection in a second text view.
-        BOOL dispatched =
-            [self dispatchNativeTextAction:NSSelectorFromString(@"translate:")];
-        FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Action] translate mode=selection-native dispatched=%d",
-            dispatched ? 1 : 0);
-        if (dispatched) {
-            return;
-        }
-
-        FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Action][ERROR] translate ignored reason=native-selection-unavailable");
-        return;
-    }
-
-    if (text.length == 0) {
-        text = self.visionBridge.currentFullText ?: @"";
-    }
+    NSString *selectedText = self.visionBridge.currentSelectedText;
+    BOOL hasSelection = selectedText.length > 0;
+    NSString *text = hasSelection ? selectedText : self.visionBridge.currentFullText;
     if (text.length == 0) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense][Action][ERROR] translate ignored reason=empty-text");
@@ -625,118 +595,284 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] translate requested mode=%@ textLength=%ld",
-        hasSelection ? @"selection" : @"full", (long)text.length);
-    [self presentNativeTranslateForText:text];
+        @"[ScreenSense][Action] translate in-place begin mode=%@ textLength=%ld nativeSelection=%d",
+        hasSelection ? @"selection" : @"full", (long)text.length,
+        self.visionBridge.hasActiveTextSelection ? 1 : 0);
+    [self beginInPlaceTranslationForText:text hasSelection:hasSelection];
 }
 
-- (void)presentNativeTranslateForText:(NSString *)text {
-    [self dismissTextActionProxy];
+- (void)cancelTranslation {
+    self.translationRequestID += 1;
+    [self.translationTask cancel];
+    self.translationTask = nil;
+    [self.translationOverlay removeFromSuperview];
+    self.translationOverlay = nil;
+    self.translateButton.userInteractionEnabled = YES;
+}
 
+- (void)beginInPlaceTranslationForText:(NSString *)text
+                           hasSelection:(BOOL)hasSelection {
     if (!self.viewController || !self.imageView || text.length == 0) {
         return;
     }
 
-    // The proxy is deliberately transparent and lives over the captured image.
-    // It gives UIKit a real text responder for the native Translate action,
-    // while the screenshot remains the only visible canvas. The previous
-    // version put this text in a second full-screen panel, which changed the
-    // layout and also made a hidden first responder survive dismissal.
-    UITextView *textView = [[UITextView alloc] initWithFrame:self.imageView.bounds];
-    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                UIViewAutoresizingFlexibleHeight;
-    textView.backgroundColor = [UIColor clearColor];
-    textView.textColor = [UIColor clearColor];
-    textView.tintColor = [UIColor systemBlueColor];
-    textView.alpha = 0.01;
-    textView.editable = YES;
-    textView.selectable = YES;
-    textView.scrollEnabled = NO;
-    textView.textContainerInset = UIEdgeInsetsZero;
-    textView.text = text;
-    // Prevent the proxy from bringing up the user's keyboard while still
-    // allowing it to become the text action responder.
-    UIView *emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
-    emptyInputView.backgroundColor = [UIColor clearColor];
-    textView.inputView = emptyInputView;
-    textView.accessibilityLabel = @"识屏翻译文字动作代理";
-    textView.accessibilityIdentifier =
-        @"com.codex.flymemultitasking.screensense.translate-proxy";
-
-    [self.viewController.view insertSubview:textView aboveSubview:self.imageView];
-
-    UIEditMenuInteraction *editMenuInteraction =
-        [[UIEditMenuInteraction alloc] initWithDelegate:self];
-    [textView addInteraction:editMenuInteraction];
-    self.textActionView = textView;
-    self.editMenuInteraction = editMenuInteraction;
-
-    BOOL becameFirstResponder = [textView becomeFirstResponder];
-    textView.selectedRange = NSMakeRange(0, textView.text.length);
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] translate proxy=1 firstResponder=%d textLength=%ld",
-        becameFirstResponder ? 1 : 0, (long)text.length);
-
-    if (![self performDirectTranslateOnTextView:textView]) {
-        [self showEditMenuForTextView:textView];
-    }
-}
-
-- (void)dismissTextActionProxy {
-    UITextView *textView = self.textActionView;
-    if (textView) {
-        [textView resignFirstResponder];
-        [textView removeFromSuperview];
-    }
-    self.editMenuInteraction = nil;
-    self.textActionView = nil;
-}
-
-- (BOOL)performDirectTranslateOnTextView:(UITextView *)textView {
-    SEL translateSelector = NSSelectorFromString(@"translate:");
-    BOOL canTranslate = [textView canPerformAction:translateSelector withSender:nil];
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] translate system-action-available=%d",
-        canTranslate ? 1 : 0);
-    if (!canTranslate) {
-        return NO;
-    }
-
-    IMP implementation = [textView methodForSelector:translateSelector];
-    if (!implementation) {
-        return NO;
-    }
-
-    typedef void (*FMScreenSenseTextAction)(id, SEL, id);
-    FMScreenSenseTextAction invoke =
-        (FMScreenSenseTextAction)implementation;
-    invoke(textView, translateSelector, nil);
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] translate dispatched system-action=1");
-    return YES;
-}
-
-- (void)showEditMenuForTextView:(UITextView *)textView {
-    if (!textView.window || !self.editMenuInteraction) {
+    [self cancelTranslation];
+    NSUInteger requestID = self.translationRequestID;
+    UIImage *image = self.imageView.image;
+    CGRect overlayBounds = self.imageView.bounds;
+    if (!image || CGRectIsEmpty(overlayBounds)) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action][ERROR] translate ignored reason=image-unavailable");
         return;
     }
 
-    CGPoint sourcePoint = CGPointMake(CGRectGetMidX(textView.bounds),
-                                      CGRectGetMidY(textView.bounds));
-    UIEditMenuConfiguration *configuration =
-        [UIEditMenuConfiguration configurationWithIdentifier:nil
-                                                 sourcePoint:sourcePoint];
-    [self.editMenuInteraction presentEditMenuWithConfiguration:configuration];
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Action] translate presented native-edit-menu=1");
+    FMScreenSenseTranslationOverlayView *overlay =
+        [[FMScreenSenseTranslationOverlayView alloc] initWithFrame:overlayBounds];
+    overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                UIViewAutoresizingFlexibleHeight;
+    [self.viewController.view insertSubview:overlay aboveSubview:self.imageView];
+    self.translationOverlay = overlay;
+    [overlay showLoading];
+    self.translateButton.userInteractionEnabled = NO;
+
+    __weak FMScreenSenseSession *weakSelf = self;
+    [self performOCRForImage:image
+                    inBounds:overlayBounds
+                  completion:^(NSArray<NSString *> *lines,
+                               NSArray<NSValue *> *frames,
+                               NSError *ocrError) {
+        FMScreenSenseSession *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.state == FMScreenSenseStateInactive ||
+            strongSelf.translationRequestID != requestID) {
+            return;
+        }
+
+        NSString *ocrText = [lines componentsJoinedByString:@"\n"];
+        NSString *queryText = ocrText.length > 0 ? ocrText : text;
+        if (ocrError) {
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense][Action][OCR] layout fallback code=%ld",
+                (long)ocrError.code);
+        }
+        if (queryText.length == 0) {
+            [overlay showErrorMessage:@"没有识别到文字"];
+            strongSelf.translateButton.userInteractionEnabled = YES;
+            return;
+        }
+
+        [strongSelf requestTranslationForText:queryText
+                                    completion:^(NSString *translatedText,
+                                                 NSError *translationError) {
+            FMScreenSenseSession *latestSelf = weakSelf;
+            if (!latestSelf || latestSelf.state == FMScreenSenseStateInactive ||
+                latestSelf.translationRequestID != requestID) {
+                return;
+            }
+
+            latestSelf.translateButton.userInteractionEnabled = YES;
+            if (translationError || translatedText.length == 0) {
+                FLMEnqueueDiagnosticLine(
+                    @"[ScreenSense][Action][ERROR] translate request failed domain=%@ code=%ld",
+                    translationError.domain ?: @"unknown",
+                    (long)translationError.code);
+                [overlay showErrorMessage:@"翻译失败，请检查网络"];
+                return;
+            }
+
+            NSArray<NSString *> *translatedLines =
+                [translatedText componentsSeparatedByString:@"\n"];
+            NSArray<NSString *> *displayLines = translatedLines;
+            NSArray<NSValue *> *displayFrames = frames;
+            if (frames.count == 0) {
+                displayLines = @[translatedText];
+                displayFrames = @[[NSValue valueWithCGRect:
+                    CGRectInset(overlay.bounds, 20.0, 80.0)]];
+            } else if (hasSelection || translatedLines.count != frames.count) {
+                // iOS 16 keeps the exact grab-handle range inside VisionKit,
+                // so there is no public rectangle to read back. Use one
+                // bounded in-place label for that result rather than showing
+                // a reflowed second window or mismatching every OCR line.
+                CGRect unionFrame = CGRectNull;
+                for (NSValue *value in frames) {
+                    unionFrame = CGRectIsNull(unionFrame)
+                                     ? value.CGRectValue
+                                     : CGRectUnion(unionFrame, value.CGRectValue);
+                }
+                displayLines = @[translatedText];
+                displayFrames = @[[NSValue valueWithCGRect:unionFrame]];
+            }
+
+            [overlay showTranslatedLines:displayLines frames:displayFrames];
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense][Action] translate in-place success sourceLines=%ld resultLength=%ld",
+                (long)displayFrames.count, (long)translatedText.length);
+        }];
+    }];
 }
 
-- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction
-          menuForConfiguration:(UIEditMenuConfiguration *)configuration
-              suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions {
-    (void)interaction;
-    (void)configuration;
-    return [UIMenu menuWithChildren:suggestedActions];
+- (void)performOCRForImage:(UIImage *)image
+                inBounds:(CGRect)bounds
+              completion:(void (^)(NSArray<NSString *> *lines,
+                                   NSArray<NSValue *> *frames,
+                                   NSError *error))completion {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+        request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+        request.usesLanguageCorrection = YES;
+        // Let Vision choose the language model instead of hard-coding a list
+        // that may not be installed on every iOS 16 device. VisionKit still
+        // supplies the authoritative transcript; this request is only used to
+        // obtain line rectangles.
+        request.automaticallyDetectsLanguage = YES;
+
+        NSError *ocrError = nil;
+        CGImageRef imageRef = image.CGImage;
+        if (imageRef) {
+            VNImageRequestHandler *handler =
+                [[VNImageRequestHandler alloc] initWithCGImage:imageRef
+                                                        options:@{}];
+            [handler performRequests:@[request] error:&ocrError];
+        } else {
+            ocrError = [NSError errorWithDomain:@"com.codex.flymemultitasking.screensense.ocr"
+                                           code:1
+                                       userInfo:@{
+                                           NSLocalizedDescriptionKey:
+                                               @"Captured image has no CGImage"
+                                       }];
+        }
+
+        NSArray<VNRecognizedTextObservation *> *observations =
+            [request.results sortedArrayUsingComparator:
+                ^NSComparisonResult(VNRecognizedTextObservation *left,
+                                    VNRecognizedTextObservation *right) {
+                    CGRect leftBox = left.boundingBox;
+                    CGRect rightBox = right.boundingBox;
+                    if (fabs(leftBox.origin.y - rightBox.origin.y) > 0.018) {
+                        return leftBox.origin.y > rightBox.origin.y
+                                   ? NSOrderedAscending
+                                   : NSOrderedDescending;
+                    }
+                    return leftBox.origin.x < rightBox.origin.x
+                               ? NSOrderedAscending
+                               : NSOrderedDescending;
+                }];
+
+        CGRect imageRect = FMScreenSenseAspectFitRect(image.size, bounds);
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        NSMutableArray<NSValue *> *frames = [NSMutableArray array];
+        for (VNRecognizedTextObservation *observation in observations) {
+            VNRecognizedText *candidate =
+                [[observation topCandidates:1] firstObject];
+            if (candidate.string.length == 0) {
+                continue;
+            }
+
+            CGRect box = observation.boundingBox;
+            CGRect frame = CGRectMake(
+                imageRect.origin.x + box.origin.x * imageRect.size.width,
+                imageRect.origin.y + (1.0 - box.origin.y - box.size.height) *
+                    imageRect.size.height,
+                box.size.width * imageRect.size.width,
+                box.size.height * imageRect.size.height);
+            if (CGRectIsEmpty(frame)) {
+                continue;
+            }
+            [lines addObject:candidate.string];
+            [frames addObject:[NSValue valueWithCGRect:frame]];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(lines, frames, ocrError);
+        });
+    });
+}
+
+- (void)requestTranslationForText:(NSString *)text
+                        completion:(void (^)(NSString *translatedText,
+                                             NSError *error))completion {
+    NSURLComponents *components = [NSURLComponents
+        componentsWithString:@"https://translate.googleapis.com/translate_a/single"];
+    components.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"client" value:@"gtx"],
+        [NSURLQueryItem queryItemWithName:@"sl" value:@"auto"],
+        [NSURLQueryItem queryItemWithName:@"tl" value:@"zh-CN"],
+        [NSURLQueryItem queryItemWithName:@"dt" value:@"t"],
+        [NSURLQueryItem queryItemWithName:@"q" value:text],
+    ];
+    NSURL *url = components.URL;
+    if (!url) {
+        completion(nil, [NSError errorWithDomain:@"com.codex.flymemultitasking.screensense.translate"
+                                              code:1
+                                          userInfo:@{
+                                              NSLocalizedDescriptionKey:
+                                                  @"Unable to construct translation URL"
+                                          }]);
+        return;
+    }
+
+    NSURLSessionConfiguration *configuration =
+        [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.timeoutIntervalForRequest = 20.0;
+    configuration.timeoutIntervalForResource = 30.0;
+    NSURLSession *session =
+        [NSURLSession sessionWithConfiguration:configuration];
+    NSURLSessionDataTask *task =
+        [session dataTaskWithURL:url
+               completionHandler:^(NSData *data, NSURLResponse *response,
+                                   NSError *networkError) {
+        NSError *resultError = networkError;
+        NSString *translatedText = nil;
+        if (!resultError &&
+            [response isKindOfClass:[NSHTTPURLResponse class]] &&
+            ((NSHTTPURLResponse *)response).statusCode >= 400) {
+            resultError = [NSError errorWithDomain:@"com.codex.flymemultitasking.screensense.translate"
+                                               code:((NSHTTPURLResponse *)response).statusCode
+                                           userInfo:@{
+                                               NSLocalizedDescriptionKey:
+                                                   @"Translation service returned an HTTP error"
+                                           }];
+        }
+
+        if (!resultError && data.length > 0) {
+            NSError *parseError = nil;
+            id root = [NSJSONSerialization JSONObjectWithData:data
+                                                        options:0
+                                                          error:&parseError];
+            NSArray *segments = [root isKindOfClass:[NSArray class]] &&
+                                        [root count] > 0
+                                    ? root[0]
+                                    : nil;
+            if ([segments isKindOfClass:[NSArray class]]) {
+                NSMutableString *result = [NSMutableString string];
+                for (id segment in segments) {
+                    if (![segment isKindOfClass:[NSArray class]] ||
+                        [segment count] == 0) {
+                        continue;
+                    }
+                    id piece = segment[0];
+                    if ([piece isKindOfClass:[NSString class]]) {
+                        [result appendString:piece];
+                    }
+                }
+                translatedText = result.copy;
+            }
+            if (translatedText.length == 0) {
+                resultError = parseError ?: [NSError errorWithDomain:@"com.codex.flymemultitasking.screensense.translate"
+                                                                   code:2
+                                                               userInfo:@{
+                                                                   NSLocalizedDescriptionKey:
+                                                                       @"Translation response was empty"
+                                                               }];
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(translatedText, resultError);
+        });
+        [session finishTasksAndInvalidate];
+    }];
+    self.translationTask = task;
+    [task resume];
 }
 
 - (void)handleCloseButton:(UIButton *)sender {
@@ -783,7 +919,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.state = FMScreenSenseStateDismissing;
     FLMEnqueueDiagnosticLine(@"[ScreenSense] dismiss begin");
     self.generation += 1;
-    [self dismissTextActionProxy];
+    [self cancelTranslation];
 
     FMScreenSenseVisionBridge *bridge = self.visionBridge;
     if (bridge) {
@@ -804,7 +940,6 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     overlayWindow.userInteractionEnabled = NO;
     self.closeButton.userInteractionEnabled = NO;
     self.actionBar.userInteractionEnabled = NO;
-    self.screenSenseCopyButton.userInteractionEnabled = NO;
     self.translateButton.userInteractionEnabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
@@ -814,7 +949,6 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     self.closeButton = nil;
     self.actionBar = nil;
-    self.screenSenseCopyButton = nil;
     self.translateButton = nil;
     self.imageView = nil;
     self.viewController = nil;
