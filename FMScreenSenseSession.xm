@@ -95,7 +95,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) UIImageView *imageView;
 @property(nonatomic, strong) UIButton *closeButton;
 @property(nonatomic, strong) UIView *actionBar;
-@property(nonatomic, strong) UIButton *copyActionButton;
+@property(nonatomic, strong) UIButton *screenSenseCopyButton;
 @property(nonatomic, strong) UIButton *translateButton;
 @property(nonatomic, strong) UIView *textActionPanel;
 @property(nonatomic, strong) UITextView *textActionView;
@@ -458,7 +458,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     ]];
 
     self.actionBar = actionBar;
-    self.copyActionButton = copyButton;
+    self.screenSenseCopyButton = copyButton;
     self.translateButton = translateButton;
     [self refreshActionButtonTitles];
 }
@@ -489,13 +489,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (void)refreshActionButtonTitles {
-    if (!self.copyActionButton || !self.translateButton) {
+    if (!self.screenSenseCopyButton || !self.translateButton) {
         return;
     }
 
     BOOL hasSelection = [self hasReadableTextSelection];
-    [self.copyActionButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
-                           forState:UIControlStateNormal];
+    [self.screenSenseCopyButton setTitle:hasSelection ? @"复制所选" : @"复制全部"
+                              forState:UIControlStateNormal];
     [self.translateButton setTitle:hasSelection ? @"翻译所选" : @"翻译全部"
                           forState:UIControlStateNormal];
 }
@@ -747,7 +747,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.window.hidden = YES;
     self.closeButton.userInteractionEnabled = NO;
     self.actionBar.userInteractionEnabled = NO;
-    self.copyActionButton.userInteractionEnabled = NO;
+    self.screenSenseCopyButton.userInteractionEnabled = NO;
     self.translateButton.userInteractionEnabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
@@ -759,7 +759,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     self.closeButton = nil;
     self.actionBar = nil;
-    self.copyActionButton = nil;
+    self.screenSenseCopyButton = nil;
     self.translateButton = nil;
     self.imageView = nil;
     self.viewController = nil;
