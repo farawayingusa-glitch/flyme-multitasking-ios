@@ -67,6 +67,34 @@ public final class FMScreenSenseVisionBridge: NSObject {
     }
 
     @MainActor
+    @objc public var selectedRangeCount: Int {
+        guard let liveTextInteraction = interaction else {
+            return 0
+        }
+        return liveTextInteraction.selectedRanges.count
+    }
+
+    /// Selects the complete OCR transcript through VisionKit. This is used
+    /// only as the no-selection fallback for the explicit Translate action;
+    /// it keeps the native Live Text interaction attached to the captured
+    /// image instead of opening a second text window.
+    @MainActor
+    @objc public func selectAllTextForAction() -> Bool {
+        guard let liveTextInteraction = interaction else {
+            return false
+        }
+
+        let text = liveTextInteraction.text
+        guard !text.isEmpty else {
+            return false
+        }
+
+        liveTextInteraction.selectedRanges = [text.startIndex..<text.endIndex]
+        notifySelectionState(for: liveTextInteraction)
+        return true
+    }
+
+    @MainActor
     @objc public var interactionViewMatchesImageView: Bool {
         guard let liveTextInteraction = interaction else {
             return false
@@ -272,13 +300,22 @@ public final class FMScreenSenseVisionBridge: NSObject {
             return ""
         }
 
-        // The public selectedText property is iOS 17+. Some iOS 16 VisionKit
-        // builds still expose the same getter at runtime, however, and that
-        // is the only way to preserve the user's Live Text selection for the
-        // explicit Copy/Translate buttons below. Probe it dynamically first
-        // so the tweak remains deployable to iOS 16 without linking against a
-        // newer-only symbol. The attributed form is used by a few early
-        // VisionKit revisions.
+        // Read the selected ranges first. Unlike the old hasActiveTextSelection
+        // boolean, selectedRanges is the actual text boundary that the user
+        // chose and is what the Copy/Translate buttons must consume.
+        let ranges = liveTextInteraction.selectedRanges
+        if !ranges.isEmpty {
+            let interactionText = liveTextInteraction.text
+            if !interactionText.isEmpty {
+                return ranges
+                    .map { String(interactionText[$0]) }
+                    .joined()
+            }
+        }
+
+        // Keep the runtime probes for VisionKit revisions that expose the
+        // selected string but return an empty selectedRanges array during the
+        // transition between highlight and selection states.
         for key in ["selectedText", "selectedAttributedText"] {
             let selector = NSSelectorFromString(key)
             guard liveTextInteraction.responds(to: selector) else {
@@ -302,9 +339,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
             }
         }
 
-        if #available(iOS 17.0, *) {
-            return liveTextInteraction.selectedText
-        }
         return ""
     }
 
@@ -313,7 +347,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
         let selectedText = selectedTextSnapshot()
         let fullText = analysis?.transcript ?? ""
         selectionHandler?(
-            liveTextInteraction.hasActiveTextSelection,
+            liveTextInteraction.hasActiveTextSelection || !selectedText.isEmpty,
             selectedText.count,
             fullText.count
         )

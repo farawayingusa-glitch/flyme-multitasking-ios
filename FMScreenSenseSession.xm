@@ -86,7 +86,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
-@interface FMScreenSenseSession () <UITextViewDelegate, UIEditMenuInteractionDelegate>
+@interface FMScreenSenseSession () <UIEditMenuInteractionDelegate>
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) CFTimeInterval analysisStartedAt;
@@ -97,23 +97,21 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) UIView *actionBar;
 @property(nonatomic, strong) UIButton *screenSenseCopyButton;
 @property(nonatomic, strong) UIButton *translateButton;
-@property(nonatomic, strong) UIView *textActionPanel;
 @property(nonatomic, strong) UITextView *textActionView;
-@property(nonatomic, strong) UIButton *textActionCloseButton;
 @property(nonatomic, strong) UIEditMenuInteraction *editMenuInteraction;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
 - (void)dismissOnMainThread;
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
+- (void)handleCloseButton:(UIButton *)sender;
 - (void)installActionBarInViewController:(UIViewController *)viewController;
 - (void)refreshActionButtonTitles;
 - (BOOL)hasReadableTextSelection;
 - (NSString *)currentActionText;
 - (void)handleCopyButton:(UIButton *)sender;
 - (void)handleTranslateButton:(UIButton *)sender;
-- (void)presentTranslatePanelForText:(NSString *)text;
-- (void)dismissTextActionPanel;
-- (void)textViewDidChangeSelection:(UITextView *)textView;
+- (void)presentNativeTranslateForText:(NSString *)text;
+- (void)dismissTextActionProxy;
 - (BOOL)performDirectTranslateOnTextView:(UITextView *)textView;
 - (void)showEditMenuForTextView:(UITextView *)textView;
 @end
@@ -259,7 +257,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     closeButton.accessibilityLabel = @"关闭识屏";
     closeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [closeButton addTarget:self
-                    action:@selector(dismiss)
+                    action:@selector(handleCloseButton:)
           forControlEvents:UIControlEventTouchUpInside];
     [viewController.view addSubview:closeButton];
     [NSLayoutConstraint activateConstraints:@[
@@ -307,8 +305,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
                                              NSInteger fullLength) {
         [weakSelf refreshActionButtonTitles];
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Selection] source=delegate active=%d selectedTextLength=%ld fullTextLength=%ld",
-            active ? 1 : 0, (long)selectedLength, (long)fullLength);
+            @"[ScreenSense][Selection] source=delegate active=%d selectedRangeCount=%ld selectedTextLength=%ld fullTextLength=%ld",
+            active ? 1 : 0, (long)weakSelf.visionBridge.selectedRangeCount,
+            (long)selectedLength, (long)fullLength);
     }];
     [self.visionBridge setVisionStateHandler:^(BOOL highlighted,
                                                NSUInteger activeInteractionTypes) {
@@ -354,8 +353,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         FMScreenSenseVisionBridge *bridge = strongSelf.visionBridge;
         FMScreenSenseWindow *overlayWindow = strongSelf.window;
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            @"[ScreenSense][Selection] active=%d selectedRangeCount=%ld selectedTextLength=%ld fullTextLength=%ld",
             bridge.hasActiveTextSelection ? 1 : 0,
+            (long)bridge.selectedRangeCount,
             (long)bridge.currentSelectedText.length,
             (long)bridge.currentFullText.length);
         FLMEnqueueDiagnosticLine(
@@ -464,22 +464,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 }
 
 - (BOOL)hasReadableTextSelection {
-    UITextView *textActionView = self.textActionView;
-    if (textActionView.superview && textActionView.selectedRange.length > 0 &&
-        NSMaxRange(textActionView.selectedRange) <= textActionView.text.length) {
-        return YES;
-    }
-
     return self.visionBridge.currentSelectedText.length > 0;
 }
 
 - (NSString *)currentActionText {
-    UITextView *textActionView = self.textActionView;
-    if (textActionView.superview && textActionView.selectedRange.length > 0 &&
-        NSMaxRange(textActionView.selectedRange) <= textActionView.text.length) {
-        return [textActionView.text substringWithRange:textActionView.selectedRange];
-    }
-
     NSString *selectedText = self.visionBridge.currentSelectedText;
     if (selectedText.length > 0) {
         return selectedText;
@@ -541,125 +529,78 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     FLMEnqueueDiagnosticLine(
         @"[ScreenSense][Action] translate requested mode=%@ textLength=%ld",
         hasSelection ? @"selection" : @"full", (long)text.length);
-    [self presentTranslatePanelForText:text];
+    [self presentNativeTranslateForText:text];
 }
 
-- (void)presentTranslatePanelForText:(NSString *)text {
-    [self dismissTextActionPanel];
+- (void)presentNativeTranslateForText:(NSString *)text {
+    [self dismissTextActionProxy];
 
-    if (!self.viewController || text.length == 0) {
+    if (!self.viewController || !self.imageView || text.length == 0) {
         return;
     }
 
-    UIView *panel = [[UIView alloc] initWithFrame:CGRectZero];
-    panel.translatesAutoresizingMaskIntoConstraints = NO;
-    panel.backgroundColor = [UIColor colorWithWhite:0.04 alpha:0.96];
-    panel.layer.cornerRadius = 14.0;
-    panel.layer.masksToBounds = YES;
-    panel.accessibilityIdentifier =
-        @"com.codex.flymemultitasking.screensense.translate-panel";
-
-    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [closeButton setTitle:@"返回识屏" forState:UIControlStateNormal];
-    [closeButton setTitleColor:[UIColor whiteColor]
-                       forState:UIControlStateNormal];
-    closeButton.titleLabel.font =
-        [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
-    [closeButton addTarget:self
-                    action:@selector(dismissTextActionPanel)
-          forControlEvents:UIControlEventTouchUpInside];
-    closeButton.accessibilityLabel = @"返回识屏画面";
-
-    UITextView *textView = [[UITextView alloc] initWithFrame:CGRectZero];
-    textView.translatesAutoresizingMaskIntoConstraints = NO;
+    // The proxy is deliberately transparent and lives over the captured image.
+    // It gives UIKit a real text responder for the native Translate action,
+    // while the screenshot remains the only visible canvas. The previous
+    // version put this text in a second full-screen panel, which changed the
+    // layout and also made a hidden first responder survive dismissal.
+    UITextView *textView = [[UITextView alloc] initWithFrame:self.imageView.bounds];
+    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                UIViewAutoresizingFlexibleHeight;
     textView.backgroundColor = [UIColor clearColor];
-    textView.textColor = [UIColor whiteColor];
+    textView.textColor = [UIColor clearColor];
     textView.tintColor = [UIColor systemBlueColor];
-    textView.font = [UIFont systemFontOfSize:17.0];
-    textView.editable = NO;
+    textView.alpha = 0.01;
+    textView.editable = YES;
     textView.selectable = YES;
-    textView.scrollEnabled = YES;
-    textView.delegate = self;
+    textView.scrollEnabled = NO;
+    textView.textContainerInset = UIEdgeInsetsZero;
     textView.text = text;
-    textView.accessibilityLabel = @"识别出的文字，可选择后翻译或复制";
+    // Prevent the proxy from bringing up the user's keyboard while still
+    // allowing it to become the text action responder.
+    UIView *emptyInputView = [[UIView alloc] initWithFrame:CGRectZero];
+    emptyInputView.backgroundColor = [UIColor clearColor];
+    textView.inputView = emptyInputView;
+    textView.accessibilityLabel = @"识屏翻译文字动作代理";
     textView.accessibilityIdentifier =
-        @"com.codex.flymemultitasking.screensense.recognized-text";
+        @"com.codex.flymemultitasking.screensense.translate-proxy";
 
-    [panel addSubview:closeButton];
-    [panel addSubview:textView];
-    [self.viewController.view addSubview:panel];
+    [self.viewController.view insertSubview:textView aboveSubview:self.imageView];
 
-    NSLayoutConstraint *bottomConstraint =
-        [panel.bottomAnchor constraintEqualToAnchor:self.actionBar.topAnchor
-                                           constant:-8.0];
-    [NSLayoutConstraint activateConstraints:@[
-        [panel.leadingAnchor
-            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.leadingAnchor
-                           constant:12.0],
-        [panel.trailingAnchor
-            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.trailingAnchor
-                           constant:-12.0],
-        [panel.topAnchor
-            constraintEqualToAnchor:self.viewController.view.safeAreaLayoutGuide.topAnchor
-                           constant:52.0],
-        bottomConstraint,
-        [closeButton.topAnchor constraintEqualToAnchor:panel.topAnchor constant:6.0],
-        [closeButton.trailingAnchor
-            constraintEqualToAnchor:panel.trailingAnchor
-                           constant:-8.0],
-        [closeButton.heightAnchor constraintEqualToConstant:32.0],
-        [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:76.0],
-        [textView.topAnchor constraintEqualToAnchor:closeButton.bottomAnchor
-                                            constant:2.0],
-        [textView.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor
-                                               constant:8.0],
-        [textView.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor
-                                                constant:-8.0],
-        [textView.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor
-                                               constant:-8.0],
-    ]];
-
-    self.textActionPanel = panel;
-    self.textActionView = textView;
-    self.textActionCloseButton = closeButton;
     UIEditMenuInteraction *editMenuInteraction =
         [[UIEditMenuInteraction alloc] initWithDelegate:self];
     [textView addInteraction:editMenuInteraction];
+    self.textActionView = textView;
     self.editMenuInteraction = editMenuInteraction;
 
-    [self.viewController.view layoutIfNeeded];
-    [textView becomeFirstResponder];
+    BOOL becameFirstResponder = [textView becomeFirstResponder];
     textView.selectedRange = NSMakeRange(0, textView.text.length);
-    [self refreshActionButtonTitles];
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate proxy=1 firstResponder=%d textLength=%ld",
+        becameFirstResponder ? 1 : 0, (long)text.length);
 
     if (![self performDirectTranslateOnTextView:textView]) {
         [self showEditMenuForTextView:textView];
     }
 }
 
-- (void)dismissTextActionPanel {
+- (void)dismissTextActionProxy {
     UITextView *textView = self.textActionView;
     if (textView) {
         [textView resignFirstResponder];
+        [textView removeFromSuperview];
     }
-    [self.textActionPanel removeFromSuperview];
     self.editMenuInteraction = nil;
-    self.textActionCloseButton = nil;
     self.textActionView = nil;
-    self.textActionPanel = nil;
-    [self refreshActionButtonTitles];
-}
-
-- (void)textViewDidChangeSelection:(UITextView *)textView {
-    if (textView == self.textActionView) {
-        [self refreshActionButtonTitles];
-    }
 }
 
 - (BOOL)performDirectTranslateOnTextView:(UITextView *)textView {
     SEL translateSelector = NSSelectorFromString(@"translate:");
-    if (![textView canPerformAction:translateSelector withSender:nil]) {
+    BOOL canTranslate = [textView canPerformAction:translateSelector withSender:nil];
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate system-action-available=%d",
+        canTranslate ? 1 : 0);
+    if (!canTranslate) {
         return NO;
     }
 
@@ -700,6 +641,19 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     return [UIMenu menuWithChildren:suggestedActions];
 }
 
+- (void)handleCloseButton:(UIButton *)sender {
+    sender.userInteractionEnabled = NO;
+    FLMEnqueueDiagnosticLine(@"[ScreenSense] close button request");
+
+    // Finish the current button event before removing the key window. Doing
+    // the teardown synchronously from UIControl's touch-up callback can let
+    // the same touch continue into the host app's window on iOS 16.
+    __weak FMScreenSenseSession *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf dismiss];
+    });
+}
+
 - (void)dismiss {
     if (![NSThread isMainThread]) {
         __weak FMScreenSenseSession *weakSelf = self;
@@ -709,6 +663,9 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         return;
     }
 
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense] dismiss request state=%@",
+        FMScreenSenseStateName(self.state));
     [self dismissOnMainThread];
 }
 
@@ -728,23 +685,25 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.state = FMScreenSenseStateDismissing;
     FLMEnqueueDiagnosticLine(@"[ScreenSense] dismiss begin");
     self.generation += 1;
-    [self dismissTextActionPanel];
+    [self dismissTextActionProxy];
 
     FMScreenSenseVisionBridge *bridge = self.visionBridge;
     if (bridge) {
         [bridge teardown];
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Selection] active=%d selectedTextLength=%ld fullTextLength=%ld",
+            @"[ScreenSense][Selection] active=%d selectedRangeCount=%ld selectedTextLength=%ld fullTextLength=%ld",
             bridge.hasActiveTextSelection ? 1 : 0,
+            (long)bridge.selectedRangeCount,
             (long)bridge.currentSelectedText.length,
             (long)bridge.currentFullText.length);
     }
     self.visionBridge = nil;
 
-    self.imageView.userInteractionEnabled = NO;
-    self.imageView.image = nil;
-    self.window.userInteractionEnabled = NO;
-    self.window.hidden = YES;
+    FMScreenSenseWindow *overlayWindow = self.window;
+    UIImageView *imageView = self.imageView;
+    imageView.userInteractionEnabled = NO;
+    imageView.image = nil;
+    overlayWindow.userInteractionEnabled = NO;
     self.closeButton.userInteractionEnabled = NO;
     self.actionBar.userInteractionEnabled = NO;
     self.screenSenseCopyButton.userInteractionEnabled = NO;
@@ -752,10 +711,8 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
     self.previousKeyWindow = nil;
-    if (previousKeyWindow && previousKeyWindow.windowScene.activationState !=
-                                 UISceneActivationStateUnattached) {
-        [previousKeyWindow makeKeyAndVisible];
-    }
+    [overlayWindow resignKeyWindow];
+    overlayWindow.hidden = YES;
 
     self.closeButton = nil;
     self.actionBar = nil;
@@ -767,6 +724,39 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     self.analysisStartedAt = 0.0;
     self.state = FMScreenSenseStateInactive;
     FLMEnqueueDiagnosticLine(@"[ScreenSense] cleanup completed");
+
+    // Restore the host window after the close button's touch has fully
+    // unwound. Restoring it synchronously from the overlay callback can cause
+    // iOS 16 to deliver the same touch into the host app, which looks like an
+    // app close/crash to the user.
+    __weak FMScreenSenseSession *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        FMScreenSenseSession *strongSelf = weakSelf;
+        if (previousKeyWindow &&
+            previousKeyWindow.windowScene.activationState !=
+                UISceneActivationStateUnattached &&
+            previousKeyWindow != overlayWindow) {
+            if (previousKeyWindow.isHidden) {
+                previousKeyWindow.hidden = NO;
+            }
+            [previousKeyWindow makeKeyWindow];
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense] host window restored class=%@ key=%d hidden=%d",
+                NSStringFromClass([previousKeyWindow class]),
+                previousKeyWindow.isKeyWindow ? 1 : 0,
+                previousKeyWindow.isHidden ? 1 : 0);
+        } else {
+            FLMEnqueueDiagnosticLine(
+                @"[ScreenSense] host window restore skipped previous=%@",
+                previousKeyWindow ? @"unavailable" : @"nil");
+        }
+
+        // Detach the hidden overlay's controller only after the event turn.
+        // This keeps all UIKit callbacks inside the overlay alive until the
+        // close touch has completed.
+        overlayWindow.rootViewController = nil;
+        (void)strongSelf;
+    });
 }
 
 @end
