@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Filter</key>
+    <dict>
+        <key>Bundles</key>
+        <array>
+            <!--
+                 UIKit is the smallest available static injection scope that
+                 can reach an arbitrary wheel-selected application. The
+                 current wheel target is not knowable to this plist filter;
+                 Keyboard.xm therefore applies the exact shared bundle-hash
+                 gate before installing any functional hooks.
+            -->
+            <string>com.apple.UIKit</string>
+        </array>
+    </dict>
+</dict>
+</plist>
