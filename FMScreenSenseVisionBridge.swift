@@ -19,7 +19,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
     private var completion: ((Bool, NSError?) -> Void)?
     private var selectionHandler: ((Bool, Int, Int) -> Void)?
     private var visionStateHandler: ((Bool, UInt) -> Void)?
-    private var visionGestureHandler: ((CGPoint, UInt, Bool, Bool) -> Void)?
     private weak var preferredPresentingViewController: UIViewController?
     private var generation: UInt64 = 0
 
@@ -75,30 +74,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
             return liveTextInteraction.selectedRanges.count
         }
         return 0
-    }
-
-    /// Selects the complete OCR transcript through VisionKit. This is used
-    /// only as the no-selection fallback for the explicit Translate action;
-    /// it keeps the native Live Text interaction attached to the captured
-    /// image instead of opening a second text window.
-    @MainActor
-    @objc public func selectAllTextForAction() -> Bool {
-        guard let liveTextInteraction = interaction else {
-            return false
-        }
-
-        if #available(iOS 17.0, *) {
-            let text = liveTextInteraction.text
-            guard !text.isEmpty else {
-                return false
-            }
-
-            liveTextInteraction.selectedRanges = [text.startIndex..<text.endIndex]
-            notifySelectionState(for: liveTextInteraction)
-            return true
-        }
-
-        return false
     }
 
     @MainActor
@@ -166,13 +141,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
     }
 
     @MainActor
-    @objc public func setVisionGestureHandler(
-        _ handler: @escaping (CGPoint, UInt, Bool, Bool) -> Void
-    ) {
-        visionGestureHandler = handler
-    }
-
-    @MainActor
     @objc public func setPresentingViewController(
         _ viewController: UIViewController?
     ) {
@@ -233,23 +201,20 @@ public final class FMScreenSenseVisionBridge: NSObject {
                     return
                 }
 
-                self.analysis = result
-
                 let liveTextInteraction = ImageAnalysisInteraction()
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
-                liveTextInteraction.analysis = result
-                // Configure the interaction after assigning analysis. VisionKit
-                // resets its Live Text highlight state while analysis and the
-                // preferred interaction types are being installed. Leaving
-                // selectableItemsHighlighted false makes the interaction
-                // report text hits but never enter an active selection on
-                // iOS 16, so copy/translate never get a chance to appear.
+                // Configure the interaction as a native Live Text control
+                // before assigning analysis. This follows Apple's documented
+                // setup order and leaves iOS 16 in charge of the gesture and
+                // copy/translate menu.
+                liveTextInteraction.delegate = self
                 liveTextInteraction.preferredInteractionTypes = .textSelection
                 liveTextInteraction.isSupplementaryInterfaceHidden = false
-                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = true
+                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = false
                 liveTextInteraction.selectableItemsHighlighted = true
-                liveTextInteraction.delegate = self
+                liveTextInteraction.analysis = result
+                self.analysis = result
                 self.interaction = liveTextInteraction
                 self.analysisTask = nil
 
@@ -288,7 +253,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
         completion = nil
         selectionHandler = nil
         visionStateHandler = nil
-        visionGestureHandler = nil
         preferredPresentingViewController = nil
     }
 
@@ -307,45 +271,12 @@ public final class FMScreenSenseVisionBridge: NSObject {
             return ""
         }
 
-        // Read the selected ranges first. Unlike the old hasActiveTextSelection
-        // boolean, selectedRanges is the actual text boundary that the user
-        // chose and is what the Copy/Translate buttons must consume.
+        // iOS 16 exposes the active-selection state and the native Live Text
+        // actions, but not a public selected-text string. The string APIs are
+        // available starting with iOS 17 and are intentionally used only for
+        // diagnostics here; translation and copying stay inside Live Text.
         if #available(iOS 17.0, *) {
-            let ranges = liveTextInteraction.selectedRanges
-            if !ranges.isEmpty {
-                let interactionText = liveTextInteraction.text
-                if !interactionText.isEmpty {
-                    return ranges
-                        .map { String(interactionText[$0]) }
-                        .joined()
-                }
-            }
-        }
-
-        // Keep the runtime probes for VisionKit revisions that expose the
-        // selected string but return an empty selectedRanges array during the
-        // transition between highlight and selection states.
-        for key in ["selectedText", "selectedAttributedText"] {
-            let selector = NSSelectorFromString(key)
-            guard liveTextInteraction.responds(to: selector) else {
-                continue
-            }
-
-            if let value = liveTextInteraction.value(forKey: key) as? String,
-               !value.isEmpty {
-                return value
-            }
-
-            if let value = liveTextInteraction.value(forKey: key) as? NSString,
-               value.length > 0 {
-                return value as String
-            }
-
-            if let value = liveTextInteraction.value(forKey: key)
-                as? NSAttributedString,
-               value.length > 0 {
-                return value.string
-            }
+            return liveTextInteraction.selectedText
         }
 
         return ""
@@ -374,23 +305,6 @@ extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
     @MainActor
     public func textSelectionDidChange(_ interaction: ImageAnalysisInteraction) {
         notifySelectionState(for: interaction)
-    }
-
-    @MainActor
-    public func interaction(
-        _ interaction: ImageAnalysisInteraction,
-        shouldBeginAt point: CGPoint,
-        for interactionType: ImageAnalysisInteraction.InteractionTypes
-    ) -> Bool {
-        let hasText = interaction.hasText(at: point)
-        let analysisHasText = interaction.analysisHasText(at: point)
-        visionGestureHandler?(
-            point,
-            interactionType.rawValue,
-            hasText,
-            analysisHasText
-        )
-        return true
     }
 
     @MainActor
