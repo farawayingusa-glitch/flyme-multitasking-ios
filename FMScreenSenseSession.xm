@@ -86,6 +86,16 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @end
 
+@interface UIApplication (FMScreenSensePrivate)
+- (BOOL)launchApplicationWithIdentifier:(NSString *)identifier
+                               suspended:(BOOL)suspended;
+@end
+
+@interface NSObject (FMScreenSenseWorkspacePrivate)
++ (id)defaultWorkspace;
+- (BOOL)openApplicationWithBundleID:(NSString *)bundleIdentifier;
+@end
+
 @interface FMScreenSenseSession ()
 @property(nonatomic, assign) FMScreenSenseState state;
 @property(nonatomic, assign) NSUInteger generation;
@@ -94,11 +104,14 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) FMScreenSenseViewController *viewController;
 @property(nonatomic, strong) UIImageView *imageView;
 @property(nonatomic, strong) UIButton *closeButton;
+@property(nonatomic, strong) UIButton *translateButton;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
 - (void)dismissOnMainThread;
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
 - (void)handleCloseButton:(UIButton *)sender;
+- (void)handleTranslateButton:(UIButton *)sender;
+- (void)launchSystemTranslateApplication;
 @end
 
 @implementation FMScreenSenseSession
@@ -263,10 +276,42 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         [closeButton.heightAnchor constraintEqualToConstant:36.0],
     ]];
 
+    UIButton *translateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    translateButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [translateButton setTitle:@"翻译" forState:UIControlStateNormal];
+    [translateButton setTitleColor:[UIColor whiteColor]
+                           forState:UIControlStateNormal];
+    [translateButton setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.55]
+                           forState:UIControlStateHighlighted];
+    translateButton.titleLabel.font =
+        [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    translateButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
+    translateButton.layer.cornerRadius = 18.0;
+    translateButton.layer.masksToBounds = YES;
+    translateButton.enabled = NO;
+    translateButton.accessibilityLabel = @"跳转系统翻译";
+    translateButton.accessibilityIdentifier =
+        @"com.codex.flymemultitasking.screensense.system-translate";
+    [translateButton addTarget:self
+                        action:@selector(handleTranslateButton:)
+              forControlEvents:UIControlEventTouchUpInside];
+    [viewController.view addSubview:translateButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [translateButton.leadingAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.leadingAnchor
+                           constant:12.0],
+        [translateButton.bottomAnchor
+            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.bottomAnchor
+                           constant:-8.0],
+        [translateButton.widthAnchor constraintEqualToConstant:64.0],
+        [translateButton.heightAnchor constraintEqualToConstant:36.0],
+    ]];
+
     self.window = window;
     self.viewController = viewController;
     self.imageView = imageView;
     self.closeButton = closeButton;
+    self.translateButton = translateButton;
 
     window.hidden = NO;
     [window makeKeyAndVisible];
@@ -367,8 +412,102 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
                 ? NSStringFromClass([strongSelf.imageView.window class])
                 : @"<nil>");
         strongSelf.state = FMScreenSenseStateActive;
+        strongSelf.translateButton.enabled = bridge.currentFullText.length > 0;
         FLMEnqueueDiagnosticLine(@"[ScreenSense] state=active");
     }];
+}
+
+- (void)handleTranslateButton:(UIButton *)sender {
+    if (self.state != FMScreenSenseStateActive || !sender.enabled) {
+        return;
+    }
+
+    NSString *selectedText = self.visionBridge.currentSelectedText;
+    BOOL hasSelection = selectedText.length > 0;
+    NSString *text = hasSelection
+                         ? selectedText
+                         : (self.visionBridge.currentFullText ?: @"");
+    if (text.length == 0) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action][ERROR] translate jump ignored reason=empty-text");
+        return;
+    }
+
+    // iOS 16's Translate app has no documented text-prefill interface. Put the
+    // exact selected/full OCR result on the system pasteboard before opening
+    // the app, so the user can paste it immediately without re-running OCR.
+    [UIPasteboard generalPasteboard].string = text;
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action] translate jump mode=%@ textLength=%ld clipboard=1 target=com.apple.Translate",
+        hasSelection ? @"selection" : @"full", (long)text.length);
+    sender.enabled = NO;
+
+    __weak FMScreenSenseSession *weakSelf = self;
+    // Finish the button event and tear down the frozen overlay before handing
+    // foreground control to Translate. This keeps the previous host window
+    // restore path identical to the stable close-button path.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        FMScreenSenseSession *strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        [strongSelf dismissOnMainThread];
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                [strongSelf launchSystemTranslateApplication];
+            });
+    });
+}
+
+- (void)launchSystemTranslateApplication {
+    static NSString *const translateBundleIdentifier = @"com.apple.Translate";
+    UIApplication *application = [UIApplication sharedApplication];
+    BOOL opened = NO;
+
+    if ([application respondsToSelector:
+                     @selector(launchApplicationWithIdentifier:suspended:)]) {
+        opened = [application launchApplicationWithIdentifier:
+                                  translateBundleIdentifier
+                                                   suspended:NO];
+    }
+
+    if (!opened) {
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = [workspaceClass respondsToSelector:
+                                      @selector(defaultWorkspace)]
+                           ? [workspaceClass defaultWorkspace]
+                           : nil;
+        if ([workspace respondsToSelector:
+                          @selector(openApplicationWithBundleID:)]) {
+            opened = [workspace openApplicationWithBundleID:
+                                      translateBundleIdentifier];
+        }
+    }
+
+    if (opened) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Action] translate jump launched bundle=com.apple.Translate");
+        return;
+    }
+
+    // Keep a URL-scheme fallback for iOS installations where the private
+    // SpringBoard launcher is unavailable. The pasteboard text remains ready.
+    NSURL *translateURL = [NSURL URLWithString:@"translate://"];
+    if ([application respondsToSelector:
+                     @selector(openURL:options:completionHandler:)]) {
+        [application openURL:translateURL
+                      options:@{}
+           completionHandler:^(BOOL success) {
+               FLMEnqueueDiagnosticLine(
+                   @"[ScreenSense][Action] translate jump url-fallback success=%d",
+                   success ? 1 : 0);
+           }];
+        return;
+    }
+
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Action][ERROR] translate jump unavailable");
 }
 
 - (void)handleCloseButton:(UIButton *)sender {
@@ -434,6 +573,8 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     imageView.image = nil;
     overlayWindow.userInteractionEnabled = NO;
     self.closeButton.userInteractionEnabled = NO;
+    self.translateButton.userInteractionEnabled = NO;
+    self.translateButton.enabled = NO;
 
     UIWindow *previousKeyWindow = self.previousKeyWindow;
     self.previousKeyWindow = nil;
@@ -441,6 +582,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     overlayWindow.hidden = YES;
 
     self.closeButton = nil;
+    self.translateButton = nil;
     self.imageView = nil;
     self.viewController = nil;
     self.window = nil;
