@@ -265,16 +265,6 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
                     action:@selector(handleCloseButton:)
           forControlEvents:UIControlEventTouchUpInside];
     [viewController.view addSubview:closeButton];
-    [NSLayoutConstraint activateConstraints:@[
-        [closeButton.topAnchor
-            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.topAnchor
-                           constant:8.0],
-        [closeButton.trailingAnchor
-            constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.trailingAnchor
-                           constant:-12.0],
-        [closeButton.widthAnchor constraintGreaterThanOrEqualToConstant:56.0],
-        [closeButton.heightAnchor constraintEqualToConstant:36.0],
-    ]];
 
     UIButton *translateButton = [UIButton buttonWithType:UIButtonTypeSystem];
     translateButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -297,11 +287,20 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
               forControlEvents:UIControlEventTouchUpInside];
     [viewController.view addSubview:translateButton];
     [NSLayoutConstraint activateConstraints:@[
-        [translateButton.leadingAnchor
+        // Keep the two session controls in a compact lower-left stack. The
+        // close action remains outside the image view's gesture arena.
+        [closeButton.leadingAnchor
             constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.leadingAnchor
                            constant:12.0],
-        [translateButton.bottomAnchor
+        [closeButton.bottomAnchor
             constraintEqualToAnchor:viewController.view.safeAreaLayoutGuide.bottomAnchor
+                           constant:-8.0],
+        [closeButton.widthAnchor constraintEqualToAnchor:translateButton.widthAnchor],
+        [closeButton.heightAnchor constraintEqualToConstant:36.0],
+        [translateButton.leadingAnchor
+            constraintEqualToAnchor:closeButton.leadingAnchor],
+        [translateButton.bottomAnchor
+            constraintEqualToAnchor:closeButton.topAnchor
                            constant:-8.0],
         [translateButton.widthAnchor constraintEqualToConstant:64.0],
         [translateButton.heightAnchor constraintEqualToConstant:36.0],
