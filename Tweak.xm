@@ -2684,6 +2684,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.cornerGestureStartPoint = point;
         return YES;
     }
+    if ([self isCornerGesture:gestureRecognizer]) {
+        if (!self.enabled || self.wheelPinned ||
+            self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        // _UISystemGestureManager may skip shouldReceiveTouch: for an
+        // application-owned Scene. Resolve the start point again at the
+        // should-begin boundary so the primary global recognizer is not
+        // dependent on a callback UIKit can omit.
+        CGPoint rawPoint = [gestureRecognizer locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        BOOL fromRight = NO;
+        if (!FLMPointInsideCornerTrigger(point,
+                                         FLMVisualScreenBounds(),
+                                         &fromRight)) {
+            return NO;
+        }
+        self.presentingFromRight = fromRight;
+        self.cornerGestureStartPoint = point;
+        return YES;
+    }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
