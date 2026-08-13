@@ -1,0 +1,44 @@
+name: Build flyme radius extension
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check macOS build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          command -v dpkg-deb >/dev/null || brew install dpkg
+          command -v dpkg-deb
+
+      - name: Install Theos
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          command -v ldid
+
+      - name: Build package
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          chmod 755 layout/DEBIAN/postinst
+          make clean package FINALPACKAGE=1 messages=yes
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: flyme-radius-extension
+          path: packages/*.deb
+          if-no-files-found: error
