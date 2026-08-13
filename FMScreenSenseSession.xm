@@ -72,6 +72,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @implementation FMScreenSenseViewController
 
+- (BOOL)canBecomeFirstResponder {
+    return YES;
+}
+
 - (BOOL)prefersStatusBarHidden {
     return YES;
 }
@@ -212,7 +216,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     CGFloat hostWindowLevel = self.previousKeyWindow
                                   ? self.previousKeyWindow.windowLevel
                                   : UIWindowLevelNormal;
-    window.windowLevel = MAX(UIWindowLevelAlert + 1.0, hostWindowLevel + 1.0);
+    window.windowLevel = MAX(UIWindowLevelNormal + 1.0, hostWindowLevel + 1.0);
     window.backgroundColor = [UIColor blackColor];
     window.opaque = YES;
     window.userInteractionEnabled = YES;
@@ -341,9 +345,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             (long)bridge.currentSelectedText.length,
             (long)bridge.currentFullText.length);
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Vision] preferredInteractionTypes=%lu supplementaryHidden=%d selectableItemsHighlighted=%d",
+            @"[ScreenSense][Vision] preferredInteractionTypes=%lu supplementaryHidden=%d liveTextButtonVisible=%d selectableItemsHighlighted=%d",
             (unsigned long)bridge.preferredInteractionTypesRawValue,
             bridge.supplementaryInterfaceHidden ? 1 : 0,
+            bridge.liveTextButtonVisible ? 1 : 0,
             bridge.selectableItemsHighlighted ? 1 : 0);
         CGRect imageViewBounds = bridge.interactionImageViewBounds;
         CGSize imageSize = bridge.interactionImageSize;
