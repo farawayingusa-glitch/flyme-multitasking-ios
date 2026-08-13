@@ -201,7 +201,13 @@ public final class FMScreenSenseVisionBridge: NSObject {
                     return
                 }
 
-                let liveTextInteraction = ImageAnalysisInteraction()
+                // Construct the interaction with its delegate already
+                // installed. VisionKit creates the native Live Text action
+                // responder while the interaction is attached; assigning the
+                // delegate after analysis can leave selection highlights alive
+                // while copy/translate actions have no presenting context on
+                // iOS 16.
+                let liveTextInteraction = ImageAnalysisInteraction(self)
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
                 // Assign the analysis before enabling the interaction types.
@@ -209,12 +215,12 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 // configuring textSelection before that point leaves the
                 // interaction attached but with selectableItemsHighlighted=0.
                 liveTextInteraction.analysis = result
-                liveTextInteraction.delegate = self
                 liveTextInteraction.preferredInteractionTypes = .textSelection
                 liveTextInteraction.isSupplementaryInterfaceHidden = false
-                // Keep the standard Live Text long-press behavior. Data
-                // detector handling is disabled by textSelection itself
-                // unless iOS finds a URL, phone number, or address.
+                // Keep standard Live Text long-press behavior for data found
+                // inside recognized text. The text-selection action menu
+                // remains the system menu and supplies Copy/Translate.
+                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = true
                 liveTextInteraction.selectableItemsHighlighted = true
                 self.analysis = result
                 self.interaction = liveTextInteraction
@@ -298,10 +304,42 @@ public final class FMScreenSenseVisionBridge: NSObject {
 
 extension FMScreenSenseVisionBridge: ImageAnalysisInteractionDelegate {
     @MainActor
+    public func contentView(
+        for interaction: ImageAnalysisInteraction
+    ) -> UIView? {
+        // Be explicit because this interaction lives in a custom SpringBoard
+        // window. Returning the actual UIImageView keeps the native action
+        // menu anchored to the same view that owns the image interaction.
+        return attachedImageView
+    }
+
+    @MainActor
+    public func contentsRect(
+        for interaction: ImageAnalysisInteraction
+    ) -> CGRect {
+        // The image fills the UIImageView's content area. UIImageView would
+        // normally provide this calculation itself; returning the unit rect
+        // makes the contract deterministic for the custom window as well.
+        return CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+    }
+
+    @MainActor
     public func presentingViewController(
         for interaction: ImageAnalysisInteraction
     ) -> UIViewController? {
         return preferredPresentingViewController
+    }
+
+    @MainActor
+    public func interaction(
+        _ interaction: ImageAnalysisInteraction,
+        shouldBeginAt point: CGPoint,
+        for interactionType: ImageAnalysisInteraction.InteractionTypes
+    ) -> Bool {
+        // Do not let the default delegate implementation reject the second
+        // tap/long-press that opens the native Live Text action menu on iOS
+        // 16. VisionKit still performs the hit test internally.
+        return true
     }
 
     @MainActor

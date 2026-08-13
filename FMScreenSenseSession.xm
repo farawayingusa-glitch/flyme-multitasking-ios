@@ -205,7 +205,14 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     FMScreenSenseWindow *window =
         [[FMScreenSenseWindow alloc] initWithWindowScene:scene];
     window.frame = scene.coordinateSpace.bounds;
-    window.windowLevel = UIWindowLevelAlert + 120.0;
+    // Keep the frozen screen above the current host window, but leave room
+    // for UIKit/VisionKit's own text-effects and translation presentation
+    // windows. The previous Alert+120 level could visually cover the native
+    // Copy/Translate UI while selection itself still appeared to work.
+    CGFloat hostWindowLevel = self.previousKeyWindow
+                                  ? self.previousKeyWindow.windowLevel
+                                  : UIWindowLevelNormal;
+    window.windowLevel = MAX(UIWindowLevelAlert + 1.0, hostWindowLevel + 1.0);
     window.backgroundColor = [UIColor blackColor];
     window.opaque = YES;
     window.userInteractionEnabled = YES;
