@@ -46,11 +46,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
     }
 
     @MainActor
-    @objc public var liveTextButtonVisible: Bool {
-        return interaction?.liveTextButtonVisible ?? false
-    }
-
-    @MainActor
     @objc public var hasActiveTextSelection: Bool {
         return interaction?.hasActiveTextSelection ?? false
     }
@@ -220,10 +215,7 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 // configuring textSelection before that point leaves the
                 // interaction attached but with selectableItemsHighlighted=0.
                 liveTextInteraction.analysis = result
-                // Use Apple's complete text-only Live Text mode. It includes
-                // text selection plus the system's standard Copy/Translate
-                // action menu and its Live Text supplementary interface.
-                liveTextInteraction.preferredInteractionTypes = .automaticTextOnly
+                liveTextInteraction.preferredInteractionTypes = .textSelection
                 liveTextInteraction.isSupplementaryInterfaceHidden = false
                 // Keep standard Live Text long-press behavior for data found
                 // inside recognized text. The text-selection action menu
