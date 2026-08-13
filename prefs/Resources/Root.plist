@@ -36,7 +36,7 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>左右下角共用此触发范围。默认值为 58，调整后立即生效。</string>
+            <string>左右下角共用此触发范围。默认保持原始 58×65pt，调整后立即生效。</string>
             <key>label</key>
             <string>轮盘触摸触发</string>
         </dict>
