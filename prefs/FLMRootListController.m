@@ -504,11 +504,7 @@ static NSString *FLMNameForIdentifier(
 
 @interface FLMTranslationSettingsController : PSViewController
     <UITextFieldDelegate>
-@property(nonatomic, strong) UISegmentedControl *providerControl;
 @property(nonatomic, strong) UITextField *targetLanguageField;
-@property(nonatomic, strong) UITextField *apiURLField;
-@property(nonatomic, strong) UITextField *apiKeyField;
-@property(nonatomic, strong) UILabel *providerDescriptionLabel;
 @end
 
 @interface FLMAppOrderController
@@ -688,27 +684,10 @@ static NSString *FLMNameForIdentifier(
     [scrollView addSubview:stack];
 
     UILabel *intro = [self labelWithText:
-        @"识屏后点击“翻译”即可执行。默认使用 Google 翻译网页跳转；如果以后配置 API，可切换到自定义 API，并在当前识屏窗口显示返回结果。"
+        @"识屏后点击“翻译”即可执行。插件会把当前选中的文字或全部识别文字交给 Google 翻译网页处理。"
                               fontSize:15.0];
     intro.textColor = [UIColor secondaryLabelColor];
     [stack addArrangedSubview:intro];
-
-    UILabel *providerTitle = [self labelWithText:@"翻译方式" fontSize:17.0];
-    [stack addArrangedSubview:providerTitle];
-
-    self.providerControl = [[UISegmentedControl alloc]
-        initWithItems:@[@"网页跳转", @"自定义 API"]];
-    self.providerControl.translatesAutoresizingMaskIntoConstraints = NO;
-    NSString *provider = FLMCopyPreference(FLM_TRANSLATION_PROVIDER_KEY);
-    self.providerControl.selectedSegmentIndex =
-        [provider isKindOfClass:[NSString class]] &&
-                [provider isEqualToString:FLM_TRANSLATION_PROVIDER_CUSTOM]
-            ? 1
-            : 0;
-    [self.providerControl addTarget:self
-                             action:@selector(providerChanged:)
-                   forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:self.providerControl];
 
     UILabel *targetTitle = [self labelWithText:@"目标语言" fontSize:17.0];
     [stack addArrangedSubview:targetTitle];
@@ -721,33 +700,6 @@ static NSString *FLMNameForIdentifier(
             : @"zh-CN";
     self.targetLanguageField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     [stack addArrangedSubview:self.targetLanguageField];
-
-    UILabel *apiGroupTitle = [self labelWithText:@"自定义 API" fontSize:17.0];
-    [stack addArrangedSubview:apiGroupTitle];
-
-    self.apiURLField = [self fieldWithPlaceholder:
-        @"API 地址（默认 Google Cloud v2）" secureEntry:NO];
-    self.apiURLField.keyboardType = UIKeyboardTypeURL;
-    self.apiURLField.textContentType = UITextContentTypeURL;
-    NSString *apiURL = FLMCopyPreference(FLM_TRANSLATION_API_URL_KEY);
-    self.apiURLField.text =
-        [apiURL isKindOfClass:[NSString class]] && apiURL.length > 0
-            ? apiURL
-            : @"https://translation.googleapis.com/language/translate/v2";
-    self.apiURLField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    [stack addArrangedSubview:self.apiURLField];
-
-    self.apiKeyField = [self fieldWithPlaceholder:@"API Key（可留空）"
-                                       secureEntry:YES];
-    self.apiKeyField.textContentType = UITextContentTypePassword;
-    NSString *apiKey = FLMCopyPreference(FLM_TRANSLATION_API_KEY_KEY);
-    self.apiKeyField.text = [apiKey isKindOfClass:[NSString class]] ? apiKey : @"";
-    self.apiKeyField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    [stack addArrangedSubview:self.apiKeyField];
-
-    self.providerDescriptionLabel = [self labelWithText:@"" fontSize:13.0];
-    self.providerDescriptionLabel.textColor = [UIColor secondaryLabelColor];
-    [stack addArrangedSubview:self.providerDescriptionLabel];
 
     UIButton *saveButton = [UIButton buttonWithType:UIButtonTypeSystem];
     saveButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -762,12 +714,6 @@ static NSString *FLMNameForIdentifier(
     [saveButton.heightAnchor constraintEqualToConstant:46.0].active = YES;
     [stack addArrangedSubview:saveButton];
 
-    UILabel *formatNote = [self labelWithText:
-        @"自定义 API 按 Google Cloud Translation v2 的 JSON 格式发送：请求字段为 q、target、format，结果读取 data.translations[0].translatedText。网页跳转模式不需要 API Key。"
-                                  fontSize:12.0];
-    formatNote.textColor = [UIColor tertiaryLabelColor];
-    [stack addArrangedSubview:formatNote];
-
     [NSLayoutConstraint activateConstraints:@[
         [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -780,31 +726,11 @@ static NSString *FLMNameForIdentifier(
         [stack.widthAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.widthAnchor],
     ]];
 
-    [self updateProviderDescriptionAndFields];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [self saveSettings];
-}
-
-- (void)providerChanged:(UISegmentedControl *)control {
-    FLMSetPreference(FLM_TRANSLATION_PROVIDER_KEY,
-                     control.selectedSegmentIndex == 1
-                         ? FLM_TRANSLATION_PROVIDER_CUSTOM
-                         : FLM_TRANSLATION_PROVIDER_WEB);
-    [self updateProviderDescriptionAndFields];
-}
-
-- (void)updateProviderDescriptionAndFields {
-    BOOL custom = self.providerControl.selectedSegmentIndex == 1;
-    self.apiURLField.enabled = custom;
-    self.apiKeyField.enabled = custom;
-    self.apiURLField.alpha = custom ? 1.0 : 0.45;
-    self.apiKeyField.alpha = custom ? 1.0 : 0.45;
-    self.providerDescriptionLabel.text = custom
-        ? @"当前使用自定义 API。Google Cloud Translation v2 可直接使用默认地址，填入 API Key 后保存即可。"
-        : @"当前使用网页跳转。翻译文字会带入 Google 翻译网页，不会在插件内发起网络请求。";
 }
 
 - (void)textFieldEditingDidEnd:(UITextField *)field {
@@ -823,7 +749,7 @@ static NSString *FLMNameForIdentifier(
     [self saveSettings];
     UIAlertController *alert =
         [UIAlertController alertControllerWithTitle:@"已保存"
-                                             message:@"下次打开识屏后即可使用新的翻译方式。"
+                                             message:@"下次打开识屏后即可使用新的目标语言。"
                                       preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"好"
                                                style:UIAlertActionStyleDefault
@@ -838,17 +764,8 @@ static NSString *FLMNameForIdentifier(
     NSString *target = [self.targetLanguageField.text
         stringByTrimmingCharactersInSet:
             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSString *apiURL = [self.apiURLField.text
-        stringByTrimmingCharactersInSet:
-            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSString *apiKey = self.apiKeyField.text ?: @"";
     FLMSetPreference(FLM_TRANSLATION_TARGET_LANGUAGE_KEY,
                      target.length > 0 ? target : @"zh-CN");
-    FLMSetPreference(FLM_TRANSLATION_API_URL_KEY,
-                     apiURL.length > 0
-                         ? apiURL
-                         : @"https://translation.googleapis.com/language/translate/v2");
-    FLMSetPreference(FLM_TRANSLATION_API_KEY_KEY, apiKey);
 }
 
 @end
