@@ -6,6 +6,10 @@
 #import "FMScreenSenseTranslation.h"
 #import "FlymeMultitasking-Swift.h"
 
+@interface NSObject (FMScreenSenseRuntime)
++ (id)sharedInstance;
+@end
+
 typedef NS_ENUM(NSInteger, FMScreenSenseState) {
     FMScreenSenseStateInactive = 0,
     FMScreenSenseStateDismissingWheel,
@@ -175,7 +179,7 @@ static BOOL FMScreenSenseDeviceIsLocked(void) {
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         [center addObserver:self
                    selector:@selector(handleSystemLifecycleNotification:)
-                       name:UIApplicationProtectedDataWillBecomeUnavailableNotification
+                       name:UIApplicationProtectedDataWillBecomeUnavailable
                      object:nil];
         [center addObserver:self
                    selector:@selector(handleSystemLifecycleNotification:)
@@ -753,7 +757,7 @@ static BOOL FMScreenSenseDeviceIsLocked(void) {
     }
 
     NSString *name = notification.name;
-    if ([name isEqualToString:UIApplicationProtectedDataWillBecomeUnavailableNotification] ||
+    if ([name isEqualToString:UIApplicationProtectedDataWillBecomeUnavailable] ||
         [name isEqualToString:UIApplicationDidEnterBackgroundNotification]) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense] lifecycle notification=%@ action=dismiss",
