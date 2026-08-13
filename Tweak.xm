@@ -38,7 +38,7 @@
 #define FLYME_SCREEN_SENSE_ENABLED 1
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.21"
+#define FLMLogBuildString @"0.9.22"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -717,7 +717,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.hotspotsEnabled) {
+    if (!self.hotspotsEnabled || FLMDeviceIsLocked()) {
         return nil;
     }
     if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
@@ -2171,14 +2171,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.homeDockWindow.rootViewController.view
         addGestureRecognizer:self.homeDockGesture];
 
-    self.usesSystemGestureManager = [self registerGlobalCornerGesture];
-    if (!self.usesSystemGestureManager) {
-        [self.hotspotWindow.rootViewController.view
-            addGestureRecognizer:self.cornerGuardGesture];
-        [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
-        [self.floatingWindow.rootViewController.view
-            addGestureRecognizer:self.floatingDockInputGesture];
-    }
+    // The private _UISystemGestureManager is arbitrated differently when an
+    // ordinary application owns the foreground Scene. On iOS 16 it can accept
+    // the same edge touch on the Home Screen and silently drop it in an app.
+    // Keep the trigger on our scene-bound windows for one deterministic route.
+    // The windows are above application content and hit-test only their owned
+    // zones, so they do not steal normal app touches.
+    self.usesSystemGestureManager = NO;
+    [self.hotspotWindow.rootViewController.view
+        addGestureRecognizer:self.cornerGuardGesture];
+    [self.hotspotWindow.rootViewController.view
+        addGestureRecognizer:self.cornerGesture];
+    [self.floatingWindow.rootViewController.view
+        addGestureRecognizer:self.floatingDockInputGesture];
+    FLMEnqueueDiagnosticLine(
+        @"sb gesture-route mode=scene-bound hotspot=active system-manager=disabled");
     [self updateWindowFrames];
 }
 
@@ -2476,8 +2483,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.enabled) {
         self.modalGesture.enabled = NO;
     }
-    self.hotspotWindow.hotspotsEnabled = self.enabled && !self.usesSystemGestureManager;
-    self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
+    self.hotspotWindow.hotspotsEnabled = self.enabled;
+    self.hotspotWindow.hidden = !self.enabled;
     if (!self.enabled) {
         [self dismissWheelLaunchingItem:nil];
         [self closeFloatingWindowKeepingApplication:YES];

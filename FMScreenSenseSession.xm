@@ -57,6 +57,30 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     return nil;
 }
 
+static BOOL FMScreenSenseDeviceIsLocked(void) {
+    id manager = [NSClassFromString(@"SBLockScreenManager") sharedInstance];
+    if (!manager) {
+        return NO;
+    }
+    for (NSString *name in @[
+             @"isUILocked", @"isLockScreenVisible", @"isLockScreenActive", @"isLocked"
+         ]) {
+        SEL selector = NSSelectorFromString(name);
+        if (![manager respondsToSelector:selector]) {
+            continue;
+        }
+        @try {
+            BOOL (*getter)(id, SEL) =
+                (BOOL (*)(id, SEL))[manager methodForSelector:selector];
+            if (getter && getter(manager, selector)) {
+                return YES;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return NO;
+}
+
 @interface FMScreenSenseWindow : UIWindow
 @end
 
@@ -107,8 +131,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 @property(nonatomic, strong) UITextView *translationView;
 @property(nonatomic, strong) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FMScreenSenseVisionBridge *visionBridge;
+@property(nonatomic, strong) NSTimer *lifecycleTimer;
 @property(nonatomic, assign) BOOL translationRequestInFlight;
 @property(nonatomic, assign) BOOL lastKnownSelectionActive;
+- (void)startLifecycleMonitoring;
+- (void)stopLifecycleMonitoring;
+- (void)handleSystemLifecycleNotification:(NSNotification *)notification;
+- (void)checkLifecycleTimer:(NSTimer *)timer;
 - (void)dismissOnMainThread;
 - (void)abortVisionWithErrorCode:(NSInteger)code message:(NSString *)message;
 - (void)handleCloseButton:(UIButton *)sender;
@@ -143,8 +172,26 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     if (self) {
         _state = FMScreenSenseStateInactive;
         _generation = 0;
+        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+        [center addObserver:self
+                   selector:@selector(handleSystemLifecycleNotification:)
+                       name:UIApplicationProtectedDataWillBecomeUnavailableNotification
+                     object:nil];
+        [center addObserver:self
+                   selector:@selector(handleSystemLifecycleNotification:)
+                       name:UIApplicationDidEnterBackgroundNotification
+                     object:nil];
+        [center addObserver:self
+                   selector:@selector(handleSystemLifecycleNotification:)
+                       name:UIApplicationDidBecomeActiveNotification
+                     object:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [_lifecycleTimer invalidate];
 }
 
 - (BOOL)beginCaptureSession {
@@ -156,6 +203,12 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         return accepted;
     }
 
+    if (FMScreenSenseDeviceIsLocked()) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][ERROR] trigger ignored device-locked");
+        return NO;
+    }
+
     if (self.state != FMScreenSenseStateInactive) {
         FLMEnqueueDiagnosticLine(
             @"[ScreenSense] duplicate trigger ignored state=%@",
@@ -165,6 +218,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     self.generation += 1;
     self.state = FMScreenSenseStateDismissingWheel;
+    [self startLifecycleMonitoring];
     return YES;
 }
 
@@ -209,6 +263,11 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf presentCapturedImage:imageCopy];
         });
+        return;
+    }
+
+    if (FMScreenSenseDeviceIsLocked()) {
+        [self abortCaptureWithReason:@"device-locked-before-overlay"];
         return;
     }
 
@@ -366,8 +425,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     [self.visionBridge setPresentingViewController:self.viewController];
     FLMEnqueueDiagnosticLine(@"[ScreenSense][Vision] bridge created");
     FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Translation] provider=%@ target=%@",
-        [[FMScreenSenseTranslation sharedService] providerIdentifier],
+        @"[ScreenSense][Translation] route=web target=%@",
         [[FMScreenSenseTranslation sharedService] targetLanguage]);
 
     BOOL supported = [FMScreenSenseVisionBridge isSupported];
@@ -497,76 +555,48 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
             return;
         }
 
-        NSString *provider =
-            [[FMScreenSenseTranslation sharedService] providerIdentifier];
         FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Translation] start provider=%@ source=%@ textLength=%lu",
-            provider, selected ? @"selected" : @"all", (unsigned long)text.length);
+            @"[ScreenSense][Translation] start route=web source=%@ textLength=%lu",
+            selected ? @"selected" : @"all", (unsigned long)text.length);
 
-        if ([provider isEqualToString:FLM_TRANSLATION_PROVIDER_WEB]) {
-            NSURL *url = [[FMScreenSenseTranslation sharedService]
-                webURLForText:text];
-            if (!url) {
-                [strongSelf showTranslationError:[NSError errorWithDomain:
-                    @"com.codex.flymemultitasking.translation"
-                                                              code:6
-                                                          userInfo:@{
-                    NSLocalizedDescriptionKey : @"无法生成 Google 翻译链接"
-                }]];
-                strongSelf.translationRequestInFlight = NO;
-                strongSelf.translateButton.enabled = YES;
-                [strongSelf.translateButton setTitle:@"翻译" forState:UIControlStateNormal];
-                return;
-            }
-
-            FLMEnqueueDiagnosticLine(
-                @"[ScreenSense][Translation] provider=web action=jump target=%@",
-                [[FMScreenSenseTranslation sharedService] targetLanguage]);
+        NSURL *url = [[FMScreenSenseTranslation sharedService]
+            webURLForText:text];
+        if (!url) {
+            [strongSelf showTranslationError:[NSError errorWithDomain:
+                @"com.codex.flymemultitasking.translation"
+                                                          code:6
+                                                      userInfo:@{
+                NSLocalizedDescriptionKey : @"无法生成 Google 翻译链接"
+            }]];
             strongSelf.translationRequestInFlight = NO;
-            [strongSelf dismissOnMainThread];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                          (int64_t)(0.18 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                UIApplication *application = [UIApplication sharedApplication];
-                if (![application respondsToSelector:
-                                  @selector(openURL:options:completionHandler:)]) {
-                    FLMEnqueueDiagnosticLine(
-                        @"[ScreenSense][Translation][ERROR] provider=web openURL unavailable");
-                    return;
-                }
-                [application openURL:url
-                             options:@{}
-                   completionHandler:^(BOOL success) {
-                    FLMEnqueueDiagnosticLine(
-                        @"[ScreenSense][Translation] provider=web opened=%d",
-                        success ? 1 : 0);
-                }];
-            });
+            strongSelf.translateButton.enabled = YES;
+            [strongSelf.translateButton setTitle:@"翻译" forState:UIControlStateNormal];
             return;
         }
 
-        [[FMScreenSenseTranslation sharedService]
-            translateText:text
-               completion:^(NSString *translatedText, NSError *translationError) {
-            FMScreenSenseSession *finishedSelf = weakSelf;
-            if (!finishedSelf || finishedSelf.generation != sessionGeneration ||
-                finishedSelf.state != FMScreenSenseStateActive) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense][Translation] route=web action=jump target=%@",
+            [[FMScreenSenseTranslation sharedService] targetLanguage]);
+        strongSelf.translationRequestInFlight = NO;
+        [strongSelf dismissOnMainThread];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(0.18 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UIApplication *application = [UIApplication sharedApplication];
+            if (![application respondsToSelector:
+                              @selector(openURL:options:completionHandler:)]) {
+                FLMEnqueueDiagnosticLine(
+                    @"[ScreenSense][Translation][ERROR] web openURL unavailable");
                 return;
             }
-            finishedSelf.translationRequestInFlight = NO;
-            finishedSelf.translateButton.enabled = YES;
-            [finishedSelf.translateButton setTitle:@"翻译" forState:UIControlStateNormal];
-            if (translationError || translatedText.length == 0) {
-                [finishedSelf showTranslationError:translationError ?: [NSError errorWithDomain:
-                    @"com.codex.flymemultitasking.translation"
-                                                              code:7
-                                                          userInfo:@{
-                    NSLocalizedDescriptionKey : @"翻译服务没有返回结果"
-                }]];
-                return;
-            }
-            [finishedSelf showTranslationResult:translatedText];
-        }];
+            [application openURL:url
+                         options:@{}
+               completionHandler:^(BOOL success) {
+                FLMEnqueueDiagnosticLine(
+                    @"[ScreenSense][Translation] route=web opened=%d",
+                    success ? 1 : 0);
+            }];
+        });
     }];
 }
 
@@ -698,6 +728,76 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
         (unsigned long)message.length);
 }
 
+- (void)startLifecycleMonitoring {
+    if (self.lifecycleTimer.valid) {
+        return;
+    }
+    self.lifecycleTimer =
+        [NSTimer timerWithTimeInterval:0.25
+                                target:self
+                              selector:@selector(checkLifecycleTimer:)
+                              userInfo:nil
+                               repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.lifecycleTimer
+                               forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopLifecycleMonitoring {
+    [self.lifecycleTimer invalidate];
+    self.lifecycleTimer = nil;
+}
+
+- (void)handleSystemLifecycleNotification:(NSNotification *)notification {
+    if (self.state == FMScreenSenseStateInactive) {
+        return;
+    }
+
+    NSString *name = notification.name;
+    if ([name isEqualToString:UIApplicationProtectedDataWillBecomeUnavailableNotification] ||
+        [name isEqualToString:UIApplicationDidEnterBackgroundNotification]) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense] lifecycle notification=%@ action=dismiss",
+            name);
+        [self dismiss];
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self checkLifecycleTimer:nil];
+    });
+}
+
+- (void)checkLifecycleTimer:(NSTimer *)timer {
+    (void)timer;
+    if (self.state == FMScreenSenseStateInactive) {
+        [self stopLifecycleMonitoring];
+        return;
+    }
+
+    if (FMScreenSenseDeviceIsLocked()) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense] lifecycle watchdog locked action=dismiss state=%@",
+            FMScreenSenseStateName(self.state));
+        [self dismissOnMainThread];
+        return;
+    }
+
+    if (self.state != FMScreenSenseStateAnalyzing &&
+        self.state != FMScreenSenseStateActive) {
+        return;
+    }
+
+    UIWindow *window = self.window;
+    UIWindowScene *windowScene = window ? window.windowScene : nil;
+    if (!window || window.hidden || !windowScene ||
+        windowScene.activationState == UISceneActivationStateUnattached) {
+        FLMEnqueueDiagnosticLine(
+            @"[ScreenSense] lifecycle watchdog invalid-window action=dismiss state=%@",
+            FMScreenSenseStateName(self.state));
+        [self dismissOnMainThread];
+    }
+}
+
 - (void)handleCloseButton:(UIButton *)sender {
     sender.userInteractionEnabled = NO;
     FLMEnqueueDiagnosticLine(@"[ScreenSense] close button request");
@@ -740,6 +840,7 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     }
 
     self.state = FMScreenSenseStateDismissing;
+    [self stopLifecycleMonitoring];
     FLMEnqueueDiagnosticLine(@"[ScreenSense] dismiss begin");
     self.generation += 1;
 
