@@ -204,16 +204,18 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 let liveTextInteraction = ImageAnalysisInteraction()
                 imageView.isUserInteractionEnabled = true
                 imageView.addInteraction(liveTextInteraction)
-                // Configure the interaction as a native Live Text control
-                // before assigning analysis. This follows Apple's documented
-                // setup order and leaves iOS 16 in charge of the gesture and
-                // copy/translate menu.
+                // Assign the analysis before enabling the interaction types.
+                // iOS 16 rebuilds the Live Text state when analysis is set;
+                // configuring textSelection before that point leaves the
+                // interaction attached but with selectableItemsHighlighted=0.
+                liveTextInteraction.analysis = result
                 liveTextInteraction.delegate = self
                 liveTextInteraction.preferredInteractionTypes = .textSelection
                 liveTextInteraction.isSupplementaryInterfaceHidden = false
-                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = false
+                // Keep the standard Live Text long-press behavior. Data
+                // detector handling is disabled by textSelection itself
+                // unless iOS finds a URL, phone number, or address.
                 liveTextInteraction.selectableItemsHighlighted = true
-                liveTextInteraction.analysis = result
                 self.analysis = result
                 self.interaction = liveTextInteraction
                 self.analysisTask = nil
