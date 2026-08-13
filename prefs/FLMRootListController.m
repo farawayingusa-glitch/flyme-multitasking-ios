@@ -9,8 +9,6 @@
 #import <signal.h>
 #import <stdint.h>
 
-#import "../FMScreenSenseTranslation.h"
-
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION "com.codex.flymemultitasking.preferences-changed"
 #define FLYME_PREFERENCES_DOMAIN CFSTR("com.codex.flymemultitasking")
@@ -502,11 +500,6 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
 @end
 
-@interface FLMTranslationSettingsController : PSViewController
-    <UITextFieldDelegate>
-@property(nonatomic, strong) UITextField *targetLanguageField;
-@end
-
 @interface FLMAppOrderController
     : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *items;
@@ -632,144 +625,6 @@ static NSString *FLMNameForIdentifier(
 
 @end
 
-@implementation FLMTranslationSettingsController
-
-- (UITextField *)fieldWithPlaceholder:(NSString *)placeholder
-                         secureEntry:(BOOL)secureEntry {
-    UITextField *field = [[UITextField alloc] initWithFrame:CGRectZero];
-    field.translatesAutoresizingMaskIntoConstraints = NO;
-    field.placeholder = placeholder;
-    field.borderStyle = UITextBorderStyleRoundedRect;
-    field.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-    field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    field.autocorrectionType = UITextAutocorrectionTypeNo;
-    field.spellCheckingType = UITextSpellCheckingTypeNo;
-    field.secureTextEntry = secureEntry;
-    field.delegate = self;
-    field.returnKeyType = UIReturnKeyDone;
-    [field addTarget:self
-              action:@selector(textFieldEditingDidEnd:)
-    forControlEvents:UIControlEventEditingDidEndOnExit |
-                     UIControlEventEditingDidEnd];
-    [field.heightAnchor constraintEqualToConstant:44.0].active = YES;
-    return field;
-}
-
-- (UILabel *)labelWithText:(NSString *)text fontSize:(CGFloat)fontSize {
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.text = text;
-    label.font = [UIFont systemFontOfSize:fontSize];
-    label.textColor = [UIColor labelColor];
-    label.numberOfLines = 0;
-    return label;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"翻译设置";
-    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
-
-    UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
-    scrollView.translatesAutoresizingMaskIntoConstraints = NO;
-    scrollView.alwaysBounceVertical = YES;
-    [self.view addSubview:scrollView];
-
-    UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectZero];
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 10.0;
-    stack.layoutMargins = UIEdgeInsetsMake(20.0, 16.0, 28.0, 16.0);
-    stack.layoutMarginsRelativeArrangement = YES;
-    [scrollView addSubview:stack];
-
-    UILabel *intro = [self labelWithText:
-        @"识屏后点击“翻译”即可执行。插件会把当前选中的文字或全部识别文字交给 Google 翻译网页处理。"
-                              fontSize:15.0];
-    intro.textColor = [UIColor secondaryLabelColor];
-    [stack addArrangedSubview:intro];
-
-    UILabel *targetTitle = [self labelWithText:@"目标语言" fontSize:17.0];
-    [stack addArrangedSubview:targetTitle];
-    self.targetLanguageField = [self fieldWithPlaceholder:@"例如 zh-CN、en、ja"
-                                              secureEntry:NO];
-    NSString *targetLanguage = FLMCopyPreference(FLM_TRANSLATION_TARGET_LANGUAGE_KEY);
-    self.targetLanguageField.text =
-        [targetLanguage isKindOfClass:[NSString class]] && targetLanguage.length > 0
-            ? targetLanguage
-            : @"zh-CN";
-    self.targetLanguageField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    [stack addArrangedSubview:self.targetLanguageField];
-
-    UIButton *saveButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    saveButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [saveButton setTitle:@"保存设置" forState:UIControlStateNormal];
-    saveButton.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-    saveButton.backgroundColor = [UIColor systemBlueColor];
-    [saveButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    saveButton.layer.cornerRadius = 11.0;
-    [saveButton addTarget:self
-                   action:@selector(saveButtonTapped:)
-         forControlEvents:UIControlEventTouchUpInside];
-    [saveButton.heightAnchor constraintEqualToConstant:46.0].active = YES;
-    [stack addArrangedSubview:saveButton];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor],
-        [stack.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor],
-        [stack.widthAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.widthAnchor],
-    ]];
-
-}
-
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    [self saveSettings];
-}
-
-- (void)textFieldEditingDidEnd:(UITextField *)field {
-    (void)field;
-    [self saveSettings];
-}
-
-- (BOOL)textFieldShouldReturn:(UITextField *)textField {
-    [textField resignFirstResponder];
-    [self saveSettings];
-    return YES;
-}
-
-- (void)saveButtonTapped:(UIButton *)sender {
-    (void)sender;
-    [self saveSettings];
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"已保存"
-                                             message:@"下次打开识屏后即可使用新的目标语言。"
-                                      preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"好"
-                                               style:UIAlertActionStyleDefault
-                                             handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)saveSettings {
-    if (!self.targetLanguageField) {
-        return;
-    }
-    NSString *target = [self.targetLanguageField.text
-        stringByTrimmingCharactersInSet:
-            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    FLMSetPreference(FLM_TRANSLATION_TARGET_LANGUAGE_KEY,
-                     target.length > 0 ? target : @"zh-CN");
-}
-
-@end
-
 @implementation FLMAppListController
 
 - (instancetype)init {
@@ -810,24 +665,6 @@ static NSString *FLMNameForIdentifier(
     [sortSpecifier setProperty:[UIImage systemImageNamed:@"line.3.horizontal"]
                         forKey:@"iconImage"];
     [specifiers addObject:sortSpecifier];
-
-    PSSpecifier *translationSpecifier =
-        [PSSpecifier preferenceSpecifierNamed:@"翻译设置"
-                                       target:self
-                                          set:NULL
-                                          get:NULL
-                                       detail:[FLMTranslationSettingsController class]
-                                         cell:PSLinkCell
-                                         edit:nil];
-    UIImage *translationIcon = [UIImage systemImageNamed:@"character.bubble"];
-    if (!translationIcon) {
-        translationIcon = [UIImage systemImageNamed:@"globe"];
-    }
-    if (translationIcon) {
-        [translationSpecifier setProperty:translationIcon forKey:@"iconImage"];
-    }
-    [specifiers addObject:[PSSpecifier groupSpecifierWithName:@"识屏翻译"]];
-    [specifiers addObject:translationSpecifier];
 
     PSSpecifier *wheelGroup = [PSSpecifier groupSpecifierWithName:@"轮盘项目"];
     [wheelGroup setProperty:@"打开开关即可加入轮盘；关闭后会从轮盘和排序列表中移除。"
