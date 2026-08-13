@@ -1,0 +1,60 @@
+name: Build flyme-multitasking
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - codex/0.9.14-screensense-safe-actions
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check macOS build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          command -v dpkg-deb >/dev/null || brew install dpkg
+          command -v dpkg-deb
+
+      - name: Verify frozen gesture foundation
+        run: |
+          chmod +x scripts/verify-frozen-foundation.sh
+          scripts/verify-frozen-foundation.sh Tweak.xm
+
+      - name: Install Theos
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          command -v ldid
+
+      - name: Build package
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          chmod 755 layout/DEBIAN/postinst
+          make clean package FINALPACKAGE=1 messages=yes
+
+      - name: Verify package
+        run: |
+          package="$(find packages -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$package"
+          chmod +x scripts/verify-package.sh
+          scripts/verify-package.sh "$package"
+          mkdir -p artifacts
+          cp "$package" artifacts/flyme-multitasking_0.9.21_iphoneos-arm64.deb
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: flyme-multitasking-0.9.21-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_0.9.21_iphoneos-arm64.deb
+          if-no-files-found: error
