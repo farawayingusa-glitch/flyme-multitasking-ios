@@ -22,8 +22,10 @@ reject_source() {
 }
 
 for marker in \
-    "const CGFloat horizontalRadius = 58.0;" \
-    "const CGFloat verticalRadius = 65.0;" \
+    "static const CGFloat FLMDefaultCornerTriggerHorizontalRadius = 58.0;" \
+    "static const CGFloat FLMDefaultCornerTriggerVerticalRadius = 65.0;" \
+    "const CGFloat horizontalRadius = FLMCornerTriggerHorizontalRadius;" \
+    "const CGFloat verticalRadius = FLMCornerTriggerVerticalRadius;" \
     "self.cornerGesture.minimumPressDuration = 0.12;" \
     "self.cornerGuardGesture.minimumPressDuration = 0.0;" \
     "CGPoint rawPoint = [touch locationInView:nil];" \
