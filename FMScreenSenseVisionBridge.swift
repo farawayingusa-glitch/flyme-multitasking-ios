@@ -279,10 +279,34 @@ public final class FMScreenSenseVisionBridge: NSObject {
             return ""
         }
 
-        // iOS 16 exposes the active-selection state and the native Live Text
-        // actions, but not a public selected-text string. The string APIs are
-        // available starting with iOS 17 and are intentionally used only for
-        // diagnostics here; translation and copying stay inside Live Text.
+        // Some iOS 16 VisionKit builds expose the selection getter at runtime
+        // even though the public SDK declares it starting with iOS 17. Probe
+        // it dynamically so the system-Translate jump can carry the selected
+        // range when the device provides it, while keeping the iOS 16 build
+        // free of a newer-only link-time symbol.
+        for key in ["selectedText", "selectedAttributedText"] {
+            let selector = NSSelectorFromString(key)
+            guard liveTextInteraction.responds(to: selector) else {
+                continue
+            }
+
+            if let value = liveTextInteraction.value(forKey: key) as? String,
+               !value.isEmpty {
+                return value
+            }
+
+            if let value = liveTextInteraction.value(forKey: key) as? NSString,
+               value.length > 0 {
+                return value as String
+            }
+
+            if let value = liveTextInteraction.value(forKey: key)
+                as? NSAttributedString,
+               value.length > 0 {
+                return value.string
+            }
+        }
+
         if #available(iOS 17.0, *) {
             return liveTextInteraction.selectedText
         }
