@@ -38,7 +38,7 @@
 #define FLYME_SCREEN_SENSE_ENABLED 1
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.24"
+#define FLMLogBuildString @"0.9.25"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -233,14 +233,6 @@ static void FLMStartDiagnosticWriter(void) {
 static const CGFloat FLMDefaultWheelRadius = 202.0;
 static const CGFloat FLMMinimumWheelRadius = 170.0;
 static const CGFloat FLMMaximumWheelRadius = 225.0;
-static const CGFloat FLMDefaultCornerTriggerHorizontalRadius = 58.0;
-static const CGFloat FLMDefaultCornerTriggerVerticalRadius = 65.0;
-static const CGFloat FLMMinimumCornerTriggerHorizontalRadius = 36.0;
-static const CGFloat FLMMaximumCornerTriggerHorizontalRadius = 120.0;
-static CGFloat FLMCornerTriggerHorizontalRadius =
-    FLMDefaultCornerTriggerHorizontalRadius;
-static CGFloat FLMCornerTriggerVerticalRadius =
-    FLMDefaultCornerTriggerVerticalRadius;
 static const CGFloat FLMDefaultWheelIconSize = 56.0;
 static const CGFloat FLMMinimumWheelIconSize = 44.0;
 static const CGFloat FLMMaximumWheelIconSize = 68.0;
@@ -537,24 +529,20 @@ static BOOL FLMPrewarmApplicationIdentifier(NSString *identifier) {
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
-    // The default remains the original 58x65pt trigger. Settings change the
-    // horizontal radius and preserve that aspect ratio for the vertical edge.
-    const CGFloat horizontalRadius = FLMCornerTriggerHorizontalRadius;
-    const CGFloat verticalRadius = FLMCornerTriggerVerticalRadius;
-    CGFloat minX = CGRectGetMinX(bounds);
-    CGFloat maxX = CGRectGetMaxX(bounds);
-    CGFloat minY = CGRectGetMinY(bounds);
-    CGFloat maxY = CGRectGetMaxY(bounds);
-    CGFloat bottomDistance = maxY - point.y;
-    if (point.x < minX || point.x > maxX || point.y < minY ||
-        point.y > maxY || bottomDistance < 0.0 ||
-        bottomDistance > verticalRadius) {
+    // User-locked trigger geometry. Do not tune these values in later versions.
+    const CGFloat horizontalRadius = 58.0;
+    const CGFloat verticalRadius = 65.0;
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    CGFloat bottomDistance = height - point.y;
+    if (point.x < 0.0 || point.x > width ||
+        bottomDistance < 0.0 || bottomDistance > verticalRadius) {
         return NO;
     }
 
     CGFloat verticalComponent = bottomDistance / verticalRadius;
-    CGFloat leftComponent = (point.x - minX) / horizontalRadius;
-    CGFloat rightComponent = (maxX - point.x) / horizontalRadius;
+    CGFloat leftComponent = point.x / horizontalRadius;
+    CGFloat rightComponent = (width - point.x) / horizontalRadius;
     BOOL insideLeft =
         leftComponent * leftComponent +
             verticalComponent * verticalComponent <=
@@ -630,7 +618,6 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @property(nonatomic, weak) UIView *floatingContentView;
 @property(nonatomic, weak) UIView *floatingPrimaryControlView;
 @property(nonatomic, weak) UIView *floatingSecondaryControlView;
-@property(nonatomic, weak) UIView *floatingDockInteractionShieldView;
 @end
 
 static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
@@ -675,24 +662,6 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
         CGRectContainsPoint(self.keyboardPassThroughFrame, point)) {
         FLMLogFloatingHitTest(self, point, event, nil, @"keyboard-pass");
         return nil;
-    }
-    // Docked and transitioning cards must own their entire content surface.
-    // Do this before the normal pass-through branch: the remote application
-    // view is otherwise free to receive the same drag and activate a button
-    // underneath the card.  The shield is transparent, but its hit-test is
-    // intentionally authoritative while it is enabled.
-    UIView *interactionShield = self.floatingDockInteractionShieldView;
-    UIView *contentView = self.floatingContentView;
-    if (interactionShield && !interactionShield.hidden &&
-        interactionShield.userInteractionEnabled && contentView &&
-        [contentView pointInside:[contentView convertPoint:point fromView:self]
-                         withEvent:event]) {
-        CGPoint shieldPoint = [interactionShield convertPoint:point fromView:self];
-        UIView *shieldHit = [interactionShield hitTest:shieldPoint withEvent:event];
-        if (shieldHit) {
-            FLMLogFloatingHitTest(self, point, event, shieldHit, @"card-shield");
-            return shieldHit;
-        }
     }
     if (self.passesTouchesOutsideFloatingContent) {
         BOOL insideContent =
@@ -748,7 +717,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.hotspotsEnabled || FLMDeviceIsLocked()) {
+    if (!self.hotspotsEnabled) {
         return nil;
     }
     if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
@@ -1215,8 +1184,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, weak) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGuardGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *cornerGesture;
-@property(nonatomic, strong) FLMCornerGestureRecognizer *sceneFallbackCornerGuardGesture;
-@property(nonatomic, strong) FLMCornerGestureRecognizer *sceneFallbackCornerGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *floatingCornerGuardGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *floatingCornerGesture;
 @property(nonatomic, strong) FLMCornerGestureRecognizer *modalGesture;
@@ -1229,7 +1196,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL enabled;
 @property(nonatomic, assign) BOOL presentingFromRight;
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
-@property(nonatomic, assign) BOOL cornerTriggerGesturesConfigured;
 @property(nonatomic, assign) BOOL wheelPinned;
 @property(nonatomic, assign) BOOL wheelGestureActive;
 @property(nonatomic, assign) CGFloat wheelRadius;
@@ -1350,13 +1316,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)orientationDidChange:(NSNotification *)notification;
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
-- (BOOL)isCornerGuardGesture:(UIGestureRecognizer *)gesture;
-- (BOOL)isCornerGesture:(UIGestureRecognizer *)gesture;
-- (void)setCornerTriggerGesturesEnabled:(BOOL)enabled;
-- (CGRect)cornerTriggerBounds;
-- (CGPoint)cornerTriggerPointForGesture:(UIGestureRecognizer *)gesture;
-- (CGPoint)cornerTriggerPointForTouch:(UITouch *)touch;
-- (void)createSceneFallbackCornerGestures;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
 - (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture;
 - (void)activateDockedFrontmostApplication;
@@ -2212,59 +2171,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.homeDockWindow.rootViewController.view
         addGestureRecognizer:self.homeDockGesture];
 
-    // The system gesture manager is the primary route because it sees touches
-    // that begin inside an application's Scene, where a SpringBoard-owned
-    // scene-bound window is not guaranteed to receive the edge stream. Keep a
-    // second scene-bound pair alive as a desktop/card fallback; the delegate
-    // gates both routes against lock screen and duplicate activation.
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
-    if (self.usesSystemGestureManager) {
-        [self createSceneFallbackCornerGestures];
-        FLMEnqueueDiagnosticLine(
-            @"sb gesture-route mode=global-primary scene-fallback=active priority=highest");
-    } else {
+    if (!self.usesSystemGestureManager) {
         [self.hotspotWindow.rootViewController.view
             addGestureRecognizer:self.cornerGuardGesture];
-        [self.hotspotWindow.rootViewController.view
-            addGestureRecognizer:self.cornerGesture];
+        [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
         [self.floatingWindow.rootViewController.view
             addGestureRecognizer:self.floatingDockInputGesture];
-        FLMEnqueueDiagnosticLine(
-            @"sb gesture-route mode=scene-bound-fallback system-manager=unavailable");
     }
-    self.hotspotWindow.userInteractionEnabled = YES;
     [self updateWindowFrames];
-}
-
-- (void)createSceneFallbackCornerGestures {
-    if (self.sceneFallbackCornerGesture || self.sceneFallbackCornerGuardGesture) {
-        return;
-    }
-    self.sceneFallbackCornerGesture =
-        [[FLMCornerGestureRecognizer alloc]
-            initWithTarget:self
-                    action:@selector(handleCornerGesture:)];
-    self.sceneFallbackCornerGesture.delegate = self;
-    self.sceneFallbackCornerGesture.cancelsTouchesInView = YES;
-    self.sceneFallbackCornerGesture.numberOfTouchesRequired = 1;
-    self.sceneFallbackCornerGesture.minimumPressDuration = 0.12;
-    self.sceneFallbackCornerGesture.allowableMovement = CGFLOAT_MAX;
-
-    self.sceneFallbackCornerGuardGesture =
-        [[FLMCornerGestureRecognizer alloc]
-            initWithTarget:self
-                    action:@selector(handleCornerGuardGesture:)];
-    self.sceneFallbackCornerGuardGesture.delegate = self;
-    self.sceneFallbackCornerGuardGesture.cancelsTouchesInView = YES;
-    self.sceneFallbackCornerGuardGesture.delaysTouchesBegan = NO;
-    self.sceneFallbackCornerGuardGesture.delaysTouchesEnded = NO;
-    self.sceneFallbackCornerGuardGesture.numberOfTouchesRequired = 1;
-    self.sceneFallbackCornerGuardGesture.minimumPressDuration = 0.0;
-    self.sceneFallbackCornerGuardGesture.allowableMovement = CGFLOAT_MAX;
-
-    UIView *rootView = self.hotspotWindow.rootViewController.view;
-    [rootView addGestureRecognizer:self.sceneFallbackCornerGuardGesture];
-    [rootView addGestureRecognizer:self.sceneFallbackCornerGesture];
 }
 
 - (void)createFloatingWindow {
@@ -2452,8 +2367,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     floatingWindow.floatingContentView = self.floatingContainer;
     floatingWindow.floatingPrimaryControlView = self.floatingHandle;
     floatingWindow.floatingSecondaryControlView = self.floatingResizeHandle;
-    floatingWindow.floatingDockInteractionShieldView =
-        self.floatingDockInteractionShield;
     [self layoutFloatingWindow];
 }
 
@@ -2483,71 +2396,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return YES;
 }
 
-- (BOOL)isCornerGuardGesture:(UIGestureRecognizer *)gesture {
-    return gesture == self.cornerGuardGesture ||
-           gesture == self.sceneFallbackCornerGuardGesture;
-}
-
-- (BOOL)isCornerGesture:(UIGestureRecognizer *)gesture {
-    return gesture == self.cornerGesture ||
-           gesture == self.sceneFallbackCornerGesture;
-}
-
-- (void)setCornerTriggerGesturesEnabled:(BOOL)enabled {
-    self.cornerGuardGesture.enabled = enabled;
-    self.cornerGesture.enabled = enabled;
-    self.sceneFallbackCornerGuardGesture.enabled = enabled;
-    self.sceneFallbackCornerGesture.enabled = enabled;
-    self.cornerTriggerGesturesConfigured = YES;
-}
-
-- (CGRect)cornerTriggerBounds {
-    CGRect bounds = self.hotspotWindow.bounds;
-    if (CGRectGetWidth(bounds) > 1.0 && CGRectGetHeight(bounds) > 1.0) {
-        return bounds;
-    }
-    return FLMVisualScreenBounds();
-}
-
-- (CGPoint)cornerTriggerPointForGesture:(UIGestureRecognizer *)gesture {
-    CGRect bounds = [self cornerTriggerBounds];
-    CGPoint rawPoint = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
-    if (CGRectContainsPoint(CGRectInset(bounds, -2.0, -2.0), rawPoint)) {
-        return rawPoint;
-    }
-    if (self.hotspotWindow) {
-        CGPoint localPoint = [gesture locationInView:self.hotspotWindow];
-        if (CGRectContainsPoint(CGRectInset(bounds, -2.0, -2.0), localPoint)) {
-            return localPoint;
-        }
-    }
-    return rawPoint;
-}
-
-- (CGPoint)cornerTriggerPointForTouch:(UITouch *)touch {
-    CGRect bounds = [self cornerTriggerBounds];
-    CGPoint rawPoint = FLMVisualPointFromRawPoint([touch locationInView:nil]);
-    if (CGRectContainsPoint(CGRectInset(bounds, -2.0, -2.0), rawPoint)) {
-        return rawPoint;
-    }
-    if (self.hotspotWindow) {
-        CGPoint localPoint = [touch locationInView:self.hotspotWindow];
-        if (CGRectContainsPoint(CGRectInset(bounds, -2.0, -2.0), localPoint)) {
-            return localPoint;
-        }
-    }
-    return rawPoint;
-}
-
 - (void)reloadPreferences {
-    BOOL previousEnabled = self.enabled;
-    BOOL hadConfiguredGestureState = self.cornerTriggerGesturesConfigured;
     CFPreferencesSynchronize(FLYME_PREFERENCES_DOMAIN,
                              kCFPreferencesCurrentUser,
                              kCFPreferencesAnyHost);
     id enabledValue = FLMCopyPreference(@"enabled");
     id itemsValue = FLMCopyPreference(@"wheelItems");
-    id cornerTriggerSizeValue = FLMCopyPreference(@"cornerTriggerSize");
     id radiusValue = FLMCopyPreference(@"wheelRadius");
     id iconSizeValue = FLMCopyPreference(@"wheelIconSize");
     id centeredCardWidthValue = FLMCopyPreference(@"centeredCardWidth");
@@ -2569,22 +2423,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [runtimeItems addObject:(NSString *)candidate];
     }
     self.itemIdentifiers = [runtimeItems copy];
-    CGFloat requestedCornerTriggerSize =
-        [cornerTriggerSizeValue isKindOfClass:[NSNumber class]]
-            ? [cornerTriggerSizeValue doubleValue]
-            : FLMDefaultCornerTriggerHorizontalRadius;
-    if (!isfinite(requestedCornerTriggerSize)) {
-        requestedCornerTriggerSize = FLMDefaultCornerTriggerHorizontalRadius;
-    }
-    requestedCornerTriggerSize =
-        MAX(FLMMinimumCornerTriggerHorizontalRadius,
-            MIN(FLMMaximumCornerTriggerHorizontalRadius,
-                requestedCornerTriggerSize));
-    FLMCornerTriggerHorizontalRadius = requestedCornerTriggerSize;
-    FLMCornerTriggerVerticalRadius =
-        requestedCornerTriggerSize *
-        (FLMDefaultCornerTriggerVerticalRadius /
-         FLMDefaultCornerTriggerHorizontalRadius);
     CGFloat requestedRadius =
         [radiusValue isKindOfClass:[NSNumber class]]
             ? [radiusValue doubleValue]
@@ -2633,24 +2471,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.dockedShrinkAmount =
         MAX(FLMMinimumDockedShrinkAmount,
             MIN(FLMMaximumDockedShrinkAmount, requestedDockShrink));
-    // Changing only the trigger size must not toggle a recognizer that is
-    // already registered with _UISystemGestureManager. On iOS 16 that can
-    // cancel the display-global touch stream and leave it disabled until the
-    // next SpringBoard generation. Reconcile the enabled state only on the
-    // initial load or when the master switch itself changed.
-    if (!hadConfiguredGestureState || previousEnabled != self.enabled) {
-        [self setCornerTriggerGesturesEnabled:self.enabled];
-    }
-    FLMEnqueueDiagnosticLine(
-        @"sb trigger-config enabled=%d gesturesConfigured=%d range={%.1f,%.1f} bounds=%@",
-        self.enabled, self.cornerTriggerGesturesConfigured,
-        FLMCornerTriggerHorizontalRadius, FLMCornerTriggerVerticalRadius,
-        NSStringFromCGRect([self cornerTriggerBounds]));
+    self.cornerGuardGesture.enabled = self.enabled;
+    self.cornerGesture.enabled = self.enabled;
     if (!self.enabled) {
         self.modalGesture.enabled = NO;
     }
-    self.hotspotWindow.hotspotsEnabled = self.enabled;
-    self.hotspotWindow.hidden = !self.enabled;
+    self.hotspotWindow.hotspotsEnabled = self.enabled && !self.usesSystemGestureManager;
+    self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
     if (!self.enabled) {
         [self dismissWheelLaunchingItem:nil];
         [self closeFloatingWindowKeepingApplication:YES];
@@ -2676,19 +2503,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)updateWindowFrames {
     CGRect bounds = FLMVisualScreenBounds();
     self.overlayWindow.frame = bounds;
-    self.overlayWindow.rootViewController.view.frame =
-        self.overlayWindow.bounds;
-    self.wheelContainer.frame = self.overlayWindow.bounds;
+    self.overlayWindow.rootViewController.view.frame = bounds;
+    self.wheelContainer.frame = bounds;
     self.hotspotWindow.frame = bounds;
-    self.hotspotWindow.rootViewController.view.frame =
-        self.hotspotWindow.bounds;
+    self.hotspotWindow.rootViewController.view.frame = bounds;
     self.homeDockWindow.frame = bounds;
-    self.homeDockWindow.rootViewController.view.frame =
-        self.homeDockWindow.bounds;
+    self.homeDockWindow.rootViewController.view.frame = bounds;
     self.floatingWindow.frame = bounds;
-    self.floatingWindow.rootViewController.view.frame =
-        self.floatingWindow.bounds;
-    self.floatingDimView.frame = self.floatingWindow.bounds;
+    self.floatingWindow.rootViewController.view.frame = bounds;
+    self.floatingDimView.frame = bounds;
     [self layoutFloatingWindow];
 }
 
@@ -2715,13 +2538,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (self.enabled && !self.wheelPinned &&
             self.itemIdentifiers.count > 0 &&
             FLMPointInsideCornerTrigger(
-                [self cornerTriggerPointForGesture:gestureRecognizer],
-                [self cornerTriggerBounds],
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]),
+                FLMVisualScreenBounds(),
                 NULL)) {
             FLMEnqueueDiagnosticLine(
                 @"sb should-begin recognizer=exclusive gate=wheel-corner point={%.1f,%.1f}",
-                [self cornerTriggerPointForGesture:gestureRecognizer].x,
-                [self cornerTriggerPointForGesture:gestureRecognizer].y);
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).x,
+                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).y);
             return NO;
         }
         return !self.floatingWindow.hidden && !self.floatingDocked &&
@@ -2730,55 +2553,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
-    if ([self isCornerGuardGesture:gestureRecognizer]) {
-        if (!self.enabled || self.wheelPinned ||
-            self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
-            return NO;
-        }
-        // System-manager recognizers are registered on the display rather
-        // than on a view, so their delegate may not receive shouldReceiveTouch:
-        // for every application Scene. Re-check the actual point here to keep
-        // the global guard limited to the configured bottom corners.
-        CGPoint point = [self cornerTriggerPointForGesture:gestureRecognizer];
-        BOOL fromRight = NO;
-        if (!FLMPointInsideCornerTrigger(point,
-                                         [self cornerTriggerBounds],
-                                         &fromRight)) {
-            return NO;
-        }
-        FLMEnqueueDiagnosticLine(
-            @"sb wheel-gesture should-begin recognizer=%@ point={%.1f,%.1f} bounds=%@ range={%.1f,%.1f}",
-            NSStringFromClass([gestureRecognizer class]), point.x, point.y,
-            NSStringFromCGRect([self cornerTriggerBounds]),
-            FLMCornerTriggerHorizontalRadius, FLMCornerTriggerVerticalRadius);
-        self.presentingFromRight = fromRight;
-        self.cornerGestureStartPoint = point;
-        return YES;
-    }
-    if ([self isCornerGesture:gestureRecognizer]) {
-        if (!self.enabled || self.wheelPinned ||
-            self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
-            return NO;
-        }
-        // _UISystemGestureManager may skip shouldReceiveTouch: for an
-        // application-owned Scene. Resolve the start point again at the
-        // should-begin boundary so the primary global recognizer is not
-        // dependent on a callback UIKit can omit.
-        CGPoint point = [self cornerTriggerPointForGesture:gestureRecognizer];
-        BOOL fromRight = NO;
-        if (!FLMPointInsideCornerTrigger(point,
-                                         [self cornerTriggerBounds],
-                                         &fromRight)) {
-            return NO;
-        }
-        FLMEnqueueDiagnosticLine(
-            @"sb wheel-gesture should-begin recognizer=%@ point={%.1f,%.1f} bounds=%@ range={%.1f,%.1f}",
-            NSStringFromClass([gestureRecognizer class]), point.x, point.y,
-            NSStringFromCGRect([self cornerTriggerBounds]),
-            FLMCornerTriggerHorizontalRadius, FLMCornerTriggerVerticalRadius);
-        self.presentingFromRight = fromRight;
-        self.cornerGestureStartPoint = point;
-        return YES;
+    if (gestureRecognizer == self.cornerGuardGesture) {
+        return self.enabled && !self.wheelPinned &&
+               self.itemIdentifiers.count > 0 && !FLMDeviceIsLocked();
     }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
@@ -2870,14 +2647,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 (__bridge void *)touchView);
             return NO;
         }
-        CGPoint point = [self cornerTriggerPointForTouch:touch];
+        CGPoint rawPoint = [touch locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
         // The wheel owns the corner trigger while it can summon: the exclusive
         // close gesture must never arbitrate away the corner swipe that opens
         // the wheel over a centered card.
         if (self.enabled && !self.wheelPinned &&
             self.itemIdentifiers.count > 0 &&
             FLMPointInsideCornerTrigger(point,
-                                        [self cornerTriggerBounds],
+                                        FLMVisualScreenBounds(),
                                         NULL)) {
             FLMEnqueueDiagnosticLine(
                 @"sb touch-delegate recognizer=exclusive touch=%p timestamp=%.6f accepted=0 gate=wheel-corner point={%.1f,%.1f}",
@@ -2900,14 +2678,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
-    if ([self isCornerGuardGesture:gestureRecognizer]) {
+    if (gestureRecognizer == self.cornerGuardGesture) {
         if (!self.enabled || self.wheelPinned ||
             self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
             return NO;
         }
-        CGPoint point = [self cornerTriggerPointForTouch:touch];
+        CGPoint rawPoint = [touch locationInView:nil];
+        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
         return FLMPointInsideCornerTrigger(point,
-                                           [self cornerTriggerBounds],
+                                           FLMVisualScreenBounds(),
                                            NULL);
     }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
@@ -2916,17 +2695,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (FLMDeviceIsLocked()) {
         return NO;
     }
-    CGRect bounds = [self cornerTriggerBounds];
-    CGPoint point = [self cornerTriggerPointForTouch:touch];
+    CGRect bounds = FLMVisualScreenBounds();
+    CGPoint rawPoint = [touch locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     BOOL fromRight = NO;
     if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
         return NO;
     }
-    FLMEnqueueDiagnosticLine(
-        @"sb wheel-touch accepted recognizer=%@ point={%.1f,%.1f} bounds=%@ range={%.1f,%.1f}",
-        NSStringFromClass([gestureRecognizer class]), point.x, point.y,
-        NSStringFromCGRect(bounds), FLMCornerTriggerHorizontalRadius,
-        FLMCornerTriggerVerticalRadius);
     self.presentingFromRight = fromRight;
     self.cornerGestureStartPoint = point;
     self.wheelGestureActive = NO;
@@ -2943,8 +2718,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMCornerGestureRecognizer *wheelFamily[] = {
         self.cornerGuardGesture,
         self.cornerGesture,
-        self.sceneFallbackCornerGuardGesture,
-        self.sceneFallbackCornerGesture,
         self.floatingCornerGuardGesture,
         self.floatingCornerGesture,
     };
@@ -3071,18 +2844,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
-    CGPoint point = [self cornerTriggerPointForGesture:gesture];
+    CGPoint rawPoint = [gesture locationInView:nil];
+    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
 
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged:
-            if (gesture.state == UIGestureRecognizerStateBegan) {
-                FLMEnqueueDiagnosticLine(
-                    @"sb wheel-gesture began recognizer=%@ point={%.1f,%.1f} start={%.1f,%.1f}",
-                    NSStringFromClass([gesture class]), point.x, point.y,
-                    self.cornerGestureStartPoint.x,
-                    self.cornerGestureStartPoint.y);
-            }
             if (!self.wheelGestureActive && [self shouldActivateWheelAtPoint:point]) {
                 self.wheelGestureActive = YES;
                 [self presentWheelFromRight:self.presentingFromRight];
@@ -4372,11 +4139,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockTransitionActive = NO;
         self.floatingDockFeedbackSent = NO;
         self.floatingInteractiveScenePrepared = NO;
-        // The press itself starts the card transition.  Keep the transparent
-        // shield in front from this first state so no remote control can win
-        // the next move or tap while the user decides between dock and full
-        // screen.
-        [self setFloatingApplicationInputBlocked:YES];
+        [self setFloatingApplicationInputBlocked:NO];
         [self setFloatingDockReady:NO animated:NO];
         [UIView animateWithDuration:0.12
                          animations:^{
@@ -4492,6 +4255,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } else if (primaryMovement >= 3.0) {
             [self setFloatingDockReady:NO animated:YES];
+            [self setFloatingApplicationInputBlocked:NO];
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = NO;
             self.floatingDockShadowView.alpha = 0.0;
@@ -4517,6 +4281,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
         } else {
             [self setFloatingDockReady:NO animated:YES];
+            [self setFloatingApplicationInputBlocked:NO];
             if (self.floatingInteractiveScenePrepared) {
                 if (self.floatingFullscreenActivationArmed &&
                     self.floatingIdentifier.length > 0 &&
@@ -4665,7 +4430,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                           self.floatingFullscreenProgress = 1.0;
                          self.floatingLaunchGeneration += 1;
                          self.floatingExclusiveGesture.enabled = NO;
-                         [self setCornerTriggerGesturesEnabled:self.enabled];
+                         self.cornerGuardGesture.enabled = self.enabled;
+                         self.cornerGesture.enabled = self.enabled;
                          self.floatingContainer.alpha = 0.0;
                           [self finishFullscreenHandoffWithCover:snapshot
                                                     identifier:identifier
@@ -4718,7 +4484,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self restoreFloatingSceneAfterCancelledTransition];
         [self resetFloatingInteractiveLayoutAnimated:NO];
         self.floatingExclusiveGesture.enabled = self.usesSystemGestureManager;
-        [self setCornerTriggerGesturesEnabled:self.enabled];
+        self.cornerGuardGesture.enabled = self.enabled;
+        self.cornerGesture.enabled = self.enabled;
         return;
     }
 
@@ -5150,17 +4917,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL hidden = self.floatingDockHidden;
     floatingWindow.passesTouchesOutsideFloatingContent = docked || hidden;
     self.floatingBackdropTap.enabled = !docked && !hidden;
-    // The transparent shield is now the authoritative dock surface. Keep the
-    // dock controls on that shield enabled so card dragging/restoring is handled
-    // locally and cannot compete with a remote application's content gestures.
-    self.floatingDockTap.enabled = docked && !hidden;
-    self.floatingDockDragPress.enabled = docked && !hidden;
-    self.floatingResizePress.enabled = docked && !hidden;
-    // The display-global dock recognizer was useful before the shield owned
-    // the card surface. Leaving both paths enabled would move the card twice
-    // or restore it twice, so it remains disabled while the local shield is
-    // active. The hidden handle has its own handle recognizer.
-    self.floatingDockInputGesture.enabled = NO;
+    self.floatingDockTap.enabled = NO;
+    self.floatingDockDragPress.enabled = NO;
+    self.floatingResizePress.enabled = NO;
+    self.floatingDockInputGesture.enabled = docked || hidden;
     self.floatingHostView.userInteractionEnabled = !docked && !hidden;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden = !docked || hidden;
@@ -7235,7 +6995,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.previousKeyWindow = FLMCurrentKeyWindow();
     self.floatingBackdropTap.enabled = YES;
     self.floatingExclusiveGesture.enabled = NO;
-    [self setCornerTriggerGesturesEnabled:NO];
+    self.cornerGuardGesture.enabled = NO;
+    self.cornerGesture.enabled = NO;
     [self.floatingWindow makeKeyAndVisible];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self layoutFloatingWindow];
@@ -7704,7 +7465,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingIdentifier = nil;
     self.floatingExclusiveGesture.enabled = NO;
     self.floatingExclusiveTapEligible = NO;
-    [self setCornerTriggerGesturesEnabled:self.enabled];
+    self.cornerGuardGesture.enabled = self.enabled;
+    self.cornerGesture.enabled = self.enabled;
     self.previousKeyWindow = nil;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;

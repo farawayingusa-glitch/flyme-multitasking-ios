@@ -60,23 +60,6 @@ public final class FMScreenSenseVisionBridge: NSObject {
         return (analysis?.transcript ?? "") as NSString
     }
 
-    /// iOS 16 does not expose ImageAnalysisInteraction.selectedText publicly.
-    /// The native Live Text responder can still copy its active selection, so
-    /// the enclosing SpringBoard session uses this narrow bridge to obtain
-    /// the exact selected range without falling back to the full transcript.
-    @MainActor
-    @objc public func copyActiveTextSelection() -> Bool {
-        guard interaction?.hasActiveTextSelection == true else {
-            return false
-        }
-        return UIApplication.shared.sendAction(
-            #selector(UIResponder.copy(_:)),
-            to: nil,
-            from: self,
-            for: nil
-        )
-    }
-
     @MainActor
     @objc public var selectedTextLength: Int {
         return currentSelectedText.length
