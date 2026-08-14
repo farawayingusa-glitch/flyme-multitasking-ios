@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - codex/0.9.14-screensense-safe-actions
 
 jobs:
   build:
@@ -50,11 +49,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.9.29_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.9.30_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.9.29-${{ github.run_number }}
-          path: artifacts/flyme-multitasking-0.9.29_iphoneos-arm64.deb
+          name: flyme-multitasking-0.9.30-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_0.9.30_iphoneos-arm64.deb
           if-no-files-found: error
