@@ -22,8 +22,11 @@ reject_source() {
 }
 
 for marker in \
-    "const CGFloat horizontalRadius = 58.0;" \
-    "const CGFloat verticalRadius = 65.0;" \
+    "static const CGFloat FLMDefaultCornerTriggerSize = 58.0;" \
+    "static const CGFloat FLMMinimumCornerTriggerSize = 36.0;" \
+    "static const CGFloat FLMMaximumCornerTriggerSize = 96.0;" \
+    "CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);" \
+    "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
     "self.cornerGesture.minimumPressDuration = 0.12;" \
     "self.cornerGuardGesture.minimumPressDuration = 0.0;" \
     "CGPoint rawPoint = [touch locationInView:nil];" \
@@ -124,6 +127,10 @@ for marker in \
     "widthProgress" \
     "verticalProgress" \
     "fillScale" \
+    "setCornerTriggerGesturesEnabled:" \
+    "cornerTriggerBounds" \
+    "cornerTriggerPointForGesture:" \
+    "cornerTriggerPointForTouch:" \
     "scene-virtual-viewport"; do
     reject_source "$marker"
 done
@@ -164,6 +171,23 @@ if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboa
     exit 1
 fi
 
+source_directory="$(cd "$(dirname "$source_file")" && pwd)"
+for removed_file in \
+    FMScreenCaptureProvider.h \
+    FMScreenCaptureProvider.xm \
+    FMScreenSenseSession.h \
+    FMScreenSenseSession.xm \
+    FMScreenSenseVisionBridge.swift; do
+    if [[ -e "$source_directory/$removed_file" ]]; then
+        echo "removed ScreenSense source returned: $removed_file" >&2
+        exit 1
+    fi
+done
+if grep -Eiq 'FMScreen(Capture|Sense)|VisionKit|IOSurface' "$source_directory/Makefile"; then
+    echo "removed ScreenSense build dependency returned" >&2
+    exit 1
+fi
+
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
 wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
@@ -171,4 +195,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     exit 1
 fi
 
-echo "0.8.65 full-screen Scene/crop presentation, single-host keyboard routing, bounded launch recovery, hidden dock, proportional card corners, and 20pt gesture foundation verified"
+echo "0.9.x wheel gesture, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
