@@ -217,15 +217,11 @@ public final class FMScreenSenseVisionBridge: NSObject {
                 liveTextInteraction.analysis = result
                 liveTextInteraction.preferredInteractionTypes = .textSelection
                 liveTextInteraction.isSupplementaryInterfaceHidden = false
-                // The tweak's Translate/Close controls occupy the lower-left
-                // edge of the frozen image. Keep VisionKit's native Live Text
-                // action surface (including Copy) out of that hit area.
-                liveTextInteraction.supplementaryInterfaceContentInsets =
-                    UIEdgeInsets(top: 0.0, left: 0.0, bottom: 92.0, right: 0.0)
-                // Keep standard Live Text long-press behavior for data found
-                // inside recognized text. The text-selection action menu
-                // remains the system menu and supplies Copy/Translate.
-                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = true
+                // Keep the native Live Text text-selection gesture in charge.
+                // Data-detector long-press is deliberately disabled here so
+                // it cannot take over the same long-press used to create a
+                // text selection on iOS 16.
+                liveTextInteraction.allowLongPressForDataDetectorsInTextMode = false
                 liveTextInteraction.selectableItemsHighlighted = true
                 self.analysis = result
                 self.interaction = liveTextInteraction
