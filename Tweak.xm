@@ -15,8 +15,6 @@
 
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
-#import "FMScreenCaptureProvider.h"
-#import "FMScreenSenseSession.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -34,11 +32,14 @@
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
-#define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
-#define FLYME_SCREEN_SENSE_ENABLED 1
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.29"
+#define FLMLogBuildString @"0.9.30"
+
+// Kept only to discard the identifier left by older installs. It is not a
+// supported wheel item and must never be rendered or activated.
+static NSString *const FLMRemovedLegacyWheelItemIdentifier =
+    @"com.codex.flymemultitasking.screensense";
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -236,6 +237,10 @@ static const CGFloat FLMMaximumWheelRadius = 225.0;
 static const CGFloat FLMDefaultWheelIconSize = 56.0;
 static const CGFloat FLMMinimumWheelIconSize = 44.0;
 static const CGFloat FLMMaximumWheelIconSize = 68.0;
+static const CGFloat FLMDefaultCornerTriggerSize = 58.0;
+static const CGFloat FLMMinimumCornerTriggerSize = 36.0;
+static const CGFloat FLMMaximumCornerTriggerSize = 96.0;
+static CGFloat FLMCornerTriggerSize = FLMDefaultCornerTriggerSize;
 static const CGFloat FLMDefaultDockWidth = 156.0;
 static const CGFloat FLMMinimumDockWidth = 156.0;
 static const CGFloat FLMMaximumDockWidth = 270.0;
@@ -526,12 +531,22 @@ static BOOL FLMPrewarmApplicationIdentifier(NSString *identifier) {
                                                suspended:YES];
 }
 
+static CGFloat FLMClampedCornerTriggerSize(CGFloat value) {
+    if (!isfinite(value)) {
+        return FLMDefaultCornerTriggerSize;
+    }
+    return MAX(FLMMinimumCornerTriggerSize,
+               MIN(FLMMaximumCornerTriggerSize, value));
+}
+
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
-    // User-locked trigger geometry. Do not tune these values in later versions.
-    const CGFloat horizontalRadius = 58.0;
-    const CGFloat verticalRadius = 65.0;
+    // Keep the original 58x65 quarter-ellipse at the default. The setting
+    // scales both axes together while preserving that exact aspect ratio.
+    CGFloat horizontalRadius =
+        FLMClampedCornerTriggerSize(FLMCornerTriggerSize);
+    CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     CGFloat bottomDistance = height - point.y;
@@ -1101,13 +1116,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
     if (self) {
         _identifier = [identifier copy];
         BOOL isLockItem = [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM];
-        BOOL isScreenSenseItem =
-            [identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM];
-        BOOL isBuiltInAction = isLockItem || isScreenSenseItem;
-        self.backgroundColor = isLockItem
-                                   ? [UIColor systemBlueColor]
-                                   : (isScreenSenseItem ? [UIColor systemIndigoColor]
-                                                        : [UIColor clearColor]);
+        BOOL isBuiltInAction = isLockItem;
+        self.backgroundColor = isLockItem ? [UIColor systemBlueColor]
+                                          : [UIColor clearColor];
         self.layer.cornerRadius = size * 0.5;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOpacity = 0.22;
@@ -1428,7 +1439,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (BOOL)floatingSceneLogicalFrameMatchesSystemReference;
 - (void)closeFloatingWindowKeepingApplication:(BOOL)keepApplication;
 - (void)activateIdentifierFullscreen:(NSString *)identifier;
-- (void)captureScreenSense;
 - (void)beginLockMonitoring;
 - (void)stopLockMonitoringIfIdle;
 - (void)checkLockState:(NSTimer *)timer;
@@ -1921,21 +1931,9 @@ static UIImage *FLMLockImage(void) {
                        renderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
-static UIImage *FLMScreenSenseImage(void) {
-    UIImage *image = [UIImage systemImageNamed:@"text.viewfinder"];
-    if (!image) {
-        image = [UIImage systemImageNamed:@"viewfinder"];
-    }
-    return [image imageWithTintColor:[UIColor whiteColor]
-                        renderingMode:UIImageRenderingModeAlwaysOriginal];
-}
-
 static UIImage *FLMApplicationIcon(NSString *bundleIdentifier) {
     if ([bundleIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return FLMLockImage();
-    }
-    if ([bundleIdentifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
-        return FLMScreenSenseImage();
     }
     if ([UIImage respondsToSelector:
                      @selector(_applicationIconImageForBundleIdentifier:format:scale:)]) {
@@ -2404,6 +2402,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     id itemsValue = FLMCopyPreference(@"wheelItems");
     id radiusValue = FLMCopyPreference(@"wheelRadius");
     id iconSizeValue = FLMCopyPreference(@"wheelIconSize");
+    // Use a new key so values left by the retired experimental implementation
+    // cannot change the restored 58x65 default after this upgrade.
+    id cornerTriggerSizeValue = FLMCopyPreference(@"cornerTriggerSizeV2");
     id centeredCardWidthValue = FLMCopyPreference(@"centeredCardWidth");
     id centeredCardTopCropValue = FLMCopyPreference(@"centeredCardTopCrop");
     id centeredCardBottomCropValue = FLMCopyPreference(@"centeredCardBottomCrop");
@@ -2417,7 +2418,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [NSMutableArray arrayWithCapacity:configuredItems.count];
     for (id candidate in configuredItems) {
         if (![candidate isKindOfClass:[NSString class]] ||
-            [(NSString *)candidate length] == 0) {
+            [(NSString *)candidate length] == 0 ||
+            [(NSString *)candidate isEqualToString:
+                FLMRemovedLegacyWheelItemIdentifier]) {
             continue;
         }
         [runtimeItems addObject:(NSString *)candidate];
@@ -2436,6 +2439,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelIconSize =
         MAX(FLMMinimumWheelIconSize,
             MIN(FLMMaximumWheelIconSize, requestedIconSize));
+    CGFloat requestedCornerTriggerSize =
+        [cornerTriggerSizeValue isKindOfClass:[NSNumber class]]
+            ? [cornerTriggerSizeValue doubleValue]
+            : FLMDefaultCornerTriggerSize;
+    FLMCornerTriggerSize =
+        FLMClampedCornerTriggerSize(requestedCornerTriggerSize);
     CGFloat requestedCenteredCardWidth =
         [centeredCardWidthValue isKindOfClass:[NSNumber class]]
             ? [centeredCardWidthValue doubleValue]
@@ -3080,7 +3089,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (selectedIdentifier.length > 0 && !selectedIsCurrentFloating &&
         !selectedIsFrontmost &&
         ![selectedIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM] &&
-        ![selectedIdentifier isEqualToString:FLYME_SCREEN_SENSE_ITEM] &&
         FLMPrewarmApplicationIdentifier(selectedIdentifier)) {
         // Start the suspended scene while the wheel is completing its existing
         // dismissal animation. This gives scene creation a 240 ms head start.
@@ -7666,11 +7674,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)activateIdentifier:(NSString *)identifier {
-    if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
-        self.prewarmedIdentifier = nil;
-        [self captureScreenSense];
-        return;
-    }
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         UIApplication *application = [UIApplication sharedApplication];
         if ([application respondsToSelector:@selector(_simulateLockButtonPress)]) {
@@ -7708,54 +7711,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     [self openFloatingIdentifier:identifier];
-}
-
-- (void)captureScreenSense {
-    if (!self.overlayWindow.hidden) {
-        FLMEnqueueDiagnosticLine(
-            @"[ScreenSense][Capture][ERROR] wheel overlay still visible");
-        return;
-    }
-
-    FMScreenSenseSession *session = [FMScreenSenseSession sharedSession];
-    if (![session beginCaptureSession]) {
-        return;
-    }
-
-    FLMEnqueueDiagnosticLine(
-        @"[ScreenSense][Capture] wheel dismissed frontmost=%@ wait=two-main-queue-turns",
-        FLMFrontmostApplicationIdentifier() ?: @"<none>");
-    __weak FLMWheelController *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        FLMWheelController *firstTurnSelf = weakSelf;
-        if (!firstTurnSelf || !firstTurnSelf.overlayWindow.hidden) {
-            FLMEnqueueDiagnosticLine(
-                @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared");
-            [session abortCaptureWithReason:@"wheel-reappeared-before-capture"];
-            return;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            FLMWheelController *strongSelf = weakSelf;
-            if (!strongSelf || !strongSelf.overlayWindow.hidden) {
-                FLMEnqueueDiagnosticLine(
-                    @"[ScreenSense][Capture][ERROR] capture cancelled wheel reappeared before render");
-                [session abortCaptureWithReason:@"wheel-reappeared-before-render"];
-                return;
-            }
-            [session markCaptureStarted];
-            UIImage *image = [FMScreenCaptureProvider captureCurrentDisplay];
-            if (!image) {
-                FLMEnqueueDiagnosticLine(
-                    @"[ScreenSense][Capture][ERROR] returned nil image");
-                [session abortCaptureWithReason:@"nil-image"];
-                return;
-            }
-            FLMEnqueueDiagnosticLine(
-                @"[ScreenSense][Capture] completed image={%.1f,%.1f} scale=%.2f",
-                image.size.width, image.size.height, image.scale);
-            [session presentCapturedImage:image];
-        });
-    });
 }
 
 @end

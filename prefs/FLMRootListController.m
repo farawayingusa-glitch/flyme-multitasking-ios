@@ -14,8 +14,11 @@
 #define FLYME_PREFERENCES_DOMAIN CFSTR("com.codex.flymemultitasking")
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
-#define FLYME_SCREEN_SENSE_ITEM @"com.codex.flymemultitasking.screensense"
-#define FLYME_SCREEN_SENSE_ENABLED 1
+
+// Kept only to remove the identifier left by older installs. It is not a
+// supported wheel item and must never be shown in Settings.
+static NSString *const FLMRemovedLegacyWheelItemIdentifier =
+    @"com.codex.flymemultitasking.screensense";
 
 static NSString *const FLMDiagnosticPrimaryPath =
     @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -141,7 +144,26 @@ static NSString *FLMDiagnosticStatusText(void) {
 
 static NSArray<NSString *> *FLMWheelItems(void) {
     id value = FLMCopyPreference(@"wheelItems");
-    return [value isKindOfClass:[NSArray class]] ? value : @[];
+    if (![value isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+
+    NSMutableArray<NSString *> *filteredItems = [NSMutableArray array];
+    BOOL requiresMigration = NO;
+    for (id candidate in (NSArray *)value) {
+        if (![candidate isKindOfClass:[NSString class]] ||
+            [(NSString *)candidate length] == 0 ||
+            [(NSString *)candidate isEqualToString:
+                FLMRemovedLegacyWheelItemIdentifier]) {
+            requiresMigration = YES;
+            continue;
+        }
+        [filteredItems addObject:(NSString *)candidate];
+    }
+    if (requiresMigration) {
+        FLMSetPreference(@"wheelItems", filteredItems);
+    }
+    return [filteredItems copy];
 }
 
 static BOOL FlymeRuntimeIsConnected(void) {
@@ -205,14 +227,6 @@ static UIImage *FLMIconForIdentifier(NSString *identifier) {
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return [UIImage systemImageNamed:@"lock.fill"];
     }
-    if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
-        UIImage *image = [UIImage systemImageNamed:@"text.viewfinder"];
-        if (!image) {
-            image = [UIImage systemImageNamed:@"viewfinder"];
-        }
-        return [image imageWithTintColor:[UIColor labelColor]
-                            renderingMode:UIImageRenderingModeAlwaysOriginal];
-    }
     if ([UIImage respondsToSelector:
                      @selector(_applicationIconImageForBundleIdentifier:format:scale:)]) {
         return [UIImage _applicationIconImageForBundleIdentifier:identifier
@@ -227,9 +241,6 @@ static NSString *FLMNameForIdentifier(
     NSArray<NSDictionary<NSString *, id> *> *applications) {
     if ([identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return @"锁屏";
-    }
-    if ([identifier isEqualToString:FLYME_SCREEN_SENSE_ITEM]) {
-        return @"识屏";
     }
     for (NSDictionary *application in applications) {
         if ([application[@"identifier"] isEqualToString:identifier]) {
@@ -675,11 +686,6 @@ static NSString *FLMNameForIdentifier(
                                            identifier:FLYME_LOCK_SCREEN_ITEM
                                                 image:FLMIconForIdentifier(
                                                           FLYME_LOCK_SCREEN_ITEM)]];
-
-    [specifiers addObject:[self itemSpecifierWithName:@"识屏"
-                                           identifier:FLYME_SCREEN_SENSE_ITEM
-                                                image:FLMIconForIdentifier(
-                                                          FLYME_SCREEN_SENSE_ITEM)]];
 
     [specifiers addObject:[PSSpecifier groupSpecifierWithName:@"应用"]];
     for (NSDictionary *application in self.applications) {

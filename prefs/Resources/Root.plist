@@ -36,6 +36,34 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
+            <string>左右下角共用同一触发区域大小，默认值精确保持原来的 58×65 pt；调整后立即生效，点“默认”可恢复。</string>
+            <key>label</key>
+            <string>左右轮盘触发区域</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>defaultValue</key>
+            <real>58</real>
+            <key>height</key>
+            <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
+            <key>label</key>
+            <string>左右轮盘触发区域大小</string>
+            <key>maximumValue</key>
+            <real>96</real>
+            <key>minimumValue</key>
+            <real>36</real>
+            <key>preferenceKey</key>
+            <string>cornerTriggerSizeV2</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
             <string>卡片保持全屏画布的等比例显示；顶部和底部裁切只改变可见视口，不改变应用布局。</string>
             <key>label</key>
             <string>卡片大小</string>
