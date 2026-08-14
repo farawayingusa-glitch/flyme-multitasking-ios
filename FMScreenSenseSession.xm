@@ -72,6 +72,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
 @implementation FMScreenSenseViewController
 
+- (BOOL)canBecomeFirstResponder {
+    // VisionKit routes the native Live Text Copy/Translate actions through
+    // UIKit's text-action responder chain. The custom SpringBoard controller
+    // must be eligible to host that chain on iOS 16.
+    return YES;
+}
+
 - (BOOL)prefersStatusBarHidden {
     return YES;
 }
@@ -218,14 +225,13 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
     FMScreenSenseWindow *window =
         [[FMScreenSenseWindow alloc] initWithWindowScene:scene];
     window.frame = scene.coordinateSpace.bounds;
-    // Keep the frozen screen above the current host window, but leave room
-    // for UIKit/VisionKit's own text-effects and translation presentation
-    // windows. The previous Alert+120 level could visually cover the native
-    // Copy/Translate UI while selection itself still appeared to work.
+    // Keep the frozen screen just above the current host window. Alert-level
+    // overlays can cover UIKit/VisionKit's native Live Text action surface,
+    // even while the recognized text and selection highlights remain visible.
     CGFloat hostWindowLevel = self.previousKeyWindow
                                   ? self.previousKeyWindow.windowLevel
                                   : UIWindowLevelNormal;
-    window.windowLevel = MAX(UIWindowLevelAlert + 1.0, hostWindowLevel + 1.0);
+    window.windowLevel = MAX(UIWindowLevelNormal + 0.5, hostWindowLevel + 0.5);
     window.backgroundColor = [UIColor blackColor];
     window.opaque = YES;
     window.userInteractionEnabled = YES;
@@ -314,6 +320,10 @@ static UIWindow *FMScreenSenseCurrentKeyWindow(UIWindowScene *scene) {
 
     window.hidden = NO;
     [window makeKeyAndVisible];
+    BOOL becameFirstResponder = [viewController becomeFirstResponder];
+    FLMEnqueueDiagnosticLine(
+        @"[ScreenSense][Vision] action-responder controller=%d windowLevel=%.1f",
+        becameFirstResponder ? 1 : 0, window.windowLevel);
     [window layoutIfNeeded];
     FLMEnqueueDiagnosticLine(@"[ScreenSense] overlay present success");
 
