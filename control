@@ -7,12 +7,3 @@ Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
 Version: 0.9.33
-Package: com.codex.flymemultitasking
-Name: flyme-multitasking
-Description: flyme-multitasking rootless iOS multitasking tweak with full-screen keyboard routing and adjustable centered card geometry.
-Maintainer: Codex build for local testing
-Author: Codex build for local testing
-Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
-Architecture: iphoneos-arm64
-Version: 0.9.32
