@@ -27,6 +27,11 @@ for marker in \
     "static const CGFloat FLMMaximumCornerTriggerSize = 96.0;" \
     "CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);" \
     "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
+    "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
+    "!self.hotspotsEnabled || FLMDeviceIsLocked()" \
+    "refreshWheelPriorityWindow" \
+    "wheel-priority-touch" \
+    "hotspotWindow.hotspotsEnabled = NO" \
     "self.cornerGesture.minimumPressDuration = 0.12;" \
     "self.cornerGuardGesture.minimumPressDuration = 0.0;" \
     "CGPoint rawPoint = [touch locationInView:nil];" \
@@ -84,6 +89,8 @@ for marker in \
     "floatingDockHidden" \
     "floatingDockHideGestureActive" \
     "floatingDockHideReady" \
+    "floatingDockHideInitialFrame = self.floatingContainer.frame" \
+    "if (clearHorizontalIntent)" \
     "finishFloatingDockHiddenGesture" \
     "triggerProgress" \
     "floatingDockFeedbackSent" \
@@ -189,9 +196,13 @@ if grep -Eiq 'FMScreen(Capture|Sense)|VisionKit|IOSurface' "$source_directory/Ma
 fi
 
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
-wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
+wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture];" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
     echo "first-frame guard registration order changed" >&2
+    exit 1
+fi
+if grep -Fq -- "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file"; then
+    echo "wheel opener returned to private system gesture arbitration" >&2
     exit 1
 fi
 
