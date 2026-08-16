@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.33"
+#define FLMLogBuildString @"0.9.34"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -767,7 +767,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.hotspotsEnabled) {
+    // Keep this top-level input boundary out of the lock screen's touch path.
+    if (!self.hotspotsEnabled || FLMDeviceIsLocked()) {
         return nil;
     }
     if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
@@ -1388,6 +1389,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)handleFloatingResizePress:(UILongPressGestureRecognizer *)gesture;
 - (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture;
 - (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture;
+- (void)refreshWheelPriorityWindow;
 - (void)activateFloatingDockDragForGeneration:(NSUInteger)generation;
 - (void)queueFloatingDockInputUpdateForPoint:(CGPoint)point;
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink;
@@ -2096,7 +2098,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self createFloatingWindow];
 
     self.hotspotWindow = FLMCreateHotspotWindow(bounds);
-    self.hotspotWindow.windowLevel = UIWindowLevelAlert + 90.0;
+    // This transparent window is the wheel's arbitration boundary. It only
+    // hit-tests the four corner ellipses, but it stays above the floating card
+    // and keyboard forwarding windows so those routes cannot win first.
+    self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
     self.hotspotWindow.backgroundColor = [UIColor clearColor];
     UIViewController *hotspotController = [[UIViewController alloc] init];
     hotspotController.view.backgroundColor = [UIColor clearColor];
@@ -2225,10 +2230,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         addGestureRecognizer:self.homeDockGesture];
 
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
+    // Do not register the wheel pair only with the private system manager.
+    // That path can lose to card/system recognizers in centered or docked
+    // modes. The corner-only window gives the pair a stable UIKit owner.
+    [self.hotspotWindow.rootViewController.view
+        addGestureRecognizer:self.cornerGuardGesture];
+    [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
     if (!self.usesSystemGestureManager) {
-        [self.hotspotWindow.rootViewController.view
-            addGestureRecognizer:self.cornerGuardGesture];
-        [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
         [self.floatingWindow.rootViewController.view
             addGestureRecognizer:self.floatingDockInputGesture];
     }
@@ -2436,9 +2444,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
 
-    [manager addGestureRecognizer:self.cornerGuardGesture
-            toDisplayWithIdentity:identity];
-    [manager addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity];
+    // The wheel pair is owned by the dedicated top-level hotspot window. Keep
+    // only the card/home auxiliary gestures in the private manager; putting a
+    // second wheel copy there reintroduces the arbitration race this window
+    // is meant to eliminate.
     [manager addGestureRecognizer:self.modalGesture toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.floatingExclusiveGesture
             toDisplayWithIdentity:identity];
@@ -2537,11 +2546,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             MIN(FLMMaximumDockedShrinkAmount, requestedDockShrink));
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
+    self.floatingCornerGuardGesture.enabled = self.enabled;
+    self.floatingCornerGesture.enabled = self.enabled;
     if (!self.enabled) {
         self.modalGesture.enabled = NO;
     }
-    self.hotspotWindow.hotspotsEnabled = self.enabled && !self.usesSystemGestureManager;
-    self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
+    [self refreshWheelPriorityWindow];
     if (!self.enabled) {
         [self dismissWheelLaunchingItem:nil];
         [self closeFloatingWindowKeepingApplication:YES];
@@ -2552,6 +2562,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // Scene, responder route, and keyboard coordinate system untouched.
         [self layoutFloatingWindow];
     }
+}
+
+- (void)refreshWheelPriorityWindow {
+    BOOL canReceive = self.enabled &&
+                      !self.wheelPinned &&
+                      self.itemIdentifiers.count > 0 &&
+                      !FLMDeviceIsLocked();
+    self.hotspotWindow.hotspotsEnabled = canReceive;
+    // Keep the window resident whenever the tweak is enabled so it can take
+    // over immediately after a different app/card becomes frontmost. Its
+    // hit-test remains nil when canReceive is false.
+    self.hotspotWindow.hidden = !self.enabled;
+    self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
 }
 
 - (void)orientationDidChange:(NSNotification *)notification {
@@ -2639,9 +2662,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
-    if (gestureRecognizer == self.cornerGuardGesture) {
+    if (gestureRecognizer == self.cornerGuardGesture ||
+        gestureRecognizer == self.floatingCornerGuardGesture) {
         return self.enabled && !self.wheelPinned &&
                self.itemIdentifiers.count > 0 && !FLMDeviceIsLocked();
+    }
+    if (gestureRecognizer != self.cornerGesture &&
+        gestureRecognizer != self.floatingCornerGesture) {
+        return NO;
     }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
@@ -2795,16 +2823,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.modalGesture) {
         return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
     }
-    if (gestureRecognizer == self.cornerGuardGesture) {
+    if (gestureRecognizer == self.cornerGuardGesture ||
+        gestureRecognizer == self.floatingCornerGuardGesture) {
         if (!self.enabled || self.wheelPinned ||
             self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
             return NO;
         }
         CGPoint rawPoint = [touch locationInView:nil];
         CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
-        return FLMPointInsideCornerTrigger(point,
-                                           FLMVisualScreenBounds(),
-                                           NULL);
+        BOOL accepted = FLMPointInsideCornerTrigger(point,
+                                                    FLMVisualScreenBounds(),
+                                                    NULL);
+        if (accepted) {
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-priority-touch accepted recognizer=%@ point={%.1f,%.1f}",
+                gestureRecognizer == self.cornerGuardGesture ? @"guard" : @"floating-guard",
+                point.x, point.y);
+        }
+        return accepted;
+    }
+    if (gestureRecognizer != self.cornerGesture &&
+        gestureRecognizer != self.floatingCornerGesture) {
+        return NO;
     }
     if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
@@ -2822,16 +2862,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.presentingFromRight = fromRight;
     self.cornerGestureStartPoint = point;
     self.wheelGestureActive = NO;
+    FLMEnqueueDiagnosticLine(
+        @"sb wheel-priority-touch accepted recognizer=%@ point={%.1f,%.1f} fromRight=%d",
+        gestureRecognizer == self.cornerGesture ? @"opener" : @"floating-opener",
+        point.x, point.y, fromRight);
     return YES;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
     shouldRecognizeSimultaneouslyWithGestureRecognizer:
         (UIGestureRecognizer *)otherGestureRecognizer {
-    // The wheel family spans both registration sites (system gesture manager
-    // pair + floating-window pair). Every member must be able to recognize
-    // beside any other member, otherwise the first recognizer to begin
-    // prevents the rest and the wheel silently stops summoning in card modes.
+    // The wheel family spans the dedicated hotspot window and the floating
+    // window fallback pair. Every member must be able to recognize beside any
+    // other member, otherwise the first recognizer to begin prevents the rest
+    // and the wheel silently stops summoning in card modes.
     FLMCornerGestureRecognizer *wheelFamily[] = {
         self.cornerGuardGesture,
         self.cornerGesture,
@@ -2899,9 +2943,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture {
-    // Intentionally empty. Recognizing immediately reserves the user-locked
-    // corner zone so home/back gestures cannot consume the same touch stream.
-    (void)gesture;
+    // Recognizing immediately reserves the corner zone so home/back/card
+    // gestures cannot consume the same touch stream. Keep a breadcrumb for
+    // the priority boundary because this guard runs before the wheel opener.
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
+        FLMEnqueueDiagnosticLine(
+            @"sb wheel-priority-guard began point={%.1f,%.1f}",
+            point.x, point.y);
+    }
 }
 
 - (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture {
@@ -2969,6 +3019,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         case UIGestureRecognizerStateChanged:
             if (!self.wheelGestureActive && [self shouldActivateWheelAtPoint:point]) {
                 self.wheelGestureActive = YES;
+                FLMEnqueueDiagnosticLine(
+                    @"sb wheel-gesture began point={%.1f,%.1f} start={%.1f,%.1f} priority=1",
+                    point.x, point.y,
+                    self.cornerGestureStartPoint.x,
+                    self.cornerGestureStartPoint.y);
                 [self presentWheelFromRight:self.presentingFromRight];
             }
             if (self.wheelGestureActive) {
@@ -2984,12 +3039,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     [self pinWheel];
                 }
             }
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-gesture ended active=%d point={%.1f,%.1f}",
+                self.wheelGestureActive, point.x, point.y);
             self.wheelGestureActive = NO;
             break;
         case UIGestureRecognizerStateCancelled:
             if (self.wheelGestureActive) {
                 [self pinWheel];
             }
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-gesture cancelled active=%d point={%.1f,%.1f}",
+                self.wheelGestureActive, point.x, point.y);
             self.wheelGestureActive = NO;
             break;
         case UIGestureRecognizerStateFailed:
@@ -3030,6 +3091,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)presentWheelFromRight:(BOOL)fromRight {
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
+    // The opening touch belongs to this wheel stream. Do not let the
+    // priority window start a second stream while the wheel is animating in.
+    self.hotspotWindow.hotspotsEnabled = NO;
     // The wheel must render and receive touches above any visible card. The
     // keyboard forwarding window sits at floating+1, so present at +2.
     self.overlayWindow.userInteractionEnabled = NO;
@@ -3152,6 +3216,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.highlightedItem.highlighted = NO;
     self.highlightedItem = nil;
     self.wheelPinned = YES;
+    self.hotspotWindow.hotspotsEnabled = NO;
     self.overlayWindow.userInteractionEnabled = YES;
     if (self.usesSystemGestureManager) {
         self.modalGesture.enabled = YES;
@@ -3213,6 +3278,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Restore the overlay below the floating window now that the wheel no
     // longer needs to sit above a visible card.
     self.overlayWindow.windowLevel = UIWindowLevelAlert + 91.0;
+    [self refreshWheelPriorityWindow];
     [self stopLockMonitoringIfIdle];
     if (self.overlayWindow.hidden) {
         if (item) {
@@ -3937,15 +4003,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 fabs(horizontalDelta) >=
                     fabs(verticalDelta) *
                         FLMFloatingDockHideIntentHorizontalRatio;
-            if (!self.floatingDockGlobalDragActivated && clearHorizontalIntent) {
-                // Only a deliberate, mostly-horizontal swipe out through the
-                // current dock edge can enter the hidden-bar path.  A 5pt
-                // outward wobble is still an ordinary card drag.
+            if (clearHorizontalIntent) {
+                // Decide hide intent from the touch direction, even if the
+                // ordinary card drag has already activated after a few points.
+                // The old global-drag gate made a slower left-edge swipe miss
+                // hidden mode permanently. Rebase the visual start here so a
+                // late mode switch remains continuous instead of jumping back
+                // to the touch-down frame.
+                self.floatingDockHideStartPoint = point;
+                self.floatingDockHideInitialFrame = self.floatingContainer.frame;
                 self.floatingDockInputMode =
                     FLMFloatingDockInputModeHiddenReveal;
                 self.floatingDockHideGestureActive = YES;
-                self.floatingDockHideReady =
-                    outwardTravel >= [self effectiveCenteredDockSwipeThreshold];
+                self.floatingDockHideReady = NO;
                 self.floatingDockGlobalDragActivated = NO;
                 FLMEnqueueDiagnosticLine(
                     @"sb dock-input-mode-change from=card-drag to=hidden-reveal travel=%.1f point={%.1f,%.1f}",
@@ -7441,8 +7511,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.previousKeyWindow = FLMCurrentKeyWindow();
     self.floatingBackdropTap.enabled = YES;
     self.floatingExclusiveGesture.enabled = NO;
-    self.cornerGuardGesture.enabled = NO;
-    self.cornerGesture.enabled = NO;
+    // The corner-only priority window remains live while the card is
+    // prewarming/attaching. Wheel presentation must not depend on the target
+    // app's Scene or on the card animation having completed.
+    self.cornerGuardGesture.enabled = self.enabled;
+    self.cornerGesture.enabled = self.enabled;
     [self.floatingWindow makeKeyAndVisible];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self layoutFloatingWindow];
@@ -8054,6 +8127,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)checkLockState:(NSTimer *)timer {
     (void)timer;
+    [self refreshWheelPriorityWindow];
     if (self.floatingDocked && !self.floatingWindow.hidden &&
         self.floatingIdentifier.length > 0) {
         NSString *frontmostIdentifier = FLMFrontmostApplicationIdentifier();
