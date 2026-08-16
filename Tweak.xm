@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.34"
+#define FLMLogBuildString @"0.9.35"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -767,8 +767,12 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    // Keep this top-level input boundary out of the lock screen's touch path.
-    if (!self.hotspotsEnabled || FLMDeviceIsLocked()) {
+    // Lock-screen exclusion is decided by the gesture delegate. Do not call
+    // the private lock-state aggregate from this top-level window: on some
+    // SpringBoard generations one of its compatibility selectors reports an
+    // active lock-screen service even while the device is unlocked, which
+    // would make the entire wheel entry disappear before UIKit arbitration.
+    if (!self.hotspotsEnabled) {
         return nil;
     }
     if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
@@ -2230,13 +2234,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         addGestureRecognizer:self.homeDockGesture];
 
     self.usesSystemGestureManager = [self registerGlobalCornerGesture];
-    // Do not register the wheel pair only with the private system manager.
-    // That path can lose to card/system recognizers in centered or docked
-    // modes. The corner-only window gives the pair a stable UIKit owner.
-    [self.hotspotWindow.rootViewController.view
-        addGestureRecognizer:self.cornerGuardGesture];
-    [self.hotspotWindow.rootViewController.view addGestureRecognizer:self.cornerGesture];
     if (!self.usesSystemGestureManager) {
+        // The private manager is the only route that follows touches across
+        // application Scenes. The transparent window is a fallback for
+        // systems where that private registration API is unavailable.
+        [self.hotspotWindow.rootViewController.view
+            addGestureRecognizer:self.cornerGuardGesture];
+        [self.hotspotWindow.rootViewController.view
+            addGestureRecognizer:self.cornerGesture];
         [self.floatingWindow.rootViewController.view
             addGestureRecognizer:self.floatingDockInputGesture];
     }
@@ -2444,10 +2449,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
 
-    // The wheel pair is owned by the dedicated top-level hotspot window. Keep
-    // only the card/home auxiliary gestures in the private manager; putting a
-    // second wheel copy there reintroduces the arbitration race this window
-    // is meant to eliminate.
+    // Keep the wheel pair in the private system gesture manager so it remains
+    // global while another application's Scene is frontmost. The floating
+    // window owns a second pair for centered/docked card-local arbitration.
+    [manager addGestureRecognizer:self.cornerGuardGesture
+            toDisplayWithIdentity:identity];
+    [manager addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.modalGesture toDisplayWithIdentity:identity];
     [manager addGestureRecognizer:self.floatingExclusiveGesture
             toDisplayWithIdentity:identity];
@@ -2567,13 +2574,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)refreshWheelPriorityWindow {
     BOOL canReceive = self.enabled &&
                       !self.wheelPinned &&
-                      self.itemIdentifiers.count > 0 &&
-                      !FLMDeviceIsLocked();
-    self.hotspotWindow.hotspotsEnabled = canReceive;
-    // Keep the window resident whenever the tweak is enabled so it can take
-    // over immediately after a different app/card becomes frontmost. Its
-    // hit-test remains nil when canReceive is false.
-    self.hotspotWindow.hidden = !self.enabled;
+                      self.itemIdentifiers.count > 0;
+    // A Scene-bound window cannot receive touches from a different frontmost
+    // application. It is therefore only an emergency fallback; the global
+    // system-manager pair remains enabled regardless of this window state.
+    self.hotspotWindow.hotspotsEnabled = canReceive &&
+                                         !self.usesSystemGestureManager;
+    self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
 }
 
