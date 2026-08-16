@@ -28,7 +28,10 @@ for marker in \
     "CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);" \
     "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
     "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
-    "!self.hotspotsEnabled || FLMDeviceIsLocked()" \
+    "if (!self.hotspotsEnabled)" \
+    "self.hotspotWindow.hotspotsEnabled = canReceive &&" \
+    "self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;" \
+    "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" \
     "refreshWheelPriorityWindow" \
     "wheel-priority-touch" \
     "hotspotWindow.hotspotsEnabled = NO" \
@@ -201,9 +204,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-if grep -Fq -- "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file"; then
-    echo "wheel opener returned to private system gesture arbitration" >&2
-    exit 1
-fi
-
-echo "0.9.x wheel gesture, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
