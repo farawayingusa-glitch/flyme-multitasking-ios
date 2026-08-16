@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.35"
+#define FLMLogBuildString @"0.9.36"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1282,6 +1282,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) FLMFloatingDockInputMode floatingDockInputMode;
 @property(nonatomic, assign) BOOL floatingDockInputSessionActive;
 @property(nonatomic, assign) BOOL floatingDockInputBlockedUntilNextTouch;
+@property(nonatomic, assign) NSTimeInterval floatingDockInputBlockCutoffTimestamp;
 @property(nonatomic, assign) BOOL floatingDockInputFramePending;
 @property(nonatomic, assign) NSUInteger floatingDockInputFrameGeneration;
 @property(nonatomic, strong) CADisplayLink *floatingDockInputDisplayLink;
@@ -2208,7 +2209,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     action:@selector(handleFloatingDockInputGesture:)];
     self.floatingDockInputGesture.delegate = self;
     self.floatingDockInputGesture.cancelsTouchesInView = YES;
-    self.floatingDockInputGesture.delaysTouchesBegan = NO;
+    // This recognizer is enabled only while the card/handle owns the touch
+    // domain. Delay the underlying application's touch-began until the
+    // immediate dock recognizer has arbitrated the stream; otherwise a
+    // button or scroll view below can consume the first sample before the
+    // system-registered gesture cancels it.
+    self.floatingDockInputGesture.delaysTouchesBegan = YES;
     self.floatingDockInputGesture.delaysTouchesEnded = NO;
     self.floatingDockInputGesture.numberOfTouchesRequired = 1;
     self.floatingDockInputGesture.minimumPressDuration = 0.0;
@@ -2727,6 +2733,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         CGPoint rawPoint = [touch locationInView:nil];
         CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        BOOL staleStream =
+            self.floatingDockInputBlockedUntilNextTouch &&
+            self.floatingDockInputBlockCutoffTimestamp > 0.0 &&
+            touch.timestamp > 0.0 &&
+            touch.timestamp <= self.floatingDockInputBlockCutoffTimestamp + 0.001;
         BOOL accepted = NO;
         if (self.floatingDockHidden) {
             accepted = CGRectContainsPoint(self.floatingHandle.frame, point) ||
@@ -2738,18 +2749,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             accepted = [self floatingResizeControlContainsPoint:point] ||
                        CGRectContainsPoint(self.floatingContainer.frame, point);
         }
+        accepted = accepted && !staleStream;
         FLMEnqueueDiagnosticLine(
-            @"sb dock-input-delegate accepted=%d docked=%d hidden=%d transition=%d blocked=%d point={%.1f,%.1f} card=%@ resize=%@",
+            @"sb dock-input-delegate accepted=%d docked=%d hidden=%d transition=%d blocked=%d stale=%d timestamp=%.6f point={%.1f,%.1f} view=%@ card=%@ resize=%@",
             accepted,
             self.floatingDocked,
             self.floatingDockHidden,
             self.floatingDockTransitionActive,
             self.floatingDockInputBlockedUntilNextTouch,
+            staleStream,
+            touch.timestamp,
             point.x,
             point.y,
+            touch.view ? NSStringFromClass([touch.view class]) : @"<nil>",
             NSStringFromCGRect(self.floatingContainer.frame),
             NSStringFromCGRect(self.floatingResizeHandle.frame));
         if (accepted) {
+            // A touch newer than the transition cutoff is a genuinely new
+            // stream. Clear the tail guard before the gesture begins so the
+            // first deliberate post-transition drag/tap is not discarded.
+            self.floatingDockInputBlockedUntilNextTouch = NO;
+            self.floatingDockInputBlockCutoffTimestamp = 0.0;
             // Lock the floating card's touch route before the recognizer has
             // reached Began.  Waiting for the action callback leaves a small
             // arbitration window where a drag through a lower corner can be
@@ -3882,31 +3902,45 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                         point))
                                 : ([self floatingResizeControlContainsPoint:point] ||
                                    CGRectContainsPoint(self.floatingContainer.frame, point));
+        BOOL staleStream =
+            self.floatingDockInputBlockedUntilNextTouch &&
+            self.floatingDockInputBlockCutoffTimestamp > 0.0 &&
+            gesture.flmFirstTouchTimestamp > 0.0 &&
+            gesture.flmFirstTouchTimestamp <=
+                self.floatingDockInputBlockCutoffTimestamp + 0.001;
         BOOL canBegin = (self.floatingDocked || self.floatingDockHidden) &&
                         !self.floatingWindow.hidden &&
                         !self.floatingDockTransitionActive &&
-                        !FLMDeviceIsLocked() && pointIsOwned;
+                        !FLMDeviceIsLocked() && pointIsOwned && !staleStream;
         if (!canBegin) {
             // System-registered recognizers can continue to report the tail
             // of a touch that started before the card became docked.  Mark
             // that stream as foreign so its later Changed/Ended callbacks
             // cannot be mistaken for a fresh dock tap or drag.
             self.floatingDockInputBlockedUntilNextTouch = YES;
+            if (self.floatingDockInputBlockCutoffTimestamp <= 0.0) {
+                self.floatingDockInputBlockCutoffTimestamp =
+                    gesture.flmFirstTouchTimestamp > 0.0
+                        ? gesture.flmFirstTouchTimestamp
+                        : CACurrentMediaTime();
+            }
             if (!self.floatingDockTransitionActive) {
                 [self setFloatingDockRoutingSuppressed:NO];
             }
             FLMEnqueueDiagnosticLine(
-                @"sb dock-input-ignored state=began docked=%d hidden=%d transition=%d owned=%d blocked=%d point={%.1f,%.1f}",
+                @"sb dock-input-ignored state=began docked=%d hidden=%d transition=%d owned=%d stale=%d blocked=%d point={%.1f,%.1f}",
                 self.floatingDocked,
                 self.floatingDockHidden,
                 self.floatingDockTransitionActive,
                 pointIsOwned,
+                staleStream,
                 self.floatingDockInputBlockedUntilNextTouch,
                 point.x,
                 point.y);
             return;
         }
         self.floatingDockInputBlockedUntilNextTouch = NO;
+        self.floatingDockInputBlockCutoffTimestamp = 0.0;
         [self setFloatingDockRoutingSuppressed:YES];
         self.floatingDockInputSessionActive = YES;
         self.floatingDockInputMode =
@@ -3963,6 +3997,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             gesture.state == UIGestureRecognizerStateCancelled ||
             gesture.state == UIGestureRecognizerStateFailed) {
             self.floatingDockInputBlockedUntilNextTouch = NO;
+            self.floatingDockInputBlockCutoffTimestamp = 0.0;
             self.floatingDockInputSessionActive = NO;
             self.floatingDockInputMode = FLMFloatingDockInputModeNone;
             self.floatingDockInputGeneration += 1;
@@ -3979,11 +4014,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // The dock can disappear while a touch is in flight.  Do not let the
         // remainder of that touch enter the centered-card tap path.
         self.floatingDockInputBlockedUntilNextTouch = YES;
+        if (self.floatingDockInputBlockCutoffTimestamp <= 0.0) {
+            self.floatingDockInputBlockCutoffTimestamp =
+                gesture.flmFirstTouchTimestamp > 0.0
+                    ? gesture.flmFirstTouchTimestamp
+                    : CACurrentMediaTime();
+        }
         if (gesture.state == UIGestureRecognizerStateEnded ||
             gesture.state == UIGestureRecognizerStateCancelled ||
             gesture.state == UIGestureRecognizerStateFailed) {
             self.floatingDockInputSessionActive = NO;
             self.floatingDockInputMode = FLMFloatingDockInputModeNone;
+            self.floatingDockInputBlockCutoffTimestamp = 0.0;
             self.floatingDockInputGeneration += 1;
             [self cancelFloatingDockInputUpdates];
             if (!self.floatingDockTransitionActive) {
@@ -5470,6 +5512,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputTargetsResize = NO;
     self.floatingDockGlobalDragActivated = NO;
     self.floatingDockInputBlockedUntilNextTouch = YES;
+    // The current centered-to-dock swipe may still be observed by the
+    // display-wide recognizer after the visual transition starts.  Reject
+    // only that old touch stream; the first touch with a newer timestamp is
+    // allowed to operate the settled dock immediately.
+    self.floatingDockInputBlockCutoffTimestamp = CACurrentMediaTime();
     [self setFloatingApplicationInputBlocked:YES];
     [self setFloatingDockRoutingSuppressed:YES];
     // A card session is created before the keyboard itself appears. When no
@@ -5599,6 +5646,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputSessionActive = NO;
     self.floatingDockInputMode = FLMFloatingDockInputModeNone;
     self.floatingDockInputBlockedUntilNextTouch = YES;
+    self.floatingDockInputBlockCutoffTimestamp = CACurrentMediaTime();
     self.floatingDockTransitionActive = YES;
     self.floatingResizeHandle.alpha = 0.0;
     self.floatingResizeHandle.hidden = YES;
