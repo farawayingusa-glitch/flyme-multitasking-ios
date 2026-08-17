@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.42"
+#define FLMLogBuildString @"0.9.43"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -2739,7 +2739,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                              -18.0),
                                                     point))
                            : (landscapeSideCard
-                                  ? [self floatingResizeControlContainsPoint:point]
+                                  ? NO
                                   : ([self floatingResizeControlContainsPoint:point] ||
                                      CGRectContainsPoint(self.floatingContainer.frame,
                                                           point)));
@@ -2858,7 +2858,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                      self.floatingDocked &&
                                      FLMVisualScreenIsLandscape();
             accepted = landscapeSideCard
-                           ? [self floatingResizeControlContainsPoint:point]
+                           ? NO
                            : ([self floatingResizeControlContainsPoint:point] ||
                               CGRectContainsPoint(self.floatingContainer.frame,
                                                    point));
@@ -4089,7 +4089,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                                   -18.0),
                                                         point))
                                 : (landscapeSideCard
-                                       ? [self floatingResizeControlContainsPoint:point]
+                                       ? NO
                                        : ([self floatingResizeControlContainsPoint:point] ||
                                           CGRectContainsPoint(self.floatingContainer.frame,
                                                                point)));
@@ -5609,6 +5609,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.floatingResizeHandle || !self.floatingDocked ||
         self.floatingDockHidden || self.floatingWindow.hidden) {
         self.floatingResizeHandle.hidden = YES;
+        self.floatingResizeHandle.userInteractionEnabled = NO;
+        return;
+    }
+    if (self.floatingLandscapeSideCardActive && FLMVisualScreenIsLandscape()) {
+        // Landscape has no card-resize affordance or hit region.  The only
+        // side-card control is the white bar on the card's right edge.
+        self.floatingResizeHandle.hidden = YES;
+        self.floatingResizeHandle.userInteractionEnabled = NO;
         return;
     }
     CGRect frame = self.floatingContainer.frame;
@@ -5730,9 +5738,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingBackdropTap.enabled = !hidden;
         self.floatingDockTap.enabled = NO;
         self.floatingDockDragPress.enabled = NO;
-        self.floatingDockInputGesture.enabled = YES;
-        self.floatingResizeHandle.userInteractionEnabled = !hidden;
-        self.floatingResizeHandle.hidden = hidden;
+        self.floatingDockInputGesture.enabled = hidden;
+        self.floatingResizeHandle.userInteractionEnabled = NO;
+        self.floatingResizeHandle.hidden = YES;
         self.floatingResizeHandle.alpha = 1.0;
         BOOL contentTailProtected =
             self.floatingDockContentTailProtected && !hidden;
