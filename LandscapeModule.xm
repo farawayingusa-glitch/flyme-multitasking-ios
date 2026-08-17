@@ -829,7 +829,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     CGFloat scale = target.width / reference.width;
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
-    self.hostView.center = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
+    self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
     self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-layout display={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scale=%.6f",
@@ -902,12 +902,20 @@ static id FLMLandscapeSceneForHandle(id handle) {
             [application launchApplicationWithIdentifier:identifier suspended:NO]) {
             return;
         }
-        id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-        id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
-                           ? [workspaceClass defaultWorkspace]
-                           : nil;
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = nil;
+        if (workspaceClass &&
+            [workspaceClass respondsToSelector:@selector(defaultWorkspace)]) {
+            id (*getWorkspace)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            workspace = getWorkspace((id)workspaceClass,
+                                     @selector(defaultWorkspace));
+        }
         if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)]) {
-            [workspace openApplicationWithBundleID:identifier];
+            BOOL (*openApplication)(id, SEL, NSString *) =
+                (BOOL (*)(id, SEL, NSString *))objc_msgSend;
+            openApplication(workspace,
+                            @selector(openApplicationWithBundleID:),
+                            identifier);
         }
     });
 }
