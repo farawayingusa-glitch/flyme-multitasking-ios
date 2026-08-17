@@ -205,34 +205,68 @@ CGRect FLMLandscapeModuleVisualBounds(void) {
     return bounds;
 }
 
+static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
+    CGRect bounds = CGRectZero;
+    if (@available(iOS 8.0, *)) {
+        bounds = screen.fixedCoordinateSpace.bounds;
+    }
+    if (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0 ||
+        CGRectGetWidth(bounds) >= CGRectGetHeight(bounds)) {
+        // Some SpringBoard builds briefly expose the rotated frame through
+        // fixedCoordinateSpace while the display transition is settling.
+        // The frozen portrait screen frame is a safe fallback in that case.
+        CGRect portraitCandidate = screen.bounds;
+        if (CGRectGetWidth(portraitCandidate) > 1.0 &&
+            CGRectGetHeight(portraitCandidate) > 1.0 &&
+            CGRectGetWidth(portraitCandidate) < CGRectGetHeight(portraitCandidate)) {
+            bounds = portraitCandidate;
+        }
+    }
+    bounds.origin = CGPointZero;
+    return bounds;
+}
+
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
     UIScreen *screen = FLMLandscapeWindowScene().screen;
     if (!screen) {
         screen = [UIScreen mainScreen];
     }
     CGRect visualBounds = FLMLandscapeModuleVisualBounds();
-    CGRect rawBounds = screen.bounds;
-    if (CGRectGetWidth(rawBounds) <= 1.0 ||
-        CGRectGetHeight(rawBounds) <= 1.0) {
-        if (@available(iOS 8.0, *)) {
-            rawBounds = screen.fixedCoordinateSpace.bounds;
-        }
-    }
     CGPoint point = rawPoint;
     UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
-    BOOL rawBoundsLandscape = CGRectGetWidth(rawBounds) >
-                               CGRectGetHeight(rawBounds);
-    if (UIInterfaceOrientationIsLandscape(orientation) &&
-        !rawBoundsLandscape) {
-        // Keep this transform identical to the portrait controller's proven
-        // system-gesture path.  A UISystemGestureView touch is not guaranteed
-        // to be tagged with the same coordinate space as the active app Scene.
-        CGFloat rawWidth = CGRectGetWidth(rawBounds);
-        CGFloat rawHeight = CGRectGetHeight(rawBounds);
-        if (orientation == UIInterfaceOrientationLandscapeLeft) {
-            point = CGPointMake(rawPoint.y, rawWidth - rawPoint.x);
-        } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-            point = CGPointMake(rawHeight - rawPoint.y, rawPoint.x);
+    if (UIInterfaceOrientationIsLandscape(orientation)) {
+        // UISystemGestureView continues to report the display's fixed
+        // portrait coordinate space after the Scene has rotated.  The old
+        // check against screen.bounds was racy: screen.bounds was already
+        // 844x390 while raw touches were still 390x844, so y values were
+        // clamped to the bottom edge and the two physical corners collapsed
+        // into the same visual corner.  Always normalize against the fixed
+        // frame for the landscape system-gesture path.
+        CGRect fixedBounds = FLMLandscapeFixedCoordinateBounds(screen);
+        CGFloat rawWidth = CGRectGetWidth(fixedBounds);
+        CGFloat rawHeight = CGRectGetHeight(fixedBounds);
+        if (rawWidth >= rawHeight) {
+            // Keep the transform deterministic even if both UIKit coordinate
+            // spaces briefly report the rotated frame during the transition.
+            // The visual frame supplies the same display dimensions in the
+            // opposite order.
+            rawWidth = CGRectGetHeight(visualBounds);
+            rawHeight = CGRectGetWidth(visualBounds);
+            fixedBounds = CGRectMake(0.0, 0.0, rawWidth, rawHeight);
+        }
+        if (rawWidth > 1.0 && rawHeight > 1.0 &&
+            rawWidth < rawHeight &&
+            rawPoint.x >= CGRectGetMinX(fixedBounds) - 1.0 &&
+            rawPoint.x <= CGRectGetMaxX(fixedBounds) + 1.0 &&
+            rawPoint.y >= CGRectGetMinY(fixedBounds) - 1.0 &&
+            rawPoint.y <= CGRectGetMaxY(fixedBounds) + 1.0) {
+            CGFloat fixedX = rawPoint.x - CGRectGetMinX(fixedBounds);
+            CGFloat fixedY = rawPoint.y - CGRectGetMinY(fixedBounds);
+            if (orientation == UIInterfaceOrientationLandscapeLeft) {
+                point = CGPointMake(fixedY, rawWidth - fixedX);
+            } else if (orientation == UIInterfaceOrientationLandscapeRight) {
+                point = CGPointMake(rawHeight - fixedY, fixedX);
+            }
         }
     }
     if (point.x < -1.0 || point.y < -1.0 ||

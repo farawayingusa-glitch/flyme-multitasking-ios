@@ -2725,10 +2725,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
          gestureRecognizer == self.floatingDockTap ||
          gestureRecognizer == self.floatingDockDragPress ||
          gestureRecognizer == self.floatingBackdropTap ||
-         gestureRecognizer == self.floatingExclusiveGesture ||
-         gestureRecognizer == self.modalGesture)) {
-        // These recognizers belong to the portrait controller. The landscape
-        // module has its own card and handle recognizers.
+         gestureRecognizer == self.floatingExclusiveGesture)) {
+        // These recognizers belong to the portrait controller. The modal
+        // gesture is different: once the landscape wheel is pinned it is the
+        // system-manager selection route for tapping an application icon.
         return NO;
     }
     if (gestureRecognizer == self.homeDockGesture) {
@@ -2821,7 +2821,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         gestureRecognizer != self.cornerGuardGesture &&
         gestureRecognizer != self.cornerGesture &&
         gestureRecognizer != self.floatingCornerGuardGesture &&
-        gestureRecognizer != self.floatingCornerGesture) {
+        gestureRecognizer != self.floatingCornerGesture &&
+        gestureRecognizer != self.modalGesture) {
+        // The landscape wheel uses modalGesture after the opening swipe is
+        // pinned. Keep every portrait card recognizer out of this stream, but
+        // do allow the wheel's own selection recognizer to receive the tap.
         return NO;
     }
     if (gestureRecognizer == self.homeDockGesture) {
@@ -2975,7 +2979,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return YES;
     }
     if (gestureRecognizer == self.modalGesture) {
-        return self.enabled && self.wheelPinned && !FLMDeviceIsLocked();
+        BOOL accepted = self.enabled && self.wheelPinned &&
+                        !FLMDeviceIsLocked();
+        if (accepted && FLMLandscapeModuleIsLandscape()) {
+            CGPoint point = FLMVisualPointFromRawPoint([touch locationInView:nil]);
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-modal-touch accepted raw={%.1f,%.1f} point={%.1f,%.1f}",
+                [touch locationInView:nil].x, [touch locationInView:nil].y,
+                point.x, point.y);
+        }
+        return accepted;
     }
     if (gestureRecognizer == self.cornerGuardGesture ||
         gestureRecognizer == self.floatingCornerGuardGesture) {
@@ -2985,14 +2998,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         CGPoint rawPoint = [touch locationInView:nil];
         CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        BOOL fromRight = NO;
         BOOL accepted = FLMPointInsideCornerTrigger(point,
                                                     FLMVisualScreenBounds(),
-                                                    NULL);
+                                                    &fromRight);
         if (accepted) {
             FLMEnqueueDiagnosticLine(
-                @"sb wheel-priority-touch accepted recognizer=%@ point={%.1f,%.1f}",
+                @"sb wheel-priority-touch accepted recognizer=%@ raw={%.1f,%.1f} point={%.1f,%.1f} fromRight=%d",
                 gestureRecognizer == self.cornerGuardGesture ? @"guard" : @"floating-guard",
-                point.x, point.y);
+                rawPoint.x, rawPoint.y, point.x, point.y, fromRight);
         } else if (FLMLandscapeModuleIsLandscape()) {
             FLMEnqueueDiagnosticLine(
                 @"sb wheel-priority-touch rejected recognizer=%@ landscape=1 raw={%.1f,%.1f} point={%.1f,%.1f} bounds={%@}",
@@ -3089,6 +3103,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
+            if (FLMLandscapeModuleIsLandscape()) {
+                FLMEnqueueDiagnosticLine(
+                    @"sb wheel-modal-began raw={%.1f,%.1f} point={%.1f,%.1f}",
+                    rawPoint.x, rawPoint.y, point.x, point.y);
+            }
+            [self updateHighlightForPoint:point];
+            break;
         case UIGestureRecognizerStateChanged:
             [self updateHighlightForPoint:point];
             break;
@@ -3096,6 +3117,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             FLMWheelItemView *item =
                 [self itemNearPoint:point
                     maximumDistance:self.wheelIconSize * 0.5 + 2.0];
+            if (FLMLandscapeModuleIsLandscape()) {
+                FLMEnqueueDiagnosticLine(
+                    @"sb wheel-modal-ended raw={%.1f,%.1f} point={%.1f,%.1f} item=%@",
+                    rawPoint.x, rawPoint.y, point.x, point.y,
+                    item.identifier ?: @"<none>");
+            }
             [self dismissWheelLaunchingItem:item];
             break;
         }
