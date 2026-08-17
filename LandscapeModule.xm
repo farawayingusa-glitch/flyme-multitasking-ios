@@ -11,9 +11,9 @@ static const CGFloat FLMLandscapeDefaultTriggerSize = 58.0;
 static const CGFloat FLMLandscapeMinimumTriggerSize = 36.0;
 static const CGFloat FLMLandscapeMaximumTriggerSize = 96.0;
 static const CGFloat FLMLandscapeCardWidthRatio = 0.50;
-static const CGFloat FLMLandscapeCardMinimumWidth = 260.0;
-static const CGFloat FLMLandscapeCardMaximumWidth = 440.0;
-static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.82;
+static const CGFloat FLMLandscapeCardMinimumWidth = 168.0;
+static const CGFloat FLMLandscapeCardMaximumWidth = 240.0;
+static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;
 static const CGFloat FLMLandscapeHandleWidth = 44.0;
 static const CGFloat FLMLandscapeHandleBarWidth = 5.0;
 static const CGFloat FLMLandscapeSwipeThreshold = 32.0;
@@ -103,6 +103,8 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) NSTimeInterval openedAt;
 @property(nonatomic, assign) NSTimeInterval scenePreparedAt;
+@property(nonatomic, assign) uint64_t keyboardSessionGeneration;
+@property(nonatomic, assign) BOOL keyboardRoutePublished;
 @property(nonatomic, assign) BOOL hiddenCard;
 @property(nonatomic, assign) BOOL closing;
 @property(nonatomic, assign) BOOL handleDecisionMade;
@@ -114,6 +116,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)orientationDidChange;
 - (void)openIdentifier:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
+- (void)refreshSceneForeground;
 - (BOOL)hasVisibleCard;
 @end
 
@@ -611,6 +614,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-scene-disappeared app=%@ generation=%lu",
         self.identifier, (unsigned long)self.generation);
+    if (self.keyboardRoutePublished) {
+        FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
+        self.keyboardRoutePublished = NO;
+    }
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.scene = nil;
@@ -629,7 +636,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.displayBounds = FLMLandscapeModuleVisualBounds();
     self.displayOrientation = FLMLandscapeInterfaceOrientation();
     self.window.frame = self.displayBounds;
-    self.rootView.frame = self.displayBounds;
+    CGRect rootBounds = CGRectMake(0.0,
+                                   0.0,
+                                   CGRectGetWidth(self.displayBounds),
+                                   CGRectGetHeight(self.displayBounds));
+    self.rootView.bounds = rootBounds;
+    self.rootView.frame = rootBounds;
     if (!self.hasVisibleCard) {
         return;
     }
@@ -662,13 +674,20 @@ static id FLMLandscapeSceneForHandle(id handle) {
     }
     self.openedAt = CACurrentMediaTime();
     self.scenePreparedAt = 0.0;
+    self.keyboardRoutePublished = NO;
+    self.keyboardSessionGeneration =
+        ((uint64_t)self.generation << 1) | 1ULL;
     self.hiddenCard = NO;
     self.handleDecisionMade = NO;
     self.closing = NO;
     self.displayBounds = FLMLandscapeModuleVisualBounds();
     self.displayOrientation = FLMLandscapeInterfaceOrientation();
     self.window.frame = self.displayBounds;
-    self.rootView.frame = self.displayBounds;
+    self.rootView.bounds = CGRectMake(0.0,
+                                      0.0,
+                                      CGRectGetWidth(self.displayBounds),
+                                      CGRectGetHeight(self.displayBounds));
+    self.rootView.frame = self.rootView.bounds;
     self.window.hidden = NO;
     self.window.alpha = 1.0;
     self.cardView.alpha = 1.0;
@@ -699,6 +718,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
 
 - (void)lockTimerFired:(NSTimer *)timer {
     (void)timer;
+    if (self.hasVisibleCard) {
+        // SceneLifecycle protects this scene from normal deactivation, but a
+        // keyboard presentation can still amend its client settings. Reassert
+        // the foreground contract while the independent landscape card lives.
+        [self refreshSceneForeground];
+    }
     if (self.hasVisibleCard && FLMLandscapeDeviceIsLocked()) {
         FLMEnqueueDiagnosticLine(@"sb landscape-module-close reason=lock-screen");
         [self closeKeepingApplication:YES];
@@ -896,6 +921,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
             self.identifier, NSStringFromCGRect(logicalFrame),
             NSStringFromCGRect(visualBounds), (long)orientation,
             NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
+        self.keyboardRoutePublished = YES;
+        FLMLandscapeKeyboardRouteOpen(self.identifier,
+                                      scene,
+                                      self.keyboardSessionGeneration);
         return YES;
     } @catch (__unused NSException *exception) {
         FLMClearProtectedScene(scene);
@@ -910,15 +939,13 @@ static id FLMLandscapeSceneForHandle(id handle) {
     if (displayWidth <= displayHeight || displayWidth <= 1.0 || displayHeight <= 1.0) {
         return;
     }
+    // Landscape is intentionally a side card, not a scaled copy of the full
+    // display. Keep it tall and narrow so the right-side handle has a stable
+    // physical position and the card remains a vertical long rectangle.
     CGFloat cardWidth = MAX(FLMLandscapeCardMinimumWidth,
                             MIN(FLMLandscapeCardMaximumWidth,
-                                displayWidth * FLMLandscapeCardWidthRatio));
-    CGFloat cardHeight = cardWidth * displayHeight / displayWidth;
-    CGFloat maximumHeight = displayHeight * FLMLandscapeCardMaximumHeightRatio;
-    if (cardHeight > maximumHeight) {
-        cardHeight = maximumHeight;
-        cardWidth = cardHeight * displayWidth / displayHeight;
-    }
+                                displayHeight * FLMLandscapeCardWidthRatio));
+    CGFloat cardHeight = displayHeight * FLMLandscapeCardMaximumHeightRatio;
     CGRect visibleFrame = CGRectMake(0.0,
                                      floor((displayHeight - cardHeight) * 0.5),
                                      floor(cardWidth),
@@ -958,6 +985,53 @@ static id FLMLandscapeSceneForHandle(id handle) {
                                       floor((height - 5.0) * 0.5),
                                       FLMLandscapeHandleBarWidth,
                                       5.0);
+}
+
+- (void)refreshSceneForeground {
+    id scene = self.scene;
+    if (!scene || self.closing || !self.hasVisibleCard) {
+        return;
+    }
+    @try {
+        id settings = [scene respondsToSelector:@selector(settings)]
+                          ? [scene settings]
+                          : nil;
+        id mutableSettings = [settings mutableCopy];
+        if (!mutableSettings && [scene respondsToSelector:@selector(mutableSettings)]) {
+            mutableSettings = [scene mutableSettings];
+        }
+        if (!mutableSettings ||
+            ![scene respondsToSelector:@selector(updateSettings:withTransitionContext:)]) {
+            return;
+        }
+        if ([scene respondsToSelector:@selector(activate)]) {
+            [scene activate];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setDeactivationReasons:)]) {
+            [mutableSettings setDeactivationReasons:0];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
+            [mutableSettings setForeground:YES];
+        }
+        if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
+            [mutableSettings setBackgrounded:NO];
+        }
+        CGRect visualBounds = self.displayBounds;
+        UIInterfaceOrientation orientation = self.displayOrientation;
+        if (CGRectGetWidth(visualBounds) > 1.0 &&
+            CGRectGetHeight(visualBounds) > 1.0 &&
+            UIInterfaceOrientationIsLandscape(orientation)) {
+            if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
+                [mutableSettings setFrame:FLMLandscapeLogicalSceneFrame(
+                                                visualBounds, orientation)];
+            }
+            if ([mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
+                [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
+            }
+        }
+        [scene updateSettings:mutableSettings withTransitionContext:nil];
+    } @catch (__unused NSException *exception) {
+    }
 }
 
 - (void)setHandleVisible:(BOOL)visible {
@@ -1110,6 +1184,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.hostView = nil;
     id scene = self.scene;
     id presenter = self.presenter;
+    if (self.keyboardRoutePublished) {
+        FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
+        self.keyboardRoutePublished = NO;
+    }
     self.scene = nil;
     self.sceneHandle = nil;
     self.sceneEntity = nil;
@@ -1242,4 +1320,11 @@ void FLMLandscapeModuleClose(BOOL keepApplication) {
 
 BOOL FLMLandscapeModuleHasVisibleCard(void) {
     return [[FLMLandscapeModule sharedModule] hasVisibleCard];
+}
+
+uint64_t FLMLandscapeModuleKeyboardSessionGeneration(void) {
+    FLMLandscapeModule *module = [FLMLandscapeModule sharedModule];
+    return module.hasVisibleCard && !module.closing
+               ? module.keyboardSessionGeneration
+               : 0;
 }
