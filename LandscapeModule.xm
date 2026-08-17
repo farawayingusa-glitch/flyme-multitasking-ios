@@ -1049,7 +1049,7 @@ void FLMLandscapeModuleOrientationDidChange(void) {
     [[FLMLandscapeModule sharedModule] orientationDidChange];
 }
 
-void FLMLandscapeModuleOpenIdentifier(NSString *identifier) {
+void FLMLandscapeModuleOpenIdentifier(NSString * _Nonnull identifier) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [[FLMLandscapeModule sharedModule] openIdentifier:identifier];
     });

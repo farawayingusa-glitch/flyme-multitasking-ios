@@ -16,7 +16,7 @@ BOOL FLMLandscapeModulePointInsideCornerTrigger(CGPoint point,
 void FLMLandscapeModuleStart(void);
 void FLMLandscapeModuleUpdateFrames(void);
 void FLMLandscapeModuleOrientationDidChange(void);
-void FLMLandscapeModuleOpenIdentifier(NSString *identifier);
+void FLMLandscapeModuleOpenIdentifier(NSString * _Nonnull identifier);
 void FLMLandscapeModuleClose(BOOL keepApplication);
 BOOL FLMLandscapeModuleHasVisibleCard(void);
 
