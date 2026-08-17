@@ -1327,6 +1327,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL wheelPinned;
 @property(nonatomic, assign) BOOL wheelGestureActive;
+@property(nonatomic, assign) BOOL wheelTouchContextValid;
+@property(nonatomic, assign) FLMLandscapeTouchContext wheelTouchContext;
 @property(nonatomic, assign) CGFloat wheelRadius;
 @property(nonatomic, assign) CGFloat wheelIconSize;
 @property(nonatomic, assign) CGFloat centeredCardWidth;
@@ -1459,6 +1461,11 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
 - (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture;
 - (void)activateDockedFrontmostApplication;
+- (void)captureWheelTouchContextForRawPoint:(CGPoint)rawPoint;
+- (CGPoint)wheelPointFromRawPoint:(CGPoint)rawPoint;
+- (CGRect)wheelVisualBounds;
+- (CGFloat)wheelHitDistance;
+- (void)clearWheelTouchContext;
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
 - (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
@@ -2805,7 +2812,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (FLMDeviceIsLocked()) {
         return NO;
     }
-    CGRect bounds = FLMVisualScreenBounds();
+    CGRect bounds = [self wheelVisualBounds];
     BOOL fromRight = NO;
     BOOL insideTrigger =
         FLMPointInsideCornerTrigger(self.cornerGestureStartPoint,
@@ -2982,10 +2989,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         BOOL accepted = self.enabled && self.wheelPinned &&
                         !FLMDeviceIsLocked();
         if (accepted && FLMLandscapeModuleIsLandscape()) {
-            CGPoint point = FLMVisualPointFromRawPoint([touch locationInView:nil]);
+            CGPoint rawPoint = [touch locationInView:nil];
+            CGPoint point = [self wheelPointFromRawPoint:rawPoint];
             FLMEnqueueDiagnosticLine(
                 @"sb wheel-modal-touch accepted raw={%.1f,%.1f} point={%.1f,%.1f}",
-                [touch locationInView:nil].x, [touch locationInView:nil].y,
+                rawPoint.x, rawPoint.y,
                 point.x, point.y);
         }
         return accepted;
@@ -2997,10 +3005,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             return NO;
         }
         CGPoint rawPoint = [touch locationInView:nil];
-        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        [self captureWheelTouchContextForRawPoint:rawPoint];
+        CGPoint point = [self wheelPointFromRawPoint:rawPoint];
         BOOL fromRight = NO;
         BOOL accepted = FLMPointInsideCornerTrigger(point,
-                                                    FLMVisualScreenBounds(),
+                                                    [self wheelVisualBounds],
                                                     &fromRight);
         if (accepted) {
             FLMEnqueueDiagnosticLine(
@@ -3012,7 +3021,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 @"sb wheel-priority-touch rejected recognizer=%@ landscape=1 raw={%.1f,%.1f} point={%.1f,%.1f} bounds={%@}",
                 gestureRecognizer == self.cornerGuardGesture ? @"guard" : @"floating-guard",
                 rawPoint.x, rawPoint.y, point.x, point.y,
-                NSStringFromCGRect(FLMVisualScreenBounds()));
+                NSStringFromCGRect([self wheelVisualBounds]));
         }
         return accepted;
     }
@@ -3026,9 +3035,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (FLMDeviceIsLocked()) {
         return NO;
     }
-    CGRect bounds = FLMVisualScreenBounds();
     CGPoint rawPoint = [touch locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    [self captureWheelTouchContextForRawPoint:rawPoint];
+    CGRect bounds = [self wheelVisualBounds];
+    CGPoint point = [self wheelPointFromRawPoint:rawPoint];
     BOOL fromRight = NO;
     if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
         if (FLMLandscapeModuleIsLandscape()) {
@@ -3095,12 +3105,72 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return NO;
 }
 
+- (void)captureWheelTouchContextForRawPoint:(CGPoint)rawPoint {
+    (void)rawPoint;
+    if (!FLMLandscapeModuleIsLandscape()) {
+        self.wheelTouchContextValid = NO;
+        return;
+    }
+    // A new opener touch owns a fresh snapshot. Once the wheel is pinned,
+    // keep that exact snapshot for the modal selection stream; re-reading the
+    // scene orientation there was the source of the 0.9.44 side/offset drift.
+    if (!self.wheelPinned || !self.wheelTouchContextValid) {
+        self.wheelTouchContext = FLMLandscapeModuleCaptureTouchContext();
+        self.wheelTouchContextValid = self.wheelTouchContext.valid;
+        if (self.wheelTouchContextValid) {
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-landscape-context captured orientation=%ld visual=%@ fixed=%@",
+                (long)self.wheelTouchContext.orientation,
+                NSStringFromCGRect(self.wheelTouchContext.visualBounds),
+                NSStringFromCGRect(self.wheelTouchContext.fixedBounds));
+        }
+    }
+}
+
+- (CGPoint)wheelPointFromRawPoint:(CGPoint)rawPoint {
+    if (self.wheelTouchContextValid) {
+        return FLMLandscapeModuleVisualPointFromRawPointInContext(
+            self.wheelTouchContext, rawPoint);
+    }
+    if (FLMLandscapeModuleIsLandscape()) {
+        [self captureWheelTouchContextForRawPoint:rawPoint];
+        if (self.wheelTouchContextValid) {
+            return FLMLandscapeModuleVisualPointFromRawPointInContext(
+                self.wheelTouchContext, rawPoint);
+        }
+    }
+    return FLMVisualPointFromRawPoint(rawPoint);
+}
+
+- (CGRect)wheelVisualBounds {
+    if (self.wheelTouchContextValid) {
+        return self.wheelTouchContext.visualBounds;
+    }
+    return FLMVisualScreenBounds();
+}
+
+- (CGFloat)wheelHitDistance {
+    CGFloat defaultDistance = self.wheelIconSize * 0.5 + 2.0;
+    if (!self.wheelTouchContextValid && !FLMLandscapeModuleIsLandscape()) {
+        return defaultDistance;
+    }
+    // The system-manager selection stream is not guaranteed to end at an
+    // icon's exact center. Keep neighboring radial sectors separate while
+    // giving each landscape icon a real touch target.
+    return MAX(defaultDistance, 56.0);
+}
+
+- (void)clearWheelTouchContext {
+    self.wheelTouchContextValid = NO;
+    self.wheelTouchContext = (FLMLandscapeTouchContext){0};
+}
+
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture {
     if (!self.wheelPinned) {
         return;
     }
     CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self wheelPointFromRawPoint:rawPoint];
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
             if (FLMLandscapeModuleIsLandscape()) {
@@ -3116,7 +3186,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         case UIGestureRecognizerStateEnded: {
             FLMWheelItemView *item =
                 [self itemNearPoint:point
-                    maximumDistance:self.wheelIconSize * 0.5 + 2.0];
+                    maximumDistance:[self wheelHitDistance]];
             if (FLMLandscapeModuleIsLandscape()) {
                 FLMEnqueueDiagnosticLine(
                     @"sb wheel-modal-ended raw={%.1f,%.1f} point={%.1f,%.1f} item=%@",
@@ -3141,7 +3211,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // gestures cannot consume the same touch stream. Keep a breadcrumb for
     // the priority boundary because this guard runs before the wheel opener.
     if (gesture.state == UIGestureRecognizerStateBegan) {
-        CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
+        CGPoint point = [self wheelPointFromRawPoint:[gesture locationInView:nil]];
         FLMEnqueueDiagnosticLine(
             @"sb wheel-priority-guard began point={%.1f,%.1f}",
             point.x, point.y);
@@ -3206,7 +3276,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
     CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self wheelPointFromRawPoint:rawPoint];
 
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
@@ -3237,6 +3307,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 @"sb wheel-gesture ended active=%d point={%.1f,%.1f}",
                 self.wheelGestureActive, point.x, point.y);
             self.wheelGestureActive = NO;
+            if (!self.wheelPinned) {
+                [self clearWheelTouchContext];
+            }
             break;
         case UIGestureRecognizerStateCancelled:
             if (self.wheelGestureActive) {
@@ -3246,12 +3319,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 @"sb wheel-gesture cancelled active=%d point={%.1f,%.1f}",
                 self.wheelGestureActive, point.x, point.y);
             self.wheelGestureActive = NO;
+            if (!self.wheelPinned) {
+                [self clearWheelTouchContext];
+            }
             break;
         case UIGestureRecognizerStateFailed:
             if (self.wheelGestureActive) {
                 [self dismissWheelLaunchingItem:nil];
             }
             self.wheelGestureActive = NO;
+            [self clearWheelTouchContext];
             break;
         default:
             break;
@@ -3293,9 +3370,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.overlayWindow.userInteractionEnabled = NO;
     self.overlayWindow.windowLevel = self.floatingWindow.windowLevel + 2.0;
     NSMutableArray<FLMWheelItemView *> *views = [NSMutableArray array];
-    CGRect bounds = FLMVisualScreenBounds();
+    CGRect bounds = [self wheelVisualBounds];
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
+    BOOL landscapeWheel = self.wheelTouchContextValid &&
+                          UIInterfaceOrientationIsLandscape(
+                              self.wheelTouchContext.orientation);
+    if (landscapeWheel) {
+        // Resolve the side from the frozen visual point as a final guard. A
+        // stale system recognizer flag must never make a left corner fan out
+        // toward the left (or make the right corner fan out toward the right).
+        BOOL sideFromRight = self.cornerGestureStartPoint.x > width * 0.5;
+        if (sideFromRight != fromRight) {
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-landscape-side corrected requested=%d resolved=%d start={%.1f,%.1f} bounds=%@",
+                fromRight, sideFromRight,
+                self.cornerGestureStartPoint.x, self.cornerGestureStartPoint.y,
+                NSStringFromCGRect(bounds));
+            fromRight = sideFromRight;
+            self.presentingFromRight = fromRight;
+        }
+    }
     CGPoint anchor = CGPointMake(fromRight ? width - 4.0 : 4.0, height - 4.0);
     NSArray<NSNumber *> *ringCounts =
         [self itemCountsByRingForCount:self.itemIdentifiers.count];
@@ -3324,6 +3419,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     MAX(132.0, maximumRadius - minimumSpacing * ringIntervals));
             ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
         }
+    }
+    if (landscapeWheel) {
+        FLMEnqueueDiagnosticLine(
+            @"sb wheel-landscape-geometry side=%@ bounds=%@ anchor={%.1f,%.1f} radius=%.1f icon=%.1f",
+            fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
+            anchor.x, anchor.y, firstRadius, self.wheelIconSize);
     }
 
     NSUInteger itemIndex = 0;
@@ -3374,7 +3475,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)updateHighlightForPoint:(CGPoint)point {
     FLMWheelItemView *nearest =
         [self itemNearPoint:point
-            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
+            maximumDistance:[self wheelHitDistance]];
     if (nearest == self.highlightedItem) {
         return;
     }
@@ -3441,7 +3542,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGPoint point = [gesture locationInView:self.wheelContainer];
     FLMWheelItemView *item =
         [self itemNearPoint:point
-            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
+            maximumDistance:[self wheelHitDistance]];
     [self dismissWheelLaunchingItem:item];
 }
 
@@ -3466,6 +3567,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.highlightedItem.highlighted = NO;
     self.highlightedItem = nil;
     self.wheelPinned = NO;
+    [self clearWheelTouchContext];
     self.modalGesture.enabled = NO;
     self.wheelTapGesture.enabled = YES;
     self.overlayWindow.userInteractionEnabled = NO;

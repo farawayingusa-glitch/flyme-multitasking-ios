@@ -9,6 +9,23 @@
 BOOL FLMLandscapeModuleIsLandscape(void);
 CGRect FLMLandscapeModuleVisualBounds(void);
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint);
+
+// A system gesture can begin while UIKit is still publishing the portrait
+// fixed-coordinate frame and finish after the window has already switched to
+// its landscape visual frame.  The wheel keeps one of these snapshots for the
+// entire touch stream so entry, rendering, highlighting and selection all use
+// the same transform.
+typedef struct {
+    BOOL valid;
+    UIInterfaceOrientation orientation;
+    CGRect visualBounds;
+    CGRect fixedBounds;
+} FLMLandscapeTouchContext;
+
+FLMLandscapeTouchContext FLMLandscapeModuleCaptureTouchContext(void);
+CGPoint FLMLandscapeModuleVisualPointFromRawPointInContext(
+    FLMLandscapeTouchContext context,
+    CGPoint rawPoint);
 BOOL FLMLandscapeModulePointInsideCornerTrigger(CGPoint point,
                                                 CGRect bounds,
                                                 BOOL * _Nullable fromRight);

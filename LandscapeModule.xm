@@ -27,6 +27,8 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @interface NSObject (FLMLandscapeRuntimePrivate)
 - (id)settings;
 - (id)mutableSettings;
+- (CGRect)frame;
+- (NSInteger)interfaceOrientation;
 - (NSString *)identifier;
 - (NSString *)sceneIdentifier;
 - (id)uiPresentationManager;
@@ -174,15 +176,64 @@ static UIInterfaceOrientation FLMLandscapeInterfaceOrientation(void) {
     return UIInterfaceOrientationPortrait;
 }
 
+static CGRect FLMLandscapeSceneSettingsFrame(id scene) {
+    if (!scene || ![scene respondsToSelector:@selector(settings)]) {
+        return CGRectZero;
+    }
+    @try {
+        id settings = [scene settings];
+        if (!settings || ![settings respondsToSelector:@selector(frame)]) {
+            return CGRectZero;
+        }
+        CGRect (*getter)(id, SEL) =
+            (CGRect (*)(id, SEL))[settings methodForSelector:@selector(frame)];
+        return getter ? getter(settings, @selector(frame)) : CGRectZero;
+    } @catch (__unused NSException *exception) {
+        return CGRectZero;
+    }
+}
+
+static UIInterfaceOrientation FLMLandscapeSceneSettingsOrientation(id scene) {
+    if (!scene || ![scene respondsToSelector:@selector(settings)]) {
+        return UIInterfaceOrientationUnknown;
+    }
+    @try {
+        id settings = [scene settings];
+        if (!settings ||
+            ![settings respondsToSelector:@selector(interfaceOrientation)]) {
+            return UIInterfaceOrientationUnknown;
+        }
+        NSInteger (*getter)(id, SEL) =
+            (NSInteger (*)(id, SEL))[settings
+                methodForSelector:@selector(interfaceOrientation)];
+        return getter ? (UIInterfaceOrientation)getter(
+                              settings, @selector(interfaceOrientation))
+                       : UIInterfaceOrientationUnknown;
+    } @catch (__unused NSException *exception) {
+        return UIInterfaceOrientationUnknown;
+    }
+}
+
+static CGRect FLMLandscapeLogicalSceneFrame(CGRect visualBounds,
+                                            UIInterfaceOrientation orientation) {
+    CGRect frame = visualBounds;
+    frame.origin = CGPointZero;
+    if (UIInterfaceOrientationIsLandscape(orientation) &&
+        CGRectGetWidth(frame) > CGRectGetHeight(frame)) {
+        // FBScene settings.frame remains in the scene's logical/fixed space.
+        // The layer host is laid out in the rotated visual space below.
+        frame.size = CGSizeMake(CGRectGetHeight(frame), CGRectGetWidth(frame));
+    }
+    return frame;
+}
+
 BOOL FLMLandscapeModuleIsLandscape(void) {
     return UIInterfaceOrientationIsLandscape(FLMLandscapeInterfaceOrientation());
 }
 
-CGRect FLMLandscapeModuleVisualBounds(void) {
-    UIScreen *screen = FLMLandscapeWindowScene().screen;
-    if (!screen) {
-        screen = [UIScreen mainScreen];
-    }
+static CGRect FLMLandscapeVisualBoundsForScreen(
+    UIScreen *screen,
+    UIInterfaceOrientation orientation) {
     // The system gesture manager reports locations in the display's fixed
     // screen frame.  Use the same raw screen bounds as the frozen portrait
     // path and rotate only the visual frame; using coordinateSpace.bounds here
@@ -198,11 +249,20 @@ CGRect FLMLandscapeModuleVisualBounds(void) {
         bounds = screen.bounds;
     }
     if (CGRectGetWidth(bounds) < CGRectGetHeight(bounds) &&
-        FLMLandscapeModuleIsLandscape()) {
+        UIInterfaceOrientationIsLandscape(orientation)) {
         bounds.size = CGSizeMake(CGRectGetHeight(bounds), CGRectGetWidth(bounds));
     }
     bounds.origin = CGPointZero;
     return bounds;
+}
+
+CGRect FLMLandscapeModuleVisualBounds(void) {
+    UIScreen *screen = FLMLandscapeWindowScene().screen;
+    if (!screen) {
+        screen = [UIScreen mainScreen];
+    }
+    return FLMLandscapeVisualBoundsForScreen(
+        screen, FLMLandscapeInterfaceOrientation());
 }
 
 static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
@@ -226,34 +286,47 @@ static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
     return bounds;
 }
 
-CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
+FLMLandscapeTouchContext FLMLandscapeModuleCaptureTouchContext(void) {
+    FLMLandscapeTouchContext context = {0};
     UIScreen *screen = FLMLandscapeWindowScene().screen;
     if (!screen) {
         screen = [UIScreen mainScreen];
     }
-    CGRect visualBounds = FLMLandscapeModuleVisualBounds();
+
+    // Capture the orientation and both coordinate spaces together.  Reading
+    // them independently for every gesture callback is what allowed one
+    // callback to see 390x844 and the next one to see 844x390 in build 0.9.44.
+    context.orientation = FLMLandscapeInterfaceOrientation();
+    context.visualBounds = FLMLandscapeVisualBoundsForScreen(
+        screen, context.orientation);
+    context.fixedBounds = FLMLandscapeFixedCoordinateBounds(screen);
+
+    CGFloat rawWidth = CGRectGetWidth(context.fixedBounds);
+    CGFloat rawHeight = CGRectGetHeight(context.fixedBounds);
+    if (rawWidth >= rawHeight) {
+        // During the rotation transaction fixedCoordinateSpace can briefly
+        // expose the already-rotated frame.  The visual frame still gives us
+        // the authoritative long/short dimensions for this snapshot.
+        rawWidth = CGRectGetHeight(context.visualBounds);
+        rawHeight = CGRectGetWidth(context.visualBounds);
+        context.fixedBounds = CGRectMake(0.0, 0.0, rawWidth, rawHeight);
+    }
+    context.valid = UIInterfaceOrientationIsLandscape(context.orientation) &&
+                    rawWidth > 1.0 && rawHeight > 1.0 &&
+                    CGRectGetWidth(context.visualBounds) > 1.0 &&
+                    CGRectGetHeight(context.visualBounds) > 1.0;
+    return context;
+}
+
+CGPoint FLMLandscapeModuleVisualPointFromRawPointInContext(
+    FLMLandscapeTouchContext context,
+    CGPoint rawPoint) {
+    CGRect visualBounds = context.visualBounds;
     CGPoint point = rawPoint;
-    UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
-    if (UIInterfaceOrientationIsLandscape(orientation)) {
-        // UISystemGestureView continues to report the display's fixed
-        // portrait coordinate space after the Scene has rotated.  The old
-        // check against screen.bounds was racy: screen.bounds was already
-        // 844x390 while raw touches were still 390x844, so y values were
-        // clamped to the bottom edge and the two physical corners collapsed
-        // into the same visual corner.  Always normalize against the fixed
-        // frame for the landscape system-gesture path.
-        CGRect fixedBounds = FLMLandscapeFixedCoordinateBounds(screen);
+    if (context.valid) {
+        CGRect fixedBounds = context.fixedBounds;
         CGFloat rawWidth = CGRectGetWidth(fixedBounds);
         CGFloat rawHeight = CGRectGetHeight(fixedBounds);
-        if (rawWidth >= rawHeight) {
-            // Keep the transform deterministic even if both UIKit coordinate
-            // spaces briefly report the rotated frame during the transition.
-            // The visual frame supplies the same display dimensions in the
-            // opposite order.
-            rawWidth = CGRectGetHeight(visualBounds);
-            rawHeight = CGRectGetWidth(visualBounds);
-            fixedBounds = CGRectMake(0.0, 0.0, rawWidth, rawHeight);
-        }
         if (rawWidth > 1.0 && rawHeight > 1.0 &&
             rawWidth < rawHeight &&
             rawPoint.x >= CGRectGetMinX(fixedBounds) - 1.0 &&
@@ -262,9 +335,9 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
             rawPoint.y <= CGRectGetMaxY(fixedBounds) + 1.0) {
             CGFloat fixedX = rawPoint.x - CGRectGetMinX(fixedBounds);
             CGFloat fixedY = rawPoint.y - CGRectGetMinY(fixedBounds);
-            if (orientation == UIInterfaceOrientationLandscapeLeft) {
+            if (context.orientation == UIInterfaceOrientationLandscapeLeft) {
                 point = CGPointMake(fixedY, rawWidth - fixedX);
-            } else if (orientation == UIInterfaceOrientationLandscapeRight) {
+            } else if (context.orientation == UIInterfaceOrientationLandscapeRight) {
                 point = CGPointMake(rawHeight - fixedY, fixedX);
             }
         }
@@ -276,6 +349,11 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
         point.y = MAX(0.0, MIN(CGRectGetHeight(visualBounds), point.y));
     }
     return point;
+}
+
+CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
+    return FLMLandscapeModuleVisualPointFromRawPointInContext(
+        FLMLandscapeModuleCaptureTouchContext(), rawPoint);
 }
 
 static CGFloat FLMLandscapeTriggerSize(void) {
@@ -787,11 +865,20 @@ static id FLMLandscapeSceneForHandle(id handle) {
         if ([mutableSettings respondsToSelector:@selector(setBackgrounded:)]) {
             [mutableSettings setBackgrounded:NO];
         }
-        CGRect bounds = FLMLandscapeModuleVisualBounds();
-        if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
-            [mutableSettings setFrame:bounds];
+        CGRect visualBounds = self.displayBounds;
+        if (CGRectGetWidth(visualBounds) <= 1.0 ||
+            CGRectGetHeight(visualBounds) <= 1.0) {
+            visualBounds = FLMLandscapeModuleVisualBounds();
         }
-        UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
+        UIInterfaceOrientation orientation = self.displayOrientation;
+        if (!UIInterfaceOrientationIsLandscape(orientation)) {
+            orientation = FLMLandscapeInterfaceOrientation();
+        }
+        CGRect logicalFrame = FLMLandscapeLogicalSceneFrame(visualBounds,
+                                                              orientation);
+        if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
+            [mutableSettings setFrame:logicalFrame];
+        }
         if ([mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
         }
@@ -800,9 +887,14 @@ static id FLMLandscapeSceneForHandle(id handle) {
             return NO;
         }
         [scene updateSettings:mutableSettings withTransitionContext:nil];
+        CGRect appliedFrame = FLMLandscapeSceneSettingsFrame(scene);
+        UIInterfaceOrientation appliedOrientation =
+            FLMLandscapeSceneSettingsOrientation(scene);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-module-scene-frame app=%@ frame=%@ orientation=%ld",
-            self.identifier, NSStringFromCGRect(bounds), (long)orientation);
+            @"sb landscape-module-scene-frame app=%@ logical=%@ visual=%@ requestedOrientation=%ld applied=%@ appliedOrientation=%ld",
+            self.identifier, NSStringFromCGRect(logicalFrame),
+            NSStringFromCGRect(visualBounds), (long)orientation,
+            NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
         return YES;
     } @catch (__unused NSException *exception) {
         FLMClearProtectedScene(scene);
@@ -877,17 +969,42 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.displayBounds.size.width <= 1.0) {
         return;
     }
+    CGRect logicalFrame = FLMLandscapeSceneSettingsFrame(self.scene);
+    UIInterfaceOrientation sceneOrientation =
+        FLMLandscapeSceneSettingsOrientation(self.scene);
+    if (!UIInterfaceOrientationIsLandscape(sceneOrientation)) {
+        sceneOrientation = self.displayOrientation;
+    }
     CGSize reference = self.displayBounds.size;
+    if (CGRectGetWidth(logicalFrame) > 1.0 &&
+        CGRectGetHeight(logicalFrame) > 1.0) {
+        reference = logicalFrame.size;
+        if (UIInterfaceOrientationIsLandscape(sceneOrientation) &&
+            reference.width < reference.height) {
+            // The scene settings are logical/fixed-space dimensions.  The
+            // layer host itself must use the corresponding rotated visual
+            // dimensions, matching the orientation-aware layout used by
+            // MilkyWayReborn's content host.
+            reference = CGSizeMake(reference.height, reference.width);
+        }
+    }
+    if (reference.width <= 1.0 || reference.height <= 1.0) {
+        reference = self.displayBounds.size;
+    }
     CGSize target = self.cardView.bounds.size;
-    CGFloat scale = target.width / reference.width;
+    CGFloat scaleX = target.width / reference.width;
+    CGFloat scaleY = target.height / reference.height;
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
-    self.hostView.transform = CGAffineTransformMakeScale(scale, scale);
+    self.hostView.transform = CGAffineTransformMakeScale(scaleX, scaleY);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scale=%.6f",
-        reference.width, reference.height, target.width, target.height,
-        self.hostView.bounds.size.width, self.hostView.bounds.size.height, scale);
+        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scale={%.6f,%.6f} orientation=%ld",
+        self.displayBounds.size.width, self.displayBounds.size.height,
+        logicalFrame.size.width, logicalFrame.size.height,
+        target.width, target.height,
+        self.hostView.bounds.size.width, self.hostView.bounds.size.height,
+        scaleX, scaleY, (long)sceneOrientation);
 }
 
 - (void)outsideTap:(UITapGestureRecognizer *)gesture {
