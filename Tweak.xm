@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.39"
+#define FLMLogBuildString @"0.9.40"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -3514,8 +3514,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGRect bounds = self.floatingWindow.bounds;
-    gate.frame = bounds;
-    gate.rootViewController.view.frame = bounds;
+    if (!CGRectEqualToRect(gate.frame, bounds)) {
+        gate.frame = bounds;
+    }
+    UIView *gateRootView = gate.rootViewController.view;
+    if (gateRootView && !CGRectEqualToRect(gateRootView.frame, bounds)) {
+        gateRootView.frame = bounds;
+    }
     gate.wheelPriorityActive = self.enabled && !self.wheelPinned &&
                                self.itemIdentifiers.count > 0 &&
                                !FLMDeviceIsLocked();
@@ -3836,12 +3841,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     BOOL wasHidden = self.floatingDockHidden;
+    CGRect startFrame = self.floatingContainer.frame;
     self.floatingDockHidden = NO;
     self.floatingDockTransitionActive = YES;
     CGRect target =
         [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
                                    width:self.floatingDockWidth
                  preservingVerticalCenter:verticalCenter];
+    // The reveal animation used to leave the display-wide gate carrying the
+    // hidden state's null card frame until completion. A touch during that
+    // interval could fall through to the remote app surface. Prime the gate
+    // with both ends of the animation before UIKit starts moving the card.
+    [self setFloatingApplicationInputBlocked:YES];
+    [self updateFloatingDockTouchGate];
+    FLMDockTouchGateWindow *gate = self.floatingDockTouchGateWindow;
+    if (gate) {
+        gate.dockCardFrame = CGRectUnion(startFrame, target);
+        gate.dockResizeFrame = CGRectNull;
+        gate.userInteractionEnabled = YES;
+        gate.hidden = NO;
+    }
     void (^changes)(void) = ^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = target;
@@ -3854,7 +3873,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                               self.floatingHandle.alpha = 0.0;
         [self layoutFloatingHandleForCurrentContainer];
     };
-    [UIView animateWithDuration:(wasHidden ? 0.30 : 0.22)
+    [UIView animateWithDuration:(wasHidden ? 0.10 : 0.22)
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState |
                                 UIViewAnimationOptionCurveEaseOut |
@@ -5252,13 +5271,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateFloatingDockAccessoryPositions {
+    BOOL dockInputInFlight =
+        self.floatingDockInputSessionActive &&
+        (self.floatingDockInputMode == FLMFloatingDockInputModeCardDrag ||
+         self.floatingDockInputMode == FLMFloatingDockInputModeResize);
+    if (dockInputInFlight || self.floatingDockGlobalDragActivated) {
+        // The active display-wide recognizer already owns this touch. The
+        // resize target is invisible and the gate is only needed for the
+        // next touch, so defer sibling-window/frame work until the settle
+        // animation. This keeps the remote surface on the compositor path
+        // instead of forcing a full accessory/layout update every sample.
+        return;
+    }
     if (!self.floatingDocked) {
         [self layoutFloatingResizeHandle];
         [self updateFloatingDockTouchGate];
         return;
     }
-    self.floatingDockShadowView.center = self.floatingContainer.center;
-    self.floatingDockShadowView.transform = self.floatingContainer.transform;
+    if (!self.floatingDockShadowView.hidden) {
+        self.floatingDockShadowView.center = self.floatingContainer.center;
+        self.floatingDockShadowView.transform = self.floatingContainer.transform;
+    }
     [self layoutFloatingResizeHandle];
     [self updateFloatingDockTouchGate];
 }
@@ -5688,7 +5721,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingContainer.center =
                              CGPointMake(CGRectGetMidX(target),
                                          CGRectGetMidY(target));
-                         [self updateFloatingDockTouchGate];
+                         [self updateFloatingDockAccessoryPositions];
                      }
                       completion:^(BOOL finished) {
                           (void)finished;
@@ -5700,13 +5733,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                               return;
                           }
                          [UIView performWithoutAnimation:^{
-                             self.floatingContainer.transform =
-                                 CGAffineTransformIdentity;
+                              self.floatingContainer.transform =
+                                  CGAffineTransformIdentity;
                               self.floatingContainer.layer.borderWidth = 0.0;
                               [self layoutFloatingDockShadow];
+                              [self layoutFloatingResizeHandle];
                           }];
                           self.floatingDockTransitionActive = NO;
-                           [self updateFloatingDockTouchGate];
+                           [self updateFloatingDockAccessoryPositions];
                            [self setFloatingDockRoutingSuppressed:NO];
                        }];
 }
