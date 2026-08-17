@@ -3405,7 +3405,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (height - 4.0 - safeCenterMargin) / fabs(sin(fullStartAngle));
     CGFloat maximumRadius = MAX(120.0, MIN(maximumRadiusByWidth,
                                            maximumRadiusByHeight));
-    CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);
+    CGFloat requestedRadius = self.wheelRadius;
+    if (landscapeWheel) {
+        // The portrait radius is intentionally larger than the usable visual
+        // arc on a 844x390 display.  Use the landscape short side to keep the
+        // first icon on the same visual path as the user's inward swipe.
+        requestedRadius = MIN(requestedRadius,
+                              MAX(132.0, height * 0.42));
+    }
+    CGFloat firstRadius = MIN(requestedRadius, maximumRadius);
     CGFloat ringSpacing = 0.0;
     if (ringCounts.count > 1) {
         CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
