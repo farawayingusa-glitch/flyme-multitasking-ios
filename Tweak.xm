@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.37"
+#define FLMLogBuildString @"0.9.38"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -282,6 +282,10 @@ static const CGFloat FLMFloatingFullscreenActivationThreshold = 0.85;
 static const NSTimeInterval FLMFloatingSceneGenerationDelay = 0.75;
 static const NSTimeInterval FLMFloatingPresenterRecoveryTimeout = 1.0;
 static const NSTimeInterval FLMFloatingCloseFallbackDelay = 0.45;
+// A dock tap can be held by UIKit for a short interval after the dock
+// recognizer has ended. Keep the remote host non-interactive for that tail so
+// a dock-to-centered transition cannot replay the same touch into app content.
+static const NSTimeInterval FLMFloatingDockContentTailProtectionDuration = 0.14;
 // A dock touch must choose one owner at its beginning.  The previous
 // implementation inferred the owner again on every Changed callback, so an
 // ordinary card drag could turn into a hide gesture halfway
@@ -1256,8 +1260,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, strong) UIView *floatingDockShadowView;
 @property(nonatomic, strong) UIView *floatingContainer;
 @property(nonatomic, strong) UIView *floatingDockInteractionShield;
-@property(nonatomic, strong) UIView *floatingDockReadyIndicator;
-@property(nonatomic, strong) CAShapeLayer *floatingDockReadyCheckLayer;
 @property(nonatomic, strong) UIView *floatingHandle;
 @property(nonatomic, strong) UIView *floatingHandleBar;
 @property(nonatomic, strong) UIView *floatingHostView;
@@ -1325,6 +1327,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) NSUInteger floatingDockInputGeneration;
 @property(nonatomic, assign) BOOL floatingDockReady;
 @property(nonatomic, assign) BOOL floatingDockFeedbackSent;
+@property(nonatomic, assign) BOOL floatingDockContentTailProtected;
+@property(nonatomic, assign) NSUInteger floatingDockContentProtectionGeneration;
 @property(nonatomic, assign) CGPoint floatingExclusiveStartPoint;
 @property(nonatomic, assign) NSTimeInterval floatingExclusiveStartTimestamp;
 @property(nonatomic, assign) BOOL floatingExclusiveTapEligible;
@@ -1464,6 +1468,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)endFloatingKeyboardInteractionSession;
 - (void)resetFloatingInteractiveLayoutAnimated:(BOOL)animated;
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked;
+- (void)protectFloatingContentAfterDockTouch;
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress;
 - (void)layoutFloatingHandleForCurrentContainer;
 - (CGFloat)effectiveCenteredCardWidth;
@@ -1483,8 +1488,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
                     preservingVerticalCenter:(CGFloat)verticalCenter;
 - (void)layoutFloatingDockShadow;
 - (void)normalizeFloatingContainerTransform;
-- (void)layoutFloatingDockReadyIndicator;
-- (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated;
 - (void)configureFloatingInteractionForDockedState;
 - (void)restoreFloatingHandleInteraction;
 - (void)transitionFloatingWindowToDocked;
@@ -2375,36 +2378,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
     [self.floatingContainer addSubview:self.floatingDockInteractionShield];
 
-    self.floatingDockReadyIndicator =
-        [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 30.0, 30.0)];
-    self.floatingDockReadyIndicator.backgroundColor =
-        [UIColor colorWithWhite:1.0 alpha:0.18];
-    self.floatingDockReadyIndicator.layer.cornerRadius = 15.0;
-    self.floatingDockReadyIndicator.layer.borderWidth = 0.8;
-    self.floatingDockReadyIndicator.layer.borderColor =
-        [UIColor colorWithWhite:1.0 alpha:0.20].CGColor;
-    self.floatingDockReadyIndicator.userInteractionEnabled = NO;
-    self.floatingDockReadyIndicator.hidden = YES;
-    self.floatingDockReadyIndicator.alpha = 0.0;
-    self.floatingDockReadyCheckLayer = [CAShapeLayer layer];
-    self.floatingDockReadyCheckLayer.fillColor = [UIColor clearColor].CGColor;
-    self.floatingDockReadyCheckLayer.strokeColor =
-        [UIColor colorWithWhite:1.0 alpha:0.90].CGColor;
-    self.floatingDockReadyCheckLayer.lineWidth = 2.6;
-    self.floatingDockReadyCheckLayer.lineCap = kCALineCapRound;
-    self.floatingDockReadyCheckLayer.lineJoin = kCALineJoinRound;
-    UIBezierPath *readyCheckPath = [UIBezierPath bezierPath];
-    [readyCheckPath moveToPoint:CGPointMake(7.5, 15.5)];
-    [readyCheckPath addLineToPoint:CGPointMake(12.5, 20.0)];
-    [readyCheckPath addLineToPoint:CGPointMake(22.5, 10.0)];
-    self.floatingDockReadyCheckLayer.path = readyCheckPath.CGPath;
-    self.floatingDockReadyCheckLayer.frame =
-        self.floatingDockReadyIndicator.bounds;
-    [self.floatingDockReadyIndicator.layer
-        addSublayer:self.floatingDockReadyCheckLayer];
-    [self.floatingWindow.rootViewController.view
-        addSubview:self.floatingDockReadyIndicator];
-
     self.floatingHandle = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingHandle.backgroundColor = [UIColor clearColor];
     self.floatingHandleBar = [[UIView alloc] initWithFrame:CGRectZero];
@@ -2804,6 +2777,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             // arbitration window where a drag through a lower corner can be
             // handed to the wheel for one compositor frame.
             [self setFloatingDockRoutingSuppressed:YES];
+            if (self.floatingDocked && !self.floatingDockHidden) {
+                // Reassert the shield at touch-begin.  The dock can finish its
+                // settle animation between two recognizer callbacks; without
+                // this refresh a newly accepted drag can briefly target the
+                // remote Scene underneath the card.
+                [self setFloatingApplicationInputBlocked:YES];
+            }
         }
         return accepted;
     }
@@ -3932,6 +3912,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockInputBlockedUntilNextTouch = NO;
         self.floatingDockInputBlockCutoffTimestamp = 0.0;
         [self setFloatingDockRoutingSuppressed:YES];
+        if (self.floatingDocked && !self.floatingDockHidden) {
+            [self setFloatingApplicationInputBlocked:YES];
+        }
         self.floatingDockInputSessionActive = YES;
         self.floatingDockInputMode =
             self.floatingDockHidden
@@ -4272,6 +4255,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
+    if (!blocked &&
+        ((self.floatingDocked && !self.floatingDockHidden) ||
+         self.floatingDockContentTailProtected)) {
+        blocked = YES;
+    }
     self.floatingHostView.userInteractionEnabled = !blocked;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden = !blocked;
@@ -4281,6 +4269,27 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             bringSubviewToFront:self.floatingDockInteractionShield];
     }
     [self updateFloatingDockTouchGate];
+}
+
+- (void)protectFloatingContentAfterDockTouch {
+    self.floatingDockContentTailProtected = YES;
+    NSUInteger generation = ++self.floatingDockContentProtectionGeneration;
+    [self setFloatingApplicationInputBlocked:YES];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                  (int64_t)(FLMFloatingDockContentTailProtectionDuration *
+                                            NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingDockContentProtectionGeneration) {
+            return;
+        }
+        self.floatingDockContentTailProtected = NO;
+        if (!self.floatingWindow.hidden &&
+            !self.floatingDocked &&
+            !self.floatingDockHidden &&
+            !self.floatingDockTransitionActive) {
+            [self configureFloatingInteractionForDockedState];
+        }
+    });
 }
 
 - (void)updateFloatingFullscreenSnapshotForProgress:(CGFloat)progress {
@@ -4443,7 +4452,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockFeedbackSent = NO;
         self.floatingInteractiveScenePrepared = NO;
         [self setFloatingApplicationInputBlocked:NO];
-        [self setFloatingDockReady:NO animated:NO];
+        self.floatingDockReady = NO;
         [UIView animateWithDuration:0.12
                          animations:^{
                              self.floatingHandleBar.alpha = 1.0;
@@ -4541,7 +4550,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingDockShadowView.alpha = 0.0;
             self.floatingHandle.alpha = 1.0;
             [self layoutFloatingHandleForCurrentContainer];
-            [self layoutFloatingDockReadyIndicator];
             if (!self.floatingDockReady && triggerProgress >= 1.0) {
                 if (@available(iOS 10.0, *)) {
                     UIImpactFeedbackGenerator *feedback =
@@ -4552,12 +4560,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         self.floatingDockFeedbackSent = YES;
                     }
                 }
-                [self setFloatingDockReady:YES animated:YES];
+                self.floatingDockReady = YES;
             } else if (self.floatingDockReady && triggerProgress < 0.90) {
-                [self setFloatingDockReady:NO animated:YES];
+                self.floatingDockReady = NO;
             }
         } else if (primaryMovement >= 3.0) {
-            [self setFloatingDockReady:NO animated:YES];
+            self.floatingDockReady = NO;
             [self setFloatingApplicationInputBlocked:NO];
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = NO;
@@ -4583,7 +4591,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [self activateIdentifierFullscreen:self.floatingIdentifier];
             }
         } else {
-            [self setFloatingDockReady:NO animated:YES];
+            self.floatingDockReady = NO;
             [self setFloatingApplicationInputBlocked:NO];
             if (self.floatingInteractiveScenePrepared) {
                 if (self.floatingFullscreenActivationArmed &&
@@ -4613,7 +4621,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingDockReady && primaryMovement < 0.0) {
-        [self setFloatingDockReady:NO animated:YES];
+        self.floatingDockReady = NO;
         [self transitionFloatingWindowToDocked];
         return;
     }
@@ -4622,11 +4630,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         primaryMovement > 0.0 &&
         (landscape ||
          point.y >= CGRectGetHeight(bounds) - 80.0)) {
-        [self setFloatingDockReady:NO animated:NO];
+        self.floatingDockReady = NO;
         [self transitionFloatingWindowToFullscreen];
         return;
     }
-    [self setFloatingDockReady:NO animated:YES];
+    self.floatingDockReady = NO;
     [self resetFloatingInteractiveLayoutAnimated:YES];
 }
 
@@ -4638,7 +4646,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self transitionFloatingWindowToFullscreen];
         return;
     }
-    [self setFloatingDockReady:NO animated:animated];
+    self.floatingDockReady = NO;
     [self restoreFloatingSceneAfterCancelledTransition];
     [self setFloatingApplicationInputBlocked:NO];
     [self normalizeFloatingContainerTransform];
@@ -4677,7 +4685,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToFullscreen {
-    [self setFloatingDockReady:NO animated:NO];
+    self.floatingDockReady = NO;
     if (self.floatingWindow.hidden || self.floatingIdentifier.length == 0) {
         [self resetFloatingInteractiveLayoutAnimated:YES];
         return;
@@ -5086,81 +5094,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }];
 }
 
-- (void)layoutFloatingDockReadyIndicator {
-    CGSize size = self.floatingDockReadyIndicator.bounds.size;
-    self.floatingDockReadyIndicator.center =
-        CGPointMake(CGRectGetMidX(self.floatingContainer.frame),
-                    CGRectGetMinY(self.floatingContainer.frame) -
-                        size.height * 0.5 - 10.0);
-}
-
-- (void)setFloatingDockReady:(BOOL)ready animated:(BOOL)animated {
-    if (self.floatingDockReady == ready) {
-        if (ready) {
-            [self layoutFloatingDockReadyIndicator];
-        } else if (!animated) {
-            [self.floatingDockReadyIndicator.layer removeAllAnimations];
-            self.floatingDockReadyIndicator.hidden = YES;
-            self.floatingDockReadyIndicator.alpha = 0.0;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        }
-        return;
-    }
-    self.floatingDockReady = ready;
-    if (ready) {
-        [self layoutFloatingDockReadyIndicator];
-        self.floatingDockReadyIndicator.hidden = NO;
-        self.floatingDockReadyIndicator.alpha = 0.0;
-        self.floatingDockReadyIndicator.transform =
-            CGAffineTransformMakeScale(0.72, 0.72);
-        void (^showChanges)(void) = ^{
-            self.floatingDockReadyIndicator.alpha = 1.0;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        };
-        if (!animated) {
-            showChanges();
-            return;
-        }
-        [UIView animateWithDuration:0.28
-                              delay:0.0
-             usingSpringWithDamping:0.64
-              initialSpringVelocity:0.42
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:showChanges
-                         completion:nil];
-        return;
-    }
-
-    void (^hideChanges)(void) = ^{
-        self.floatingDockReadyIndicator.alpha = 0.0;
-        self.floatingDockReadyIndicator.transform =
-            CGAffineTransformMakeScale(0.78, 0.78);
-    };
-    void (^hideCompletion)(BOOL) = ^(BOOL finished) {
-        (void)finished;
-        if (!self.floatingDockReady) {
-            self.floatingDockReadyIndicator.hidden = YES;
-            self.floatingDockReadyIndicator.transform =
-                CGAffineTransformIdentity;
-        }
-    };
-    if (!animated) {
-        hideChanges();
-        hideCompletion(YES);
-        return;
-    }
-    [UIView animateWithDuration:0.16
-                          delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionAllowUserInteraction |
-                                UIViewAnimationOptionCurveEaseOut
-                     animations:hideChanges
-                     completion:hideCompletion];
-}
-
 - (void)configureFloatingInteractionForDockedState {
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
@@ -5177,12 +5110,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockTap.enabled = NO;
     self.floatingDockDragPress.enabled = NO;
     self.floatingDockInputGesture.enabled = docked || hidden;
-    self.floatingHostView.userInteractionEnabled = !docked && !hidden;
+    BOOL contentTailProtected =
+        self.floatingDockContentTailProtected && !docked && !hidden;
+    self.floatingHostView.userInteractionEnabled =
+        !docked && !hidden && !contentTailProtected;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-    self.floatingDockInteractionShield.hidden = !docked || hidden;
+    self.floatingDockInteractionShield.hidden =
+        (!docked || hidden) && !contentTailProtected;
     self.floatingDockInteractionShield.userInteractionEnabled =
-        docked && !hidden;
-    if (docked && !hidden) {
+        (docked && !hidden) || contentTailProtected;
+    if ((docked && !hidden) || contentTailProtected) {
         [self.floatingContainer
             bringSubviewToFront:self.floatingDockInteractionShield];
     }
@@ -5234,10 +5171,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToDocked {
-    [self setFloatingDockReady:NO animated:YES];
+    self.floatingDockReady = NO;
     if (self.floatingWindow.hidden || self.floatingDocked) {
         return;
     }
+    self.floatingDockContentTailProtected = NO;
+    self.floatingDockContentProtectionGeneration += 1;
     // Invalidate any global dock recognizer that may still be observing the
     // centered handle's original touch.  The dock becomes eligible only for a
     // later touch, never for the tail of the docking swipe itself.
@@ -5356,10 +5295,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)transitionFloatingWindowToCentered {
-    [self setFloatingDockReady:NO animated:YES];
+    self.floatingDockReady = NO;
     if (self.floatingWindow.hidden || !self.floatingDocked) {
         return;
     }
+    self.floatingDockContentTailProtected = NO;
+    self.floatingDockContentProtectionGeneration += 1;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     [self cancelFloatingDockInputUpdates];
@@ -5430,6 +5371,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                           (void)finished;
                           self.floatingDockTransitionActive = NO;
                           [self configureFloatingInteractionForDockedState];
+                          [self protectFloatingContentAfterDockTouch];
                           [self setFloatingDockRoutingSuppressed:NO];
                       }];
 }
@@ -7205,7 +7147,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneUsesCardGeometry = NO;
     self.floatingSceneCardGeometryPending = NO;
     self.floatingSceneCardGeometryCommitted = YES;
-    [self setFloatingDockReady:NO animated:NO];
+    self.floatingDockReady = NO;
     ((FLMFloatingWindow *)self.floatingWindow)
         .passesTouchesOutsideFloatingContent = NO;
     self.floatingDockTap.enabled = NO;
@@ -7714,7 +7656,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingExternalActivationArmed = NO;
     self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
-    [self setFloatingDockReady:NO animated:NO];
+    self.floatingDockReady = NO;
     ((FLMFloatingWindow *)self.floatingWindow)
         .passesTouchesOutsideFloatingContent = NO;
     // Both close recognizers are disabled before any asynchronous animation
