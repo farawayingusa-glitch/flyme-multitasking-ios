@@ -183,9 +183,16 @@ CGRect FLMLandscapeModuleVisualBounds(void) {
     if (!screen) {
         screen = [UIScreen mainScreen];
     }
-    CGRect bounds = CGRectZero;
-    if (@available(iOS 8.0, *)) {
-        bounds = screen.coordinateSpace.bounds;
+    // The system gesture manager reports locations in the display's fixed
+    // screen frame.  Use the same raw screen bounds as the frozen portrait
+    // path and rotate only the visual frame; using coordinateSpace.bounds here
+    // can make SpringBoard expose the pre-rotation portrait frame during the
+    // first landscape touch stream.
+    CGRect bounds = screen.bounds;
+    if (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0) {
+        if (@available(iOS 8.0, *)) {
+            bounds = screen.fixedCoordinateSpace.bounds;
+        }
     }
     if (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0) {
         bounds = screen.bounds;
@@ -203,17 +210,29 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
     if (!screen) {
         screen = [UIScreen mainScreen];
     }
-    CGPoint point = rawPoint;
     CGRect visualBounds = FLMLandscapeModuleVisualBounds();
-    if (@available(iOS 8.0, *)) {
-        // The system gesture manager supplies display touches in the fixed
-        // display coordinate space. Convert once into the active visual
-        // coordinate space instead of rotating a UIScreen point by hand.
-        @try {
-            point = [screen.coordinateSpace convertPoint:rawPoint
-                                      fromCoordinateSpace:screen.fixedCoordinateSpace];
-        } @catch (__unused NSException *exception) {
-            point = rawPoint;
+    CGRect rawBounds = screen.bounds;
+    if (CGRectGetWidth(rawBounds) <= 1.0 ||
+        CGRectGetHeight(rawBounds) <= 1.0) {
+        if (@available(iOS 8.0, *)) {
+            rawBounds = screen.fixedCoordinateSpace.bounds;
+        }
+    }
+    CGPoint point = rawPoint;
+    UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
+    BOOL rawBoundsLandscape = CGRectGetWidth(rawBounds) >
+                               CGRectGetHeight(rawBounds);
+    if (UIInterfaceOrientationIsLandscape(orientation) &&
+        !rawBoundsLandscape) {
+        // Keep this transform identical to the portrait controller's proven
+        // system-gesture path.  A UISystemGestureView touch is not guaranteed
+        // to be tagged with the same coordinate space as the active app Scene.
+        CGFloat rawWidth = CGRectGetWidth(rawBounds);
+        CGFloat rawHeight = CGRectGetHeight(rawBounds);
+        if (orientation == UIInterfaceOrientationLandscapeLeft) {
+            point = CGPointMake(rawPoint.y, rawWidth - rawPoint.x);
+        } else if (orientation == UIInterfaceOrientationLandscapeRight) {
+            point = CGPointMake(rawHeight - rawPoint.y, rawPoint.x);
         }
     }
     if (point.x < -1.0 || point.y < -1.0 ||

@@ -2993,6 +2993,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 @"sb wheel-priority-touch accepted recognizer=%@ point={%.1f,%.1f}",
                 gestureRecognizer == self.cornerGuardGesture ? @"guard" : @"floating-guard",
                 point.x, point.y);
+        } else if (FLMLandscapeModuleIsLandscape()) {
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-priority-touch rejected recognizer=%@ landscape=1 raw={%.1f,%.1f} point={%.1f,%.1f} bounds={%@}",
+                gestureRecognizer == self.cornerGuardGesture ? @"guard" : @"floating-guard",
+                rawPoint.x, rawPoint.y, point.x, point.y,
+                NSStringFromCGRect(FLMVisualScreenBounds()));
         }
         return accepted;
     }
@@ -3011,6 +3017,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
     BOOL fromRight = NO;
     if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
+        if (FLMLandscapeModuleIsLandscape()) {
+            FLMEnqueueDiagnosticLine(
+                @"sb wheel-priority-touch rejected recognizer=%@ landscape=1 raw={%.1f,%.1f} point={%.1f,%.1f} bounds={%@}",
+                gestureRecognizer == self.cornerGesture ? @"opener" : @"floating-opener",
+                rawPoint.x, rawPoint.y, point.x, point.y,
+                NSStringFromCGRect(bounds));
+        }
         return NO;
     }
     self.presentingFromRight = fromRight;
