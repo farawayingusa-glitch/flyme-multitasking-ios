@@ -287,7 +287,8 @@ static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
 }
 
 FLMLandscapeTouchContext FLMLandscapeModuleCaptureTouchContext(void) {
-    FLMLandscapeTouchContext context = {0};
+    FLMLandscapeTouchContext context = {
+        NO, UIInterfaceOrientationUnknown, CGRectZero, CGRectZero};
     UIScreen *screen = FLMLandscapeWindowScene().screen;
     if (!screen) {
         screen = [UIScreen mainScreen];

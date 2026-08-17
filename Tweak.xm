@@ -3162,7 +3162,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)clearWheelTouchContext {
     self.wheelTouchContextValid = NO;
-    self.wheelTouchContext = (FLMLandscapeTouchContext){0};
+    self.wheelTouchContext = (FLMLandscapeTouchContext){
+        NO, UIInterfaceOrientationUnknown, CGRectZero, CGRectZero};
 }
 
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture {
