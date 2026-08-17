@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.40"
+#define FLMLogBuildString @"0.9.41"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -3840,50 +3840,42 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    BOOL wasHidden = self.floatingDockHidden;
-    CGRect startFrame = self.floatingContainer.frame;
+    // Revealing the hidden dock is a state handoff, not a presentation that
+    // needs a settle animation.  Keeping a transition window here lets the
+    // system recognizers arbitrate one more touch against the old hidden
+    // route, which is the source of the occasional card-content activation.
     self.floatingDockHidden = NO;
     self.floatingDockTransitionActive = YES;
     CGRect target =
         [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
                                    width:self.floatingDockWidth
                  preservingVerticalCenter:verticalCenter];
-    // The reveal animation used to leave the display-wide gate carrying the
-    // hidden state's null card frame until completion. A touch during that
-    // interval could fall through to the remote app surface. Prime the gate
-    // with both ends of the animation before UIKit starts moving the card.
     [self setFloatingApplicationInputBlocked:YES];
-    [self updateFloatingDockTouchGate];
-    FLMDockTouchGateWindow *gate = self.floatingDockTouchGateWindow;
-    if (gate) {
-        gate.dockCardFrame = CGRectUnion(startFrame, target);
-        gate.dockResizeFrame = CGRectNull;
-        gate.userInteractionEnabled = YES;
-        gate.hidden = NO;
-    }
-    void (^changes)(void) = ^{
+    // No UIView animation and no completion callback: apply the complete
+    // docked geometry and interaction state in this one main-thread turn.
+    // UIKit cannot deliver another touch between these statements, and the
+    // next touch sees the final docked route immediately.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [UIView performWithoutAnimation:^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = target;
-                             self.floatingContainer.layer.cornerRadius =
-                                 22.0 * self.floatingDockWidth /
-                                     FLMCenteredCardWidth;
-                              self.floatingDockShadowView.alpha = 0.0;
-                              self.floatingDimView.alpha = 0.0;
-                              self.floatingResizeHandle.hidden = YES;
-                              self.floatingHandle.alpha = 0.0;
+        self.floatingContainer.layer.cornerRadius =
+            22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
+        self.floatingDockShadowView.alpha = 0.0;
+        self.floatingDimView.alpha = 0.0;
+        self.floatingResizeHandle.hidden = YES;
+        self.floatingHandle.alpha = 0.0;
         [self layoutFloatingHandleForCurrentContainer];
-    };
-    [UIView animateWithDuration:(wasHidden ? 0.10 : 0.22)
-                          delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState |
-                                UIViewAnimationOptionCurveEaseOut |
-                                UIViewAnimationOptionAllowUserInteraction
-                     animations:changes
-                      completion:^(__unused BOOL finished) {
-                          self.floatingDockTransitionActive = NO;
-                          [self configureFloatingInteractionForDockedState];
-                          [self setFloatingDockRoutingSuppressed:NO];
-                      }];
+    }];
+    [CATransaction commit];
+    self.floatingDockTransitionActive = NO;
+    // The reveal gesture has ended; do not carry the old transition cutoff
+    // into the first deliberate touch on the newly docked card.
+    self.floatingDockInputBlockedUntilNextTouch = NO;
+    self.floatingDockInputBlockCutoffTimestamp = 0.0;
+    [self configureFloatingInteractionForDockedState];
+    [self setFloatingDockRoutingSuppressed:NO];
 }
 
 - (void)updateFloatingDockHiddenRevealForPoint:(CGPoint)point {
@@ -4524,9 +4516,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect frame = CGRectMake(minX, minY, width, height);
     wrapper.transform = CGAffineTransformIdentity;
     wrapper.frame = frame;
-    wrapper.layer.cornerRadius =
+    CGFloat cornerRadius =
         22.0 * (CGRectGetWidth(start) / FLMCenteredCardWidth) *
         (1.0 - progress);
+    wrapper.layer.cornerRadius = cornerRadius;
 
     CGFloat uniformScale = CGRectGetWidth(frame) /
                            MAX(1.0, CGRectGetWidth(start));
@@ -4545,10 +4538,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     content.alpha = 1.0;
     background.alpha = 0.0;
 
-    // The real container remains hidden but tracks exactly the same bounded
-    // geometry, which keeps the handle and final handoff spatially continuous.
+    // Keep every visible element on this same progress curve.  Previously the
+    // card path, dim layer, white bar and final fullscreen animation each had a
+    // separate callback.  That made release at an arbitrary point look like a
+    // second animation was starting after the bar had already finished.
     self.floatingContainer.transform = CGAffineTransformIdentity;
     self.floatingContainer.frame = frame;
+    self.floatingContainer.layer.cornerRadius = cornerRadius;
+    self.floatingDimView.alpha = 1.0 - progress;
+    CGFloat handleFade =
+        MIN(1.0, MAX(0.0, (progress - 0.84) / 0.16));
+    self.floatingHandle.alpha = 1.0 - handleFade;
+    self.floatingHandleBar.alpha = 1.0;
+    self.floatingHandleBar.transform = CGAffineTransformIdentity;
+    [self layoutFloatingHandleForCurrentContainer];
 }
 
 - (void)prepareFloatingSceneForInteractiveFullscreen {
@@ -4558,6 +4561,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = YES;
     self.floatingInteractiveFullscreenTransition = YES;
     self.floatingFullscreenProgress = 0.0;
+    self.floatingHandleBar.alpha = 1.0;
+    self.floatingHandleBar.transform = CGAffineTransformIdentity;
 
     UIView *content =
         [self.floatingContainer snapshotViewAfterScreenUpdates:NO];
@@ -4617,6 +4622,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingFullscreenActivationArmed = NO;
     self.floatingFullscreenProgress = 0.0;
+    self.floatingReconnectSuppressed = NO;
     self.floatingContainer.alpha = 1.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
     if (!CGRectIsEmpty(self.floatingHandleInitialContainerFrame)) {
@@ -4648,16 +4654,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockTransitionActive = NO;
         self.floatingDockFeedbackSent = NO;
         self.floatingInteractiveScenePrepared = NO;
+        self.floatingHandleBar.alpha = 1.0;
+        self.floatingHandleBar.transform = CGAffineTransformIdentity;
         [self setFloatingApplicationInputBlocked:NO];
         self.floatingDockReady = NO;
-        [UIView animateWithDuration:0.12
-                         animations:^{
-                             self.floatingHandleBar.alpha = 1.0;
-                             self.floatingHandleBar.transform =
-                                 landscape
-                                     ? CGAffineTransformMakeScale(1.28, 1.06)
-                                     : CGAffineTransformMakeScale(1.06, 1.28);
-                         }];
         return;
     }
 
@@ -4685,14 +4685,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 CGFloat progress =
                     MIN(1.0, MAX(0.0, primaryMovement / available));
                 [self updateFloatingFullscreenSnapshotForProgress:progress];
-                self.floatingDimView.alpha = 1.0 - progress;
-                self.floatingHandle.alpha =
-                    1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-                [self layoutFloatingHandleForCurrentContainer];
                 if (progress >= FLMFloatingFullscreenActivationThreshold &&
                     !self.floatingFullscreenActivationArmed &&
                     self.floatingIdentifier.length > 0) {
                     self.floatingFullscreenActivationArmed = YES;
+                    self.floatingReconnectSuppressed = YES;
                     [self activateIdentifierFullscreen:self.floatingIdentifier];
                 }
             } else {
@@ -4777,14 +4774,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         CGRectGetMaxY(self.floatingHandleInitialContainerFrame));
             CGFloat progress = MIN(1.0, MAX(0.0, primaryMovement / available));
             [self updateFloatingFullscreenSnapshotForProgress:progress];
-            self.floatingDimView.alpha = 1.0 - progress;
-            self.floatingHandle.alpha =
-                1.0 - MAX(0.0, (progress - 0.88) / 0.12);
-            [self layoutFloatingHandleForCurrentContainer];
             if (progress >= FLMFloatingFullscreenActivationThreshold &&
                 !self.floatingFullscreenActivationArmed &&
                 self.floatingIdentifier.length > 0) {
                 self.floatingFullscreenActivationArmed = YES;
+                self.floatingReconnectSuppressed = YES;
                 [self activateIdentifierFullscreen:self.floatingIdentifier];
             }
         } else {
@@ -4911,13 +4905,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          options:UIViewAnimationOptionBeginFromCurrentState |
                                  UIViewAnimationOptionCurveEaseOut |
                                  UIViewAnimationOptionAllowUserInteraction
-                      animations:^{
-                         [self updateFloatingFullscreenSnapshotForProgress:1.0];
-                         self.floatingContainer.layer.cornerRadius = 0.0;
-                         self.floatingDimView.alpha = 0.0;
-                         self.floatingHandle.alpha = 0.0;
-                         [self layoutFloatingHandleForCurrentContainer];
-                     }
+                       animations:^{
+                          [self updateFloatingFullscreenSnapshotForProgress:1.0];
+                      }
                       completion:^(BOOL finished) {
                           (void)finished;
                           UIView *snapshot = self.floatingInteractiveSnapshot;
