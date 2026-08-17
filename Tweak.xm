@@ -15,6 +15,7 @@
 
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
+#import "FLMLandscapeModule.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -34,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.42"
+#define FLMLogBuildString @"0.9.44"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -269,13 +270,6 @@ static const CGFloat FLMDefaultDockedShrinkAmount = 0.0;
 static const CGFloat FLMMinimumDockedShrinkAmount = 0.0;
 static const CGFloat FLMMaximumDockedShrinkAmount = 60.0;
 static const CGFloat FLMMinimumDockPresentationWidth = 96.0;
-// Landscape has its own presentation contract.  The physical card is a
-// compact, display-sized surface attached to the left edge in both system
-// landscape orientations; the interface is intentionally never mirrored.
-static const CGFloat FLMLandscapeSideCardWidthRatio = 0.50;
-static const CGFloat FLMLandscapeSideCardMinimumWidth = 260.0;
-static const CGFloat FLMLandscapeSideCardMaximumWidth = 440.0;
-static const CGFloat FLMLandscapeSideCardHeightRatio = 0.78;
 static const CGFloat FLMDockAnimationSpeed = 0.85;
 static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.10;
@@ -481,6 +475,9 @@ static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
 }
 
 static CGRect FLMVisualScreenBounds(void) {
+    if (FLMLandscapeModuleIsLandscape()) {
+        return FLMLandscapeModuleVisualBounds();
+    }
     CGRect bounds = [UIScreen mainScreen].bounds;
     UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
     BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
@@ -492,12 +489,10 @@ static CGRect FLMVisualScreenBounds(void) {
     return bounds;
 }
 
-static BOOL FLMVisualScreenIsLandscape(void) {
-    CGRect bounds = FLMVisualScreenBounds();
-    return CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-}
-
 static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
+    if (FLMLandscapeModuleIsLandscape()) {
+        return FLMLandscapeModuleVisualPointFromRawPoint(rawPoint);
+    }
     CGRect rawBounds = [UIScreen mainScreen].bounds;
     UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
     BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
@@ -584,6 +579,11 @@ static CGFloat FLMClampedCornerTriggerSize(CGFloat value) {
 static BOOL FLMPointInsideCornerTrigger(CGPoint point,
                                         CGRect bounds,
                                         BOOL *fromRight) {
+    if (FLMLandscapeModuleIsLandscape()) {
+        return FLMLandscapeModulePointInsideCornerTrigger(point,
+                                                          bounds,
+                                                          fromRight);
+    }
     // Keep the original 58x65 quarter-ellipse at the default. The setting
     // scales both axes together while preserving that exact aspect ratio.
     CGFloat horizontalRadius =
@@ -880,6 +880,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (FLMLandscapeModuleIsLandscape()) {
+        return nil;
+    }
     if (!FLMHomeDockZoneHitTest(self.bounds, point)) {
         return nil;
     }
@@ -1336,7 +1339,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL floatingHandleMoved;
 @property(nonatomic, assign) BOOL floatingDocked;
 @property(nonatomic, assign) BOOL floatingDockedOnRight;
-@property(nonatomic, assign) BOOL floatingLandscapeSideCardActive;
 @property(nonatomic, assign) BOOL floatingDockHidden;
 @property(nonatomic, assign) BOOL floatingDockHideGestureActive;
 @property(nonatomic, assign) BOOL floatingDockHideReady;
@@ -1516,11 +1518,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (CGFloat)effectiveCenteredCardScaleY;
 - (CGFloat)effectiveCenteredDockSwipeThreshold;
 - (CGFloat)effectiveDockedPresentationWidth;
-- (CGFloat)effectiveLandscapeSideCardWidth;
-- (BOOL)floatingLandscapeSideCardInteractive;
 - (CGRect)centeredFloatingFrame;
-- (CGRect)landscapeSideFloatingFrameWithWidth:(CGFloat)width
-                       preservingVerticalCenter:(CGFloat)verticalCenter;
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width;
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight
                                width:(CGFloat)width
@@ -1545,7 +1543,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)updateFloatingDockHiddenRevealForPoint:(CGPoint)point;
 - (void)snapDockedFloatingWindowUsingTouchPoint:(CGPoint)point;
 - (void)prepareFloatingSceneForInteractiveFullscreen;
-- (void)handleFloatingLandscapeSideHandlePress:(UILongPressGestureRecognizer *)gesture;
 - (void)restoreFloatingSceneAfterCancelledTransition;
 - (void)transitionFloatingWindowToFullscreen;
 - (void)finishFullscreenHandoffWithCover:(UIView *)cover
@@ -2171,6 +2168,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMPublishKeyboardState(nil, nil, 0);
         [self createWindows];
         [self reloadPreferences];
+        // The portrait controller remains responsible for the legacy vertical
+        // path. Landscape owns a separate window and state machine; it is only
+        // started here so the direction gate is ready before the first touch.
+        FLMLandscapeModuleStart();
     });
 }
 
@@ -2628,6 +2629,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [self refreshWheelPriorityWindow];
     if (!self.enabled) {
+        FLMLandscapeModuleClose(YES);
         [self dismissWheelLaunchingItem:nil];
         [self closeFloatingWindowKeepingApplication:YES];
     } else if (self.floatingWindow && !self.floatingWindow.hidden &&
@@ -2654,7 +2656,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)orientationDidChange:(NSNotification *)notification {
     (void)notification;
+    FLMLandscapeModuleOrientationDidChange();
     [self dismissWheelLaunchingItem:nil];
+    // Publish the direction gate immediately. The delayed pass below is only
+    // a settle pass for UIKit's final window bounds; it is not the first
+    // moment at which portrait recognizers become disabled.
+    [self updateWindowFrames];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(0.08 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -2663,37 +2670,37 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateWindowFrames {
-    CGRect bounds = FLMVisualScreenBounds();
-    BOOL landscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-    BOOL presentationChanged = NO;
-    if (self.floatingWindow && !self.floatingWindow.hidden &&
-        self.floatingIdentifier.length > 0 &&
-        !self.floatingCloseInProgress &&
-        !self.floatingInteractiveFullscreenTransition) {
-        if (landscape && !self.floatingLandscapeSideCardActive) {
-            BOOL wasHidden = self.floatingDockHidden;
-            self.floatingLandscapeSideCardActive = YES;
-            self.floatingDocked = YES;
-            self.floatingDockedOnRight = NO;
-            self.floatingDockWidth = [self effectiveLandscapeSideCardWidth];
-            self.floatingDockHidden = wasHidden;
-            presentationChanged = YES;
-            FLMEnqueueDiagnosticLine(
-                @"sb orientation-presentation landscape-side enabled hidden=%d",
-                wasHidden);
-        } else if (!landscape && self.floatingLandscapeSideCardActive) {
-            BOOL wasHidden = self.floatingDockHidden;
-            self.floatingLandscapeSideCardActive = NO;
-            self.floatingDockHidden = wasHidden;
-            self.floatingDockedOnRight = wasHidden ? NO : YES;
-            self.floatingDocked = wasHidden;
-            self.floatingDockWidth = [self effectiveDockedPresentationWidth];
-            presentationChanged = YES;
-            FLMEnqueueDiagnosticLine(
-                @"sb orientation-presentation portrait restored hidden=%d",
-                wasHidden);
+    if (FLMLandscapeModuleIsLandscape()) {
+        CGRect landscapeBounds = FLMLandscapeModuleVisualBounds();
+        self.overlayWindow.frame = landscapeBounds;
+        self.overlayWindow.rootViewController.view.frame = landscapeBounds;
+        self.wheelContainer.frame = landscapeBounds;
+        self.hotspotWindow.frame = landscapeBounds;
+        self.hotspotWindow.rootViewController.view.frame = landscapeBounds;
+        self.homeDockWindow.frame = landscapeBounds;
+        self.homeDockWindow.rootViewController.view.frame = landscapeBounds;
+        self.homeDockWindow.hidden = YES;
+
+        // A portrait session must never be allowed to become the landscape
+        // session.  The dedicated landscape module owns its own card and
+        // interaction state; these portrait recognizers are disabled before
+        // any landscape frame is published.
+        self.floatingDockInputGesture.enabled = NO;
+        self.floatingBackdropTap.enabled = NO;
+        self.floatingHandlePress.enabled = NO;
+        self.floatingHandleTap.enabled = NO;
+        self.floatingDockTap.enabled = NO;
+        self.floatingDockDragPress.enabled = NO;
+        self.floatingDockTouchGateWindow.hidden = YES;
+        self.floatingDockTouchGateWindow.userInteractionEnabled = NO;
+        if (!self.floatingWindow.hidden && !self.floatingCloseInProgress) {
+            [self closeFloatingWindowKeepingApplication:YES];
         }
+        self.floatingWindow.hidden = YES;
+        FLMLandscapeModuleUpdateFrames();
+        return;
     }
+    CGRect bounds = FLMVisualScreenBounds();
     self.overlayWindow.frame = bounds;
     self.overlayWindow.rootViewController.view.frame = bounds;
     self.wheelContainer.frame = bounds;
@@ -2701,20 +2708,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.hotspotWindow.rootViewController.view.frame = bounds;
     self.homeDockWindow.frame = bounds;
     self.homeDockWindow.rootViewController.view.frame = bounds;
+    self.homeDockWindow.hidden = NO;
     self.floatingWindow.frame = bounds;
     self.floatingWindow.rootViewController.view.frame = bounds;
     self.floatingDockTouchGateWindow.frame = bounds;
     self.floatingDockTouchGateWindow.rootViewController.view.frame = bounds;
     self.floatingDimView.frame = bounds;
     [self layoutFloatingWindow];
-    if (presentationChanged &&
-        self.floatingLaunchState == FLMFloatingLaunchStateAttached) {
-        [self configureFloatingInteractionForDockedState];
-    }
     [self updateFloatingDockTouchGate];
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (FLMLandscapeModuleIsLandscape() &&
+        (gestureRecognizer == self.homeDockGesture ||
+         gestureRecognizer == self.floatingDockInputGesture ||
+         gestureRecognizer == self.floatingDockTap ||
+         gestureRecognizer == self.floatingDockDragPress ||
+         gestureRecognizer == self.floatingBackdropTap ||
+         gestureRecognizer == self.floatingExclusiveGesture ||
+         gestureRecognizer == self.modalGesture)) {
+        // These recognizers belong to the portrait controller. The landscape
+        // module has its own card and handle recognizers.
+        return NO;
+    }
     if (gestureRecognizer == self.homeDockGesture) {
         return self.enabled && !self.wheelPinned &&
                self.floatingWindow.hidden && !self.floatingCloseInProgress &&
@@ -2728,21 +2744,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (canBegin) {
             CGPoint point =
                 FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]);
-            BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                                     self.floatingDocked &&
-                                     !self.floatingDockHidden &&
-                                     FLMVisualScreenIsLandscape();
             canBegin = self.floatingDockHidden
                            ? (CGRectContainsPoint(self.floatingHandle.frame, point) ||
                               CGRectContainsPoint(CGRectInset(self.floatingHandle.frame,
                                                              -18.0,
                                                              -18.0),
                                                     point))
-                           : (landscapeSideCard
-                                  ? [self floatingResizeControlContainsPoint:point]
-                                  : ([self floatingResizeControlContainsPoint:point] ||
-                                     CGRectContainsPoint(self.floatingContainer.frame,
-                                                          point)));
+                           : ([self floatingResizeControlContainsPoint:point] ||
+                              CGRectContainsPoint(self.floatingContainer.frame,
+                                                   point));
         }
         if (!canBegin) {
             [self setFloatingDockRoutingSuppressed:NO];
@@ -2759,10 +2769,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return canBegin;
     }
     if (gestureRecognizer == self.floatingBackdropTap) {
-        return !self.floatingWindow.hidden &&
-               (!self.floatingDocked ||
-                (self.floatingLandscapeSideCardActive &&
-                 !self.floatingDockHidden && FLMVisualScreenIsLandscape()));
+        return !self.floatingWindow.hidden && !self.floatingDocked;
     }
     if (gestureRecognizer == self.floatingExclusiveGesture) {
         if (self.enabled && !self.wheelPinned &&
@@ -2810,6 +2817,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (FLMLandscapeModuleIsLandscape() &&
+        gestureRecognizer != self.cornerGuardGesture &&
+        gestureRecognizer != self.cornerGesture &&
+        gestureRecognizer != self.floatingCornerGuardGesture &&
+        gestureRecognizer != self.floatingCornerGesture) {
+        return NO;
+    }
     if (gestureRecognizer == self.homeDockGesture) {
         if (!self.enabled || self.wheelPinned || !self.floatingWindow.hidden ||
             self.floatingCloseInProgress || FLMDeviceIsLocked()) {
@@ -2854,14 +2868,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                        -18.0),
                                            point);
         } else {
-            BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                                     self.floatingDocked &&
-                                     FLMVisualScreenIsLandscape();
-            accepted = landscapeSideCard
-                           ? [self floatingResizeControlContainsPoint:point]
-                           : ([self floatingResizeControlContainsPoint:point] ||
-                              CGRectContainsPoint(self.floatingContainer.frame,
-                                                   point));
+            accepted = [self floatingResizeControlContainsPoint:point] ||
+                       CGRectContainsPoint(self.floatingContainer.frame, point);
         }
         accepted = accepted && !staleStream;
         FLMEnqueueDiagnosticLine(
@@ -3606,18 +3614,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                             self.floatingDocked &&
-                             !self.floatingDockHidden &&
-                             FLMVisualScreenIsLandscape();
-    // The side card's remote content must remain below the transparent gate;
-    // only its white bar and resize target are ownership boundaries.  This
-    // is what prevents a content tap from being re-routed as a dock gesture.
-    gate.dockCardFrame = (self.floatingDockHidden || landscapeSideCard)
+    gate.dockCardFrame = self.floatingDockHidden
                              ? CGRectNull
                              : self.floatingContainer.frame;
-    gate.dockHandleFrame = (!self.floatingHandle.hidden &&
-                            !landscapeSideCard)
+    gate.dockHandleFrame = !self.floatingHandle.hidden
                                ? self.floatingHandle.frame
                                : CGRectNull;
     gate.dockResizeFrame = (!self.floatingDockHidden &&
@@ -3688,15 +3688,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *rootView = self.floatingWindow.rootViewController.view;
     if (self.floatingDockInputMode == FLMFloatingDockInputModeResize ||
         self.floatingDockInputTargetsResize) {
-        BOOL landscapeSideCard = [self floatingLandscapeSideCardInteractive];
-        CGFloat minimumResizeWidth = landscapeSideCard
-                                         ? MIN(FLMLandscapeSideCardMinimumWidth,
-                                               CGRectGetWidth(rootView.bounds) * 0.86)
-                                         : FLMMinimumDockPresentationWidth;
-        CGFloat maximumResizeWidth = landscapeSideCard
-                                         ? MIN(FLMLandscapeSideCardMaximumWidth,
-                                               CGRectGetWidth(rootView.bounds))
-                                         : FLMMaximumDockWidth;
+        CGFloat minimumResizeWidth = FLMMinimumDockPresentationWidth;
+        CGFloat maximumResizeWidth = FLMMaximumDockWidth;
         CGFloat horizontalOutward =
             self.floatingDockedOnRight
                 ? self.floatingResizeStartPoint.x - point.x
@@ -3712,8 +3705,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         (requestedWidth - maximumResizeWidth) * 0.60);
         }
         width = MAX(minimumResizeWidth, width);
-        if (!landscapeSideCard && !self.floatingResizeCenterReady &&
-            requestedWidth >= 286.0) {
+        if (!self.floatingResizeCenterReady && requestedWidth >= 286.0) {
             self.floatingResizeCenterReady = YES;
             if (@available(iOS 10.0, *)) {
                 UIImpactFeedbackGenerator *feedback =
@@ -3721,18 +3713,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         initWithStyle:UIImpactFeedbackStyleMedium];
                 [feedback impactOccurred];
             }
-        } else if (!landscapeSideCard && self.floatingResizeCenterReady &&
-                   requestedWidth <= 278.0) {
+        } else if (self.floatingResizeCenterReady && requestedWidth <= 278.0) {
             self.floatingResizeCenterReady = NO;
         }
         CGRect centeredFrame = [self centeredFloatingFrame];
         CGFloat aspectRatio =
-            landscapeSideCard
-                ? CGRectGetWidth(self.floatingResizeInitialFrame) /
-                      MAX(1.0,
-                          CGRectGetHeight(self.floatingResizeInitialFrame))
-                : CGRectGetWidth(centeredFrame) /
-                      MAX(1.0, CGRectGetHeight(centeredFrame));
+            CGRectGetWidth(centeredFrame) /
+            MAX(1.0, CGRectGetHeight(centeredFrame));
         CGFloat height = width / MAX(0.1, aspectRatio);
         CGFloat top = CGRectGetMinY(self.floatingResizeInitialFrame);
         CGFloat anchorX =
@@ -4078,21 +4065,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockHideStartPoint = point;
         self.floatingDockHideInitialFrame = self.floatingContainer.frame;
         self.floatingDockGlobalDragActivated = NO;
-        BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                                 self.floatingDocked &&
-                                 !self.floatingDockHidden &&
-                                 FLMVisualScreenIsLandscape();
         BOOL pointIsOwned = self.floatingDockHidden
                                 ? (CGRectContainsPoint(self.floatingHandle.frame, point) ||
                                    CGRectContainsPoint(CGRectInset(self.floatingHandle.frame,
                                                                   -18.0,
                                                                   -18.0),
                                                         point))
-                                : (landscapeSideCard
-                                       ? [self floatingResizeControlContainsPoint:point]
-                                       : ([self floatingResizeControlContainsPoint:point] ||
-                                          CGRectContainsPoint(self.floatingContainer.frame,
-                                                               point)));
+                                 : ([self floatingResizeControlContainsPoint:point] ||
+                                    CGRectContainsPoint(self.floatingContainer.frame,
+                                                         point));
         BOOL staleStream =
             self.floatingDockInputBlockedUntilNextTouch &&
             self.floatingDockInputBlockCutoffTimestamp > 0.0 &&
@@ -4333,8 +4314,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self normalizeFloatingContainerTransform];
         BOOL restoreCentered =
             gesture.state == UIGestureRecognizerStateEnded &&
-            self.floatingResizeCenterReady &&
-            ![self floatingLandscapeSideCardInteractive];
+            self.floatingResizeCenterReady;
         self.floatingResizeCenterReady = NO;
         self.floatingDockInputTargetsResize = NO;
         if (restoreCentered) {
@@ -4544,8 +4524,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
     if (!blocked &&
-        ((self.floatingDocked &&
-          ![self floatingLandscapeSideCardInteractive]) ||
+        (self.floatingDocked ||
          self.floatingDockHidden ||
          self.floatingDockContentTailProtected)) {
         blocked = YES;
@@ -4732,131 +4711,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self layoutFloatingHostView];
 }
 
-- (void)handleFloatingLandscapeSideHandlePress:(UILongPressGestureRecognizer *)gesture {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGPoint point = [gesture locationInView:rootView];
-    CGRect bounds = rootView.bounds;
-
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        self.floatingHandleStartPoint = point;
-        self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
-        self.floatingHandleMoved = NO;
-        self.floatingDockTransitionActive = NO;
-        self.floatingDockHideGestureActive = NO;
-        self.floatingDockHideReady = NO;
-        self.floatingDockFeedbackSent = NO;
-        self.floatingDockReady = NO;
-        self.floatingInteractiveScenePrepared = NO;
-        self.floatingFullscreenActivationArmed = NO;
-        self.floatingHandleBar.alpha = 1.0;
-        self.floatingHandleBar.transform = CGAffineTransformIdentity;
-        [self setFloatingDockRoutingSuppressed:YES];
-        [self setFloatingApplicationInputBlocked:NO];
-        return;
-    }
-
-    CGFloat horizontalMovement =
-        point.x - self.floatingHandleStartPoint.x;
-    CGFloat verticalMovement =
-        point.y - self.floatingHandleStartPoint.y;
-    BOOL directionIsPrimary =
-        fabs(horizontalMovement) >= fabs(verticalMovement) * 0.55;
-    BOOL terminal = gesture.state == UIGestureRecognizerStateEnded ||
-                    gesture.state == UIGestureRecognizerStateCancelled ||
-                    gesture.state == UIGestureRecognizerStateFailed;
-
-    if (!terminal) {
-        if (directionIsPrimary && horizontalMovement <= -3.0) {
-            if (self.floatingInteractiveScenePrepared) {
-                [self restoreFloatingSceneAfterCancelledTransition];
-            }
-            if (!self.floatingDockHideGestureActive) {
-                self.floatingDockHideStartPoint =
-                    self.floatingHandleStartPoint;
-                self.floatingDockHideInitialFrame =
-                    self.floatingHandleInitialContainerFrame;
-            }
-            self.floatingHandleMoved = YES;
-            self.floatingDockTransitionActive = YES;
-            self.floatingDockHideGestureActive = YES;
-            self.floatingDockHideReady =
-                -horizontalMovement >= [self effectiveCenteredDockSwipeThreshold];
-            [self setFloatingApplicationInputBlocked:YES];
-            [self updateFloatingDockHiddenRevealForPoint:point];
-            return;
-        }
-
-        if (directionIsPrimary && horizontalMovement >= 3.0) {
-            if (self.floatingDockHideGestureActive) {
-                // Rebase a direction reversal to the stable side-card frame;
-                // the same touch can never carry a half-hidden geometry into
-                // the fullscreen path.
-                self.floatingDockHideGestureActive = NO;
-                self.floatingDockHideReady = NO;
-                self.floatingDockTransitionActive = NO;
-                [UIView performWithoutAnimation:^{
-                    self.floatingContainer.transform =
-                        CGAffineTransformIdentity;
-                    self.floatingContainer.frame =
-                        self.floatingHandleInitialContainerFrame;
-                    [self layoutFloatingHostView];
-                    [self layoutFloatingHandleForCurrentContainer];
-                }];
-            }
-            self.floatingHandleMoved = YES;
-            self.floatingDockTransitionActive = NO;
-            [self setFloatingApplicationInputBlocked:NO];
-            if (!self.floatingInteractiveScenePrepared) {
-                [self prepareFloatingSceneForInteractiveFullscreen];
-            }
-            CGFloat available =
-                MAX(1.0,
-                    CGRectGetWidth(bounds) -
-                        CGRectGetMaxX(self.floatingHandleInitialContainerFrame));
-            CGFloat progress = MIN(1.0,
-                                   MAX(0.0, horizontalMovement / available));
-            [self updateFloatingFullscreenSnapshotForProgress:progress];
-            if (progress >= FLMFloatingFullscreenActivationThreshold &&
-                !self.floatingFullscreenActivationArmed &&
-                self.floatingIdentifier.length > 0) {
-                self.floatingFullscreenActivationArmed = YES;
-                self.floatingReconnectSuppressed = YES;
-                [self activateIdentifierFullscreen:self.floatingIdentifier];
-            }
-            return;
-        }
-
-        if (!self.floatingDockHideGestureActive &&
-            !self.floatingInteractiveScenePrepared) {
-            self.floatingHandleBar.transform =
-                CGAffineTransformMakeTranslation(
-                    MAX(-14.0, MIN(14.0, horizontalMovement * 0.18)), 0.0);
-        }
-        return;
-    }
-
-    if (self.floatingDockHideGestureActive || horizontalMovement < 0.0) {
-        BOOL shouldHide =
-            gesture.state == UIGestureRecognizerStateEnded &&
-            -horizontalMovement >= [self effectiveCenteredDockSwipeThreshold];
-        self.floatingDockHideGestureActive = NO;
-        self.floatingDockHideReady = NO;
-        [self finishFloatingDockHiddenGesture:shouldHide atPoint:point];
-        return;
-    }
-
-    if (gesture.state == UIGestureRecognizerStateEnded &&
-        self.floatingHandleMoved && horizontalMovement > 0.0) {
-        self.floatingDockReady = NO;
-        [self setFloatingDockRoutingSuppressed:NO];
-        [self transitionFloatingWindowToFullscreen];
-        return;
-    }
-
-    self.floatingDockReady = NO;
-    [self resetFloatingInteractiveLayoutAnimated:YES];
-}
-
 - (void)handleFloatingHandlePress:(UILongPressGestureRecognizer *)gesture {
     if (self.floatingWindow.hidden) {
         return;
@@ -4868,13 +4722,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *rootView = self.floatingWindow.rootViewController.view;
     CGPoint point = [gesture locationInView:rootView];
     CGRect bounds = rootView.bounds;
-    BOOL landscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-
-    if (self.floatingLandscapeSideCardActive && self.floatingDocked &&
-        !self.floatingDockHidden && landscape) {
-        [self handleFloatingLandscapeSideHandlePress:gesture];
-        return;
-    }
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
         // A centered card always starts a new dock gesture at the fixed
@@ -4894,45 +4741,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     CGFloat primaryMovement =
-        landscape ? point.x - self.floatingHandleStartPoint.x
-                  : point.y - self.floatingHandleStartPoint.y;
-    CGFloat crossMovement =
-        landscape ? point.y - self.floatingHandleStartPoint.y
-                  : point.x - self.floatingHandleStartPoint.x;
+        point.y - self.floatingHandleStartPoint.y;
 
     if (gesture.state == UIGestureRecognizerStateChanged) {
-        if (landscape) {
-            BOOL directionIsPrimary =
-                fabs(primaryMovement) >= fabs(crossMovement) * 0.55;
-            if (directionIsPrimary && primaryMovement >= 3.0) {
-                self.floatingHandleMoved = YES;
-                self.floatingDockTransitionActive = NO;
-                if (!self.floatingInteractiveScenePrepared) {
-                    [self prepareFloatingSceneForInteractiveFullscreen];
-                }
-                CGFloat available =
-                    MAX(1.0,
-                        CGRectGetWidth(bounds) -
-                            CGRectGetMaxX(self.floatingHandleInitialContainerFrame));
-                CGFloat progress =
-                    MIN(1.0, MAX(0.0, primaryMovement / available));
-                [self updateFloatingFullscreenSnapshotForProgress:progress];
-                if (progress >= FLMFloatingFullscreenActivationThreshold &&
-                    !self.floatingFullscreenActivationArmed &&
-                    self.floatingIdentifier.length > 0) {
-                    self.floatingFullscreenActivationArmed = YES;
-                    self.floatingReconnectSuppressed = YES;
-                    [self activateIdentifierFullscreen:self.floatingIdentifier];
-                }
-            } else {
-                CGFloat resistance =
-                    MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
-                self.floatingHandleBar.transform =
-                    CGAffineTransformMakeTranslation(resistance, 0.0);
-            }
-            return;
-        }
-
         if (primaryMovement <= -3.0) {
             if (self.floatingInteractiveScenePrepared) {
                 [self restoreFloatingSceneAfterCancelledTransition];
@@ -5042,7 +4853,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
+    if (gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingDockReady && primaryMovement < 0.0) {
         self.floatingDockReady = NO;
         [self transitionFloatingWindowToDocked];
@@ -5051,8 +4862,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingHandleMoved && !self.floatingDockTransitionActive &&
         primaryMovement > 0.0 &&
-        (landscape ||
-         point.y >= CGRectGetHeight(bounds) - 80.0)) {
+        point.y >= CGRectGetHeight(bounds) - 80.0) {
         self.floatingDockReady = NO;
         [self transitionFloatingWindowToFullscreen];
         return;
@@ -5274,7 +5084,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     NSString *identifier = [self.floatingIdentifier copy];
     if (self.floatingDocked &&
-        ![self floatingLandscapeSideCardInteractive] &&
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()]) {
         // The user opened the docked application through SpringBoard. Its
         // primary scene now belongs to the fullscreen transition; reconnecting
@@ -5390,29 +5199,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return MAX(FLMMinimumDockPresentationWidth, width);
 }
 
-- (CGFloat)effectiveLandscapeSideCardWidth {
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    CGFloat availableWidth = CGRectGetWidth(bounds);
-    if (availableWidth <= 1.0) {
-        availableWidth = CGRectGetWidth(self.floatingWindow.bounds);
-    }
-    CGFloat minimumWidth =
-        MIN(FLMLandscapeSideCardMinimumWidth, availableWidth * 0.86);
-    CGFloat maximumWidth =
-        MIN(FLMLandscapeSideCardMaximumWidth, availableWidth);
-    if (maximumWidth < minimumWidth) {
-        minimumWidth = maximumWidth;
-    }
-    CGFloat preferredWidth = availableWidth * FLMLandscapeSideCardWidthRatio;
-    return MAX(minimumWidth, MIN(maximumWidth, preferredWidth));
-}
-
-- (BOOL)floatingLandscapeSideCardInteractive {
-    return self.floatingLandscapeSideCardActive &&
-           self.floatingDocked && !self.floatingDockHidden &&
-           FLMVisualScreenIsLandscape() && !self.floatingWindow.hidden;
-}
-
 - (CGRect)centeredFloatingFrame {
     CGRect bounds = self.floatingWindow.bounds;
     CGFloat width = CGRectGetWidth(bounds);
@@ -5428,81 +5214,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Scene geometry. The app itself remains a full-screen Scene underneath.
     const CGFloat containerWidth = [self effectiveCenteredCardWidth];
     const CGFloat containerHeight = [self effectiveCenteredCardHeight];
-    CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
-    BOOL landscape = width > height;
-    CGFloat originX = 0.0;
-    if (landscape) {
-        top = floor((height - containerHeight) * 0.5);
-        originX = MAX(0.0, safeInsets.left);
-    } else {
-        CGFloat centeredUpperTop =
-            floor((height - containerHeight) * 0.5 - 44.0);
-        top = MAX(safeInsets.top + 8.0, centeredUpperTop);
-        originX = floor((width - containerWidth) * 0.5);
-    }
+    CGFloat top = MAX(safeInsets.top, 10.0);
+    CGFloat centeredUpperTop =
+        floor((height - containerHeight) * 0.5 - 44.0);
+    top = MAX(safeInsets.top + 8.0, centeredUpperTop);
+    CGFloat originX = floor((width - containerWidth) * 0.5);
     return CGRectMake(originX, top, containerWidth, containerHeight);
 }
 
-- (CGRect)landscapeSideFloatingFrameWithWidth:(CGFloat)width
-                       preservingVerticalCenter:(CGFloat)verticalCenter {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
-    CGFloat screenWidth = CGRectGetWidth(bounds);
-    CGFloat screenHeight = CGRectGetHeight(bounds);
-    if (screenWidth <= 1.0 || screenHeight <= 1.0) {
-        return CGRectZero;
-    }
-
-    CGFloat availableWidth = MAX(1.0, screenWidth);
-    CGFloat minimumCardWidth =
-        MIN(FLMLandscapeSideCardMinimumWidth, availableWidth * 0.86);
-    CGFloat maximumCardWidth =
-        MIN(FLMLandscapeSideCardMaximumWidth, availableWidth);
-    if (maximumCardWidth < minimumCardWidth) {
-        minimumCardWidth = maximumCardWidth;
-    }
-    CGFloat cardWidth = width > 1.0
-                            ? width
-                            : [self effectiveLandscapeSideCardWidth];
-    cardWidth = MAX(minimumCardWidth,
-                    MIN(maximumCardWidth, MIN(cardWidth, availableWidth)));
-    CGFloat landscapeAspect = screenHeight / MAX(1.0, screenWidth);
-    CGFloat cardHeight = cardWidth * landscapeAspect;
-    CGFloat availableHeight =
-        MAX(1.0, screenHeight - safeInsets.top - safeInsets.bottom);
-    CGFloat maximumHeight = availableHeight * FLMLandscapeSideCardHeightRatio;
-    if (cardHeight > maximumHeight && maximumHeight > 1.0) {
-        cardHeight = maximumHeight;
-        cardWidth = cardHeight / MAX(0.1, landscapeAspect);
-    }
-
-    CGFloat defaultCenterY =
-        safeInsets.top + (availableHeight - cardHeight) * 0.5 +
-        cardHeight * 0.5;
-    CGFloat centerY = verticalCenter > 0.0 ? verticalCenter : defaultCenterY;
-    CGFloat minimumCenterY = safeInsets.top + cardHeight * 0.5;
-    CGFloat maximumCenterY =
-        screenHeight - safeInsets.bottom - cardHeight * 0.5;
-    if (maximumCenterY < minimumCenterY) {
-        maximumCenterY = minimumCenterY;
-    }
-    centerY = MAX(minimumCenterY, MIN(maximumCenterY, centerY));
-
-    // Keep the card on the physical left edge for both LandscapeLeft and
-    // LandscapeRight.  The content coordinate transform already handles the
-    // system orientation; presentation placement is intentionally identical.
-    return CGRectMake(0.0,
-                      centerY - cardHeight * 0.5,
-                      cardWidth,
-                      cardHeight);
-}
-
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width {
-    if (self.floatingLandscapeSideCardActive && FLMVisualScreenIsLandscape()) {
-        return [self landscapeSideFloatingFrameWithWidth:width
-                                   preservingVerticalCenter:0.0];
-    }
     UIView *rootView = self.floatingWindow.rootViewController.view;
     CGRect bounds = rootView.bounds;
     UIEdgeInsets safeInsets = rootView.safeAreaInsets;
@@ -5525,10 +5245,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight
                                width:(CGFloat)width
              preservingVerticalCenter:(CGFloat)verticalCenter {
-    if (self.floatingLandscapeSideCardActive && FLMVisualScreenIsLandscape()) {
-        return [self landscapeSideFloatingFrameWithWidth:width
-                                   preservingVerticalCenter:verticalCenter];
-    }
     CGRect frame = [self dockedFloatingFrameOnRight:onRight width:width];
     UIView *rootView = self.floatingWindow.rootViewController.view;
     UIEdgeInsets safeInsets = rootView.safeAreaInsets;
@@ -5671,17 +5387,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)saveFloatingDockWidth {
-    if (self.floatingLandscapeSideCardActive && FLMVisualScreenIsLandscape()) {
-        CGFloat minimumWidth =
-            MIN(FLMLandscapeSideCardMinimumWidth,
-                CGRectGetWidth(self.floatingWindow.bounds) * 0.86);
-        CGFloat maximumWidth =
-            MIN(FLMLandscapeSideCardMaximumWidth,
-                CGRectGetWidth(self.floatingWindow.bounds));
-        self.floatingDockWidth =
-            MAX(minimumWidth, MIN(maximumWidth, self.floatingDockWidth));
-        return;
-    }
     self.floatingDockWidth =
         MAX(FLMMinimumDockPresentationWidth,
             MIN(FLMMaximumDockWidth, self.floatingDockWidth));
@@ -5714,67 +5419,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (FLMFloatingWindow *)self.floatingWindow;
     BOOL docked = self.floatingDocked;
     BOOL hidden = self.floatingDockHidden;
-    BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                             docked &&
-                             FLMVisualScreenIsLandscape();
-    if (landscapeSideCard) {
-        // Landscape side cards are a distinct interaction state.  The card
-        // remains directly interactive, while the transparent gate only owns
-        // the white bar and resize target.  Outside touches stay in this
-        // window so the backdrop recognizer can close the mini-window.
-        floatingWindow.suppressesCornerRoutingDuringDockGesture =
-            self.floatingDockTransitionActive ||
-            self.floatingDockHideGestureActive ||
-            self.floatingDockInputSessionActive;
-        floatingWindow.passesTouchesOutsideFloatingContent = hidden;
-        self.floatingBackdropTap.enabled = !hidden;
-        self.floatingDockTap.enabled = NO;
-        self.floatingDockDragPress.enabled = NO;
-        self.floatingDockInputGesture.enabled = YES;
-        self.floatingResizeHandle.userInteractionEnabled = !hidden;
-        self.floatingResizeHandle.hidden = hidden;
-        self.floatingResizeHandle.alpha = 1.0;
-        BOOL contentTailProtected =
-            self.floatingDockContentTailProtected && !hidden;
-        self.floatingHostView.userInteractionEnabled =
-            !hidden && !self.floatingDockTransitionActive &&
-            !contentTailProtected;
-        self.floatingDockInteractionShield.frame =
-            self.floatingContainer.bounds;
-        self.floatingDockInteractionShield.hidden = YES;
-        self.floatingDockInteractionShield.userInteractionEnabled = NO;
-        self.floatingHandle.userInteractionEnabled = YES;
-        self.floatingHandle.hidden = NO;
-        self.floatingHandlePress.enabled = YES;
-        self.floatingHandleTap.enabled = !hidden;
-        self.floatingExclusiveGesture.enabled = NO;
-        if (hidden) {
-            self.floatingDimView.alpha = 0.0;
-            self.floatingHandle.alpha = 1.0;
-            self.floatingDockShadowView.alpha = 0.0;
-            self.floatingDockShadowView.hidden = YES;
-            [self layoutFloatingHandleForCurrentContainer];
-            if (self.previousKeyWindow &&
-                self.previousKeyWindow != self.floatingWindow) {
-                [self.previousKeyWindow makeKeyWindow];
-            }
-        } else {
-            [self layoutFloatingResizeHandle];
-            self.floatingDimView.alpha = 0.0;
-            self.floatingHandle.alpha = 1.0;
-            self.floatingDockShadowView.alpha = 0.0;
-            [self layoutFloatingDockShadow];
-            [self.floatingWindow makeKeyWindow];
-        }
-        if (!self.floatingDockTransitionActive &&
-            !self.floatingDockHideGestureActive &&
-            !self.floatingDockInputSessionActive) {
-            [self setFloatingApplicationInputBlocked:hidden ||
-                                                        contentTailProtected];
-        }
-        [self updateFloatingDockTouchGate];
-        return;
-    }
     if (!self.floatingDockTransitionActive &&
         !self.floatingDockGlobalDragActivated &&
         !self.floatingDockHideGestureActive &&
@@ -5980,11 +5624,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)transitionFloatingWindowToCentered {
     self.floatingDockReady = NO;
     if (self.floatingWindow.hidden || !self.floatingDocked) {
-        return;
-    }
-    if (self.floatingLandscapeSideCardActive && FLMVisualScreenIsLandscape()) {
-        // Landscape never falls through to the portrait centered state.
-        [self configureFloatingInteractionForDockedState];
         return;
     }
     self.floatingDockContentTailProtected = NO;
@@ -6202,26 +5841,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             // here: the dock/hidden transition can still be pending, and the
             // completion itself must never be the first path that lets a
             // touch reach app content.
-            BOOL landscapeSideCard = self.floatingLandscapeSideCardActive &&
-                                     self.floatingDocked &&
-                                     !self.floatingDockHidden &&
-                                     FLMVisualScreenIsLandscape();
             BOOL contentCanInteract =
-                (landscapeSideCard || !self.floatingDocked) &&
+                !self.floatingDocked &&
                 !self.floatingDockHidden &&
                 !self.floatingDockTransitionActive &&
                 !self.floatingDockContentTailProtected &&
-                (!self.floatingOpenTargetDocked || landscapeSideCard);
+                !self.floatingOpenTargetDocked;
             [self setFloatingApplicationInputBlocked:!contentCanInteract];
             self.floatingHandle.userInteractionEnabled = contentCanInteract;
             self.floatingExclusiveGesture.enabled =
                 contentCanInteract && self.usesSystemGestureManager;
-            if (landscapeSideCard) {
-                // A landscape launch is already in its final side-card state;
-                // never route it through the portrait dock transition.
-                self.floatingOpenTargetDocked = NO;
-                [self configureFloatingInteractionForDockedState];
-            } else if (self.floatingOpenTargetDocked) {
+            if (self.floatingOpenTargetDocked) {
                 self.floatingOpenTargetDocked = NO;
                 FLMEnqueueDiagnosticLine(
                     @"sb home-dock transition app=%@",
@@ -6288,10 +5918,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)layoutFloatingHandleForCurrentContainer {
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    BOOL landscape =
-        CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
     CGFloat containerWidth = CGRectGetWidth(self.floatingContainer.frame);
-    CGFloat containerHeight = CGRectGetHeight(self.floatingContainer.frame);
     if (self.floatingDockHidden) {
         CGFloat handleWidth = 44.0;
         CGFloat handleHeight = 72.0;
@@ -6311,35 +5938,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        barLength);
         return;
     }
-    if (landscape) {
-        CGFloat handleHeight = containerHeight * 0.30;
-        self.floatingHandle.frame =
-            CGRectMake(CGRectGetMaxX(self.floatingContainer.frame) + 2.0,
-                       floor(CGRectGetMidY(self.floatingContainer.frame) -
-                             handleHeight * 0.5),
-                       44.0,
-                       handleHeight);
-        self.floatingHandleBar.frame =
-            CGRectMake(0.0, 0.0, 5.0, handleHeight);
-    } else {
-        CGFloat visibleHandleWidth = containerWidth * 0.30;
-        // Keep the invisible hit target outside the application card.  The
-        // visible bar remains centered, with exactly 20 pt of horizontal
-        // reach on each side and a little more vertical forgiveness.
-        CGFloat handleWidth = visibleHandleWidth + 40.0;
-        CGFloat handleHeight = 58.0;
-        self.floatingHandle.frame =
-            CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
-                             handleWidth * 0.5),
-                       CGRectGetMaxY(self.floatingContainer.frame),
-                       handleWidth,
-                       handleHeight);
-        self.floatingHandleBar.frame =
-            CGRectMake(20.0,
-                       floor((handleHeight - 5.0) * 0.5),
-                       visibleHandleWidth,
-                       5.0);
-    }
+    CGFloat visibleHandleWidth = containerWidth * 0.30;
+    // Keep the invisible hit target outside the application card. The visible
+    // bar remains centered, with exactly 20 pt of horizontal reach on each
+    // side and a little more vertical forgiveness.
+    CGFloat handleWidth = visibleHandleWidth + 40.0;
+    CGFloat handleHeight = 58.0;
+    self.floatingHandle.frame =
+        CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
+                         handleWidth * 0.5),
+                   CGRectGetMaxY(self.floatingContainer.frame),
+                   handleWidth,
+                   handleHeight);
+    self.floatingHandleBar.frame =
+        CGRectMake(20.0,
+                   floor((handleHeight - 5.0) * 0.5),
+                   visibleHandleWidth,
+                   5.0);
 }
 
 - (void)layoutFloatingHostView {
@@ -6355,13 +5970,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGSize targetSize = self.floatingContainer.bounds.size;
     if (targetSize.width < 1.0 || targetSize.height < 1.0) {
         return;
-    }
-
-    BOOL targetIsLandscape = targetSize.width > targetSize.height;
-    BOOL referenceIsLandscape = referenceSize.width > referenceSize.height;
-    if (targetIsLandscape != referenceIsLandscape) {
-        referenceSize =
-            CGSizeMake(referenceSize.height, referenceSize.width);
     }
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
@@ -6386,9 +5994,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // same window shift scaled by dockWidth/315 so the app sees exactly the
     // same fullscreen region and does not re-layout (jump) on dock.
     CGFloat cropOffset =
-        self.floatingInteractiveFullscreenTransition ||
-                (self.floatingLandscapeSideCardActive &&
-                 self.floatingDocked)
+        self.floatingInteractiveFullscreenTransition
             ? 0.0
             : (self.centeredCardBottomCrop - self.centeredCardTopCrop) * 0.5 *
                   (self.floatingDocked
@@ -6422,9 +6028,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self effectiveCenteredCardWidth],
         [self effectiveCenteredCardHeight],
         !self.floatingWindow.hidden &&
-            (!self.floatingDocked ||
-             (self.floatingLandscapeSideCardActive &&
-              !self.floatingDockHidden)) &&
+            !self.floatingDocked &&
             self.floatingKeyboardSessionGeneration != 0 &&
             !self.floatingSceneCardGeometryPending);
 }
@@ -6435,7 +6039,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!keyboardScene || !preferredHostIdentity || sessionGeneration == 0 ||
         sessionGeneration != self.floatingKeyboardSessionGeneration ||
         self.floatingWindow.hidden ||
-        (self.floatingDocked && ![self floatingLandscapeSideCardInteractive])) {
+        self.floatingDocked) {
         return NO;
     }
     if (self.floatingKeyboardScene == keyboardScene &&
@@ -6638,7 +6242,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!hostView || sessionGeneration == 0 ||
         sessionGeneration != self.floatingKeyboardSessionGeneration ||
         self.floatingWindow.hidden ||
-        (self.floatingDocked && ![self floatingLandscapeSideCardInteractive]) ||
+        self.floatingDocked ||
         !self.floatingScene || self.floatingIdentifier.length == 0 ||
         self.floatingLaunchState == FLMFloatingLaunchStateClosing) {
         FLMEnqueueDiagnosticLine(@"sb host-update rejected=inactive");
@@ -6805,8 +6409,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMKeyboardForwardingWindow *window = self.keyboardForwardingWindow;
     BOOL wasKey = window.isKeyWindow;
     window.keyboardInteractionFrame = CGRectNull;
-    if (wasKey && !self.floatingWindow.hidden &&
-        (!self.floatingDocked || [self floatingLandscapeSideCardInteractive])) {
+    if (wasKey && !self.floatingWindow.hidden && !self.floatingDocked) {
         [self.floatingWindow makeKeyWindow];
     }
     window.hidden = YES;
@@ -6872,8 +6475,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)floatingApplicationHostReadyForKeyboardRoute {
-    if (self.floatingWindow.hidden ||
-        (self.floatingDocked && ![self floatingLandscapeSideCardInteractive]) ||
+    if (self.floatingWindow.hidden || self.floatingDocked ||
         self.floatingKeyboardSessionGeneration == 0 ||
         !self.floatingIdentifier.length || !self.floatingScene ||
         !self.floatingHostView ||
@@ -6972,8 +6574,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible {
-    if (self.floatingWindow.hidden ||
-        (self.floatingDocked && ![self floatingLandscapeSideCardInteractive])) {
+    if (self.floatingWindow.hidden || self.floatingDocked) {
         visible = NO;
     }
     if (visible &&
@@ -7257,8 +6858,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)beginFloatingKeyboardInteractionSession {
-    if (self.floatingWindow.hidden ||
-        (self.floatingDocked && ![self floatingLandscapeSideCardInteractive])) {
+    if (self.floatingWindow.hidden || self.floatingDocked) {
         return;
     }
     if (self.floatingKeyboardInteractionSessionActive) {
@@ -7578,12 +7178,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [self effectiveCenteredCardWidth],
                 [self effectiveCenteredCardHeight]);
         }
-        BOOL landscapeWindow =
-            CGRectGetWidth(self.floatingWindow.bounds) >
-            CGRectGetHeight(self.floatingWindow.bounds);
         NSInteger orientation = 1;
-        if (!landscapeWindow &&
-            [sceneHandle respondsToSelector:
+        if ([sceneHandle respondsToSelector:
                              @selector(currentInterfaceOrientation)]) {
             orientation = [sceneHandle currentInterfaceOrientation];
         }
@@ -7807,6 +7403,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)openFloatingIdentifier:(NSString *)identifier {
+    if (FLMLandscapeModuleIsLandscape()) {
+        // The portrait open path is not a fallback for landscape.  Once the
+        // display is horizontal, the standalone landscape module owns the
+        // entire open transaction and its own presenter/window state.
+        FLMLandscapeModuleOpenIdentifier(identifier);
+        return;
+    }
     if (identifier.length == 0 || FLMDeviceIsLocked()) {
         self.prewarmedIdentifier = nil;
         self.floatingOpenTargetDocked = NO;
@@ -7852,16 +7455,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self endFloatingKeyboardSession];
     }
 
-    BOOL landscapeSideCard = FLMVisualScreenIsLandscape();
-    self.floatingLandscapeSideCardActive = landscapeSideCard;
-    self.floatingDockWidth = landscapeSideCard
-                                 ? [self effectiveLandscapeSideCardWidth]
-                                 : [self effectiveDockedPresentationWidth];
+    self.floatingDockWidth = [self effectiveDockedPresentationWidth];
     self.floatingReconnectSuppressed = NO;
-    self.floatingDocked = landscapeSideCard;
+    self.floatingDocked = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
-    self.floatingDockedOnRight = landscapeSideCard ? NO : YES;
+    self.floatingDockedOnRight = YES;
     self.floatingExternalActivationArmed = NO;
     self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
@@ -7939,7 +7538,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingSceneGeometryCommitGeneration = generation;
     FLMEnqueueDiagnosticLine(
         @"sb %@ app=%@ launchGen=%lu session=%lu prewarmed=%d previousHost=%p",
-        landscapeSideCard ? @"landscape-left-open" : @"centered-open",
+        @"centered-open",
         identifier, (unsigned long)generation,
         (unsigned long)self.floatingKeyboardSessionGeneration,
         alreadyPrewarmed, (__bridge void *)self.floatingKeyboardLayerHostView);
@@ -8385,7 +7984,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
     self.floatingDocked = NO;
-    self.floatingLandscapeSideCardActive = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
     self.floatingDockTransitionActive = NO;
@@ -8579,8 +8177,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     (void)timer;
     [self refreshWheelPriorityWindow];
     if (self.floatingDocked && !self.floatingWindow.hidden &&
-        self.floatingIdentifier.length > 0 &&
-        ![self floatingLandscapeSideCardInteractive]) {
+        self.floatingIdentifier.length > 0) {
         NSString *frontmostIdentifier = FLMFrontmostApplicationIdentifier();
         BOOL targetIsFrontmost =
             [frontmostIdentifier isEqualToString:self.floatingIdentifier];
@@ -8649,6 +8246,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if ([manager respondsToSelector:@selector(lockUIFromSource:withOptions:)]) {
             [manager lockUIFromSource:1 withOptions:nil];
         }
+        return;
+    }
+    if (FLMLandscapeModuleIsLandscape()) {
+        FLMLandscapeModuleOpenIdentifier(identifier);
         return;
     }
     if (!self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
