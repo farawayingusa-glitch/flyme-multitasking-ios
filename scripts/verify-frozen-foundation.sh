@@ -105,49 +105,17 @@ for marker in \
     require_source "$marker"
 done
 
-# The landscape card and the injected application adapter share only this
-# versioned file protocol. Keep the contract visible in the frozen verifier so
-# a future edit cannot silently return to a timer-based attach or a mixed
-# keyboard/card coordinate space.
-handshake_source="$(dirname "$source_file")/FLMViewportHandshake.h"
-test -f "$handshake_source" || {
-    echo "missing viewport handshake header: $handshake_source" >&2
-    exit 1
-}
 for marker in \
-    "#define FLM_VIEWPORT_HANDSHAKE_VERSION 1" \
-    "FLMViewportHandshakePhaseAdapterReady" \
-    "FLMViewportHandshakePhaseCommitted" \
-    "FLMWriteViewportRequestState" \
-    "FLMReadViewportCommitState" \
-    "FLM_VIEWPORT_COMMIT_NOTIFICATION"; do
-    grep -Fq -- "$marker" "$handshake_source" || {
-        echo "missing viewport handshake marker: $marker" >&2
-        exit 1
-    }
-done
-
-for marker in \
-    "#import \"FLMViewportHandshake.h\"" \
-    "publishViewportRequestForScene" \
-    "refreshViewportCommitForGeneration" \
-    "host-attach-rejected reason=viewport-not-committed" \
-    "host-geometry-mismatch" \
-    "viewportCommitted=1" \
-    "FLMLandscapeAppVirtualViewportWidth"; do
+    "setFrame:systemSceneFrame" \
+    "setInterfaceOrientation:(NSInteger)orientation" \
+    "contentContract=full-screen-landscape" \
+    "FLMLandscapeFullScreenContentWidth" \
+    "CGAffineTransformRotate" \
+    "visualRotation="; do
     grep -Fq -- "$marker" "$landscape_source" || {
-        echo "missing landscape viewport marker: $marker" >&2
+        echo "missing native landscape presentation marker: $marker" >&2
         exit 1
     }
-done
-for marker in \
-    "M_PI_2" \
-    "CGAffineTransformMakeRotation" \
-    "rotation=90"; do
-    if grep -Fq -- "$marker" "$landscape_source"; then
-        echo "landscape module returned to rotation-based presentation: $marker" >&2
-        exit 1
-    fi
 done
 
 for marker in \
@@ -204,14 +172,9 @@ for marker in \
     "FLMDiagnosticEventAdapterCtor" \
     "FLMDiagnosticEventAdapterReady" \
     "FLMApplicationProcessIdentityFlags" \
-    "FLMContentLogicalViewportSize" \
-    "FLMAppVirtualViewportSize" \
-    "FLMAppVirtualViewportBounds" \
     "FLMSystemDisplayBoundsForScene" \
-    "FLMTargetApplicationContentWindow" \
-    "FLMRestoreVirtualViewport" \
+    "FLMTargetApplicationLogicalBounds" \
     "FLMHandleKeyboardRouteNotification" \
-    "FLMReloadContentViewportSelection" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
         echo "missing native keyboard marker: $marker" >&2
@@ -220,17 +183,11 @@ for marker in \
 done
 
 for marker in \
-    "#import \"FLMViewportHandshake.h\"" \
-    "FLMReloadVirtualViewportRequest" \
-    "FLMPublishVirtualViewportCommit" \
-    "FLMContentViewportRequestBounds" \
     "FLMKeyboardDisplayBoundsForScene" \
-    "FLMIsApplicationContentWindow" \
-    "viewport-adapter-wait" \
-    "viewport-app-applied" \
-    "FLM_VIEWPORT_REQUEST_NOTIFICATION"; do
+    "FLMTargetApplicationLogicalBounds" \
+    "contentContract=full-screen-landscape"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
-        echo "missing viewport adapter marker: $marker" >&2
+        echo "missing native landscape content marker: $marker" >&2
         exit 1
     }
 done

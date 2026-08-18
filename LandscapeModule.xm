@@ -6,15 +6,14 @@
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
 #import "FLMLandscapeModule.h"
-#import "FLMViewportHandshake.h"
 
 static const CGFloat FLMLandscapeDefaultTriggerSize = 58.0;
 static const CGFloat FLMLandscapeMinimumTriggerSize = 36.0;
 static const CGFloat FLMLandscapeMaximumTriggerSize = 96.0;
-// The system Scene is landscape, but the target application process exposes
-// this independent portrait content canvas to the presenter.
-static const CGFloat FLMLandscapeAppVirtualViewportWidth = 390.0;
-static const CGFloat FLMLandscapeAppVirtualViewportHeight = 844.0;
+// The target application Scene remains a real full-screen landscape surface.
+// The portrait-shaped card is only a SpringBoard presentation surface.
+static const CGFloat FLMLandscapeFullScreenContentWidth = 844.0;
+static const CGFloat FLMLandscapeFullScreenContentHeight = 390.0;
 // Keep the visual card at the iPhone 13 Pro portrait aspect ratio.
 static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
     390.0 / 844.0;
@@ -27,19 +26,6 @@ static const NSTimeInterval FLMLandscapeResolveInterval = 0.05;
 static const NSTimeInterval FLMLandscapeResolveTimeout = 6.5;
 static const NSTimeInterval FLMLandscapeCloseAnimationDuration = 0.18;
 static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
-
-typedef NS_ENUM(NSUInteger, FLMLandscapeViewportState) {
-    FLMLandscapeViewportStateIdle,
-    FLMLandscapeViewportStateRequested,
-    FLMLandscapeViewportStateWaitingForAdapter,
-    FLMLandscapeViewportStateApplying,
-    FLMLandscapeViewportStateCommitted,
-    FLMLandscapeViewportStateHostAttached,
-    FLMLandscapeViewportStateClosing,
-};
-
-static int FLMLandscapeViewportCommitToken = -1;
-static int FLMLandscapeViewportAdapterReadyToken = -1;
 
 @interface NSObject (FLMLandscapeRuntimePrivate)
 - (id)settings;
@@ -88,6 +74,7 @@ static int FLMLandscapeViewportAdapterReadyToken = -1;
 @interface FLMLandscapeRootView : UIView
 @property(nonatomic, weak) UIView *cardView;
 @property(nonatomic, weak) UIView *handleView;
+@property(nonatomic, weak) UIView *hostView;
 @end
 
 @interface FLMLandscapeWindow : UIWindow
@@ -122,14 +109,6 @@ static int FLMLandscapeViewportAdapterReadyToken = -1;
 @property(nonatomic, assign) NSTimeInterval scenePreparedAt;
 @property(nonatomic, assign) uint64_t keyboardSessionGeneration;
 @property(nonatomic, assign) BOOL keyboardRoutePublished;
-@property(nonatomic, assign) FLMLandscapeViewportState viewportState;
-@property(nonatomic, assign) uint64_t viewportSessionID;
-@property(nonatomic, assign) uint64_t viewportSceneHash;
-@property(nonatomic, assign) uint64_t viewportRequestRevision;
-@property(nonatomic, copy) NSString *viewportSceneIdentifier;
-@property(nonatomic, assign) BOOL viewportResyncInProgress;
-@property(nonatomic, assign) FLMLandscapeViewportState lastLoggedViewportState;
-@property(nonatomic, assign) uint64_t lastLoggedViewportRevision;
 @property(nonatomic, assign) CGRect expectedHostBounds;
 @property(nonatomic, assign) uint64_t expectedHostGeneration;
 @property(nonatomic, copy) NSString *expectedHostSceneIdentifier;
@@ -145,10 +124,6 @@ static int FLMLandscapeViewportAdapterReadyToken = -1;
 - (void)openIdentifier:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
 - (void)refreshSceneForeground;
-- (void)viewportStateDidChange;
-- (void)publishViewportRequestForScene:(id)scene reason:(NSString *)reason;
-- (void)invalidateViewportRequestForScene:(id)scene;
-- (BOOL)refreshViewportCommitForGeneration:(NSUInteger)generation;
 - (BOOL)validateHostGeometry;
 - (BOOL)hasVisibleCard;
 @end
@@ -465,6 +440,15 @@ BOOL FLMLandscapeModulePointInsideCornerTrigger(CGPoint point,
 static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
                                              CGPoint screenPoint,
                                              CGFloat *scaleOut) {
+    UIView *hostView = rootView.hostView;
+    if (hostView) {
+        if (scaleOut) {
+            *scaleOut = hypot(hostView.transform.a, hostView.transform.b);
+        }
+        // UIView conversion applies the inverse of the visual-only card
+        // rotation/scale, returning coordinates in the real landscape Scene.
+        return [hostView convertPoint:screenPoint fromView:rootView];
+    }
     UIView *cardView = rootView.cardView;
     if (!cardView) {
         if (scaleOut) {
@@ -474,11 +458,11 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
     }
     CGPoint cardPoint = [cardView convertPoint:screenPoint fromView:rootView];
     CGSize cardSize = cardView.bounds.size;
-    CGFloat scale = MIN(cardSize.width / FLMLandscapeAppVirtualViewportWidth,
-                        cardSize.height / FLMLandscapeAppVirtualViewportHeight);
+    CGFloat scale = MIN(cardSize.width / FLMLandscapeFullScreenContentHeight,
+                        cardSize.height / FLMLandscapeFullScreenContentWidth);
     scale = MAX(0.05, scale);
-    CGFloat renderedWidth = FLMLandscapeAppVirtualViewportWidth * scale;
-    CGFloat renderedHeight = FLMLandscapeAppVirtualViewportHeight * scale;
+    CGFloat renderedWidth = FLMLandscapeFullScreenContentHeight * scale;
+    CGFloat renderedHeight = FLMLandscapeFullScreenContentWidth * scale;
     CGPoint renderedOrigin = CGPointMake(
         (cardSize.width - renderedWidth) * 0.5,
         (cardSize.height - renderedHeight) * 0.5);
@@ -564,21 +548,6 @@ static NSString *FLMLandscapeSceneIdentifier(id scene) {
     return nil;
 }
 
-static uint64_t FLMLandscapeIdentifierHash(NSString *identifier) {
-    const char *bytes = identifier.UTF8String;
-    if (!bytes || bytes[0] == '\0') {
-        return 0;
-    }
-    uint64_t value = 1469598103934665603ULL;
-    for (const unsigned char *cursor = (const unsigned char *)bytes;
-         *cursor;
-         cursor++) {
-        value ^= (uint64_t)*cursor;
-        value *= 1099511628211ULL;
-    }
-    return value ?: 1;
-}
-
 static id FLMLandscapeSceneForHandle(id handle) {
     if (!handle) {
         return nil;
@@ -624,24 +593,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
            selector:@selector(protectedSceneDidDisappear:)
                name:FLMProtectedSceneDidDisappearNotification
              object:nil];
-    if (FLMLandscapeViewportCommitToken < 0) {
-        notify_register_dispatch(FLM_VIEWPORT_COMMIT_NOTIFICATION,
-                                 &FLMLandscapeViewportCommitToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-                                     [[FLMLandscapeModule sharedModule]
-                                         viewportStateDidChange];
-                                 });
-    }
-    if (FLMLandscapeViewportAdapterReadyToken < 0) {
-        notify_register_dispatch(FLM_KEYBOARD_APP_READY_NOTIFICATION,
-                                 &FLMLandscapeViewportAdapterReadyToken,
-                                 dispatch_get_main_queue(),
-                                 ^(__unused int token) {
-                                     [[FLMLandscapeModule sharedModule]
-                                         viewportStateDidChange];
-                                 });
-    }
     [self createWindowIfNeeded];
     [self updateFrames];
 }
@@ -757,8 +708,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-scene-disappeared app=%@ generation=%lu",
         self.identifier, (unsigned long)self.generation);
-    self.viewportState = FLMLandscapeViewportStateClosing;
-    [self invalidateViewportRequestForScene:self.scene];
     if (self.keyboardRoutePublished) {
         FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
         self.keyboardRoutePublished = NO;
@@ -800,187 +749,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
     return self.window && !self.window.hidden && self.identifier.length > 0;
 }
 
-- (void)publishViewportRequestForScene:(id)scene reason:(NSString *)reason {
-    if (!scene || self.identifier.length == 0 ||
-        self.keyboardSessionGeneration == 0) {
-        return;
-    }
-    NSString *sceneIdentifier = FLMLandscapeSceneIdentifier(scene) ?: @"";
-    uint64_t sceneHash = FLMLandscapeIdentifierHash(sceneIdentifier);
-    self.viewportSessionID = self.keyboardSessionGeneration;
-    self.viewportSceneIdentifier = [sceneIdentifier copy];
-    self.viewportSceneHash = sceneHash;
-    self.viewportRequestRevision += 1;
-    if (self.viewportRequestRevision == 0) {
-        self.viewportRequestRevision = 1;
-    }
-    self.viewportState = FLMLandscapeViewportStateRequested;
-    self.lastLoggedViewportState = FLMLandscapeViewportStateIdle;
-    self.lastLoggedViewportRevision = 0;
-    self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         FLMLandscapeAppVirtualViewportWidth,
-                                         FLMLandscapeAppVirtualViewportHeight);
-    self.expectedHostGeneration = self.generation;
-    self.expectedHostSceneIdentifier = [sceneIdentifier copy];
-    NSDictionary *request = @{
-        @"version": @(FLM_VIEWPORT_HANDSHAKE_VERSION),
-        @"active": @YES,
-        @"phase": @(FLMViewportHandshakePhaseRequested),
-        @"sessionID": @(self.viewportSessionID),
-        @"generation": @(self.generation),
-        @"sceneHash": @(sceneHash),
-        @"sceneID": sceneIdentifier,
-        @"routeHash": @(FLMLandscapeIdentifierHash(self.identifier)),
-        @"bundleID": self.identifier,
-        @"requestRevision": @(self.viewportRequestRevision),
-        @"viewportWidth": @(FLMLandscapeAppVirtualViewportWidth),
-        @"viewportHeight": @(FLMLandscapeAppVirtualViewportHeight),
-        @"orientation": @(self.displayOrientation),
-        @"reason": reason ?: @"session-start",
-        @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
-    };
-    BOOL wrote = FLMWriteViewportRequestState(request);
-    FLMEnqueueDiagnosticLine(
-        @"sb viewport-request session=%llu generation=%lu scene=%@ sceneHash=0x%llx requested={%.1f,%.1f} orientation=%ld revision=%llu reason=%@ wrote=%d",
-        (unsigned long long)self.viewportSessionID,
-        (unsigned long)self.generation, sceneIdentifier,
-        (unsigned long long)sceneHash,
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight,
-        (long)self.displayOrientation,
-        (unsigned long long)self.viewportRequestRevision,
-        reason ?: @"session-start", wrote);
-}
-
-- (void)invalidateViewportRequestForScene:(id)scene {
-    if (self.viewportSessionID == 0 || self.identifier.length == 0) {
-        return;
-    }
-    NSString *sceneIdentifier =
-        FLMLandscapeSceneIdentifier(scene) ?: self.viewportSceneIdentifier ?: @"";
-    NSDictionary *request = @{
-        @"version": @(FLM_VIEWPORT_HANDSHAKE_VERSION),
-        @"active": @NO,
-        @"phase": @(FLMViewportHandshakePhaseIdle),
-        @"sessionID": @(self.viewportSessionID),
-        @"generation": @(self.generation),
-        @"sceneHash": @(self.viewportSceneHash),
-        @"sceneID": sceneIdentifier,
-        @"routeHash": @(FLMLandscapeIdentifierHash(self.identifier)),
-        @"bundleID": self.identifier,
-        @"requestRevision": @(self.viewportRequestRevision),
-        @"viewportWidth": @(FLMLandscapeAppVirtualViewportWidth),
-        @"viewportHeight": @(FLMLandscapeAppVirtualViewportHeight),
-        @"orientation": @(self.displayOrientation),
-        @"reason": @"session-close",
-        @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
-    };
-    BOOL wrote = FLMWriteViewportRequestState(request);
-    FLMEnqueueDiagnosticLine(
-        @"sb viewport-request close session=%llu generation=%lu scene=%@ revision=%llu wrote=%d",
-        (unsigned long long)self.viewportSessionID,
-        (unsigned long)self.generation, sceneIdentifier,
-        (unsigned long long)self.viewportRequestRevision, wrote);
-}
-
-- (BOOL)refreshViewportCommitForGeneration:(NSUInteger)generation {
-    if (generation != self.generation || self.viewportSessionID == 0 ||
-        self.closing || self.identifier.length == 0) {
-        return NO;
-    }
-    NSDictionary *commit = FLMReadViewportCommitState();
-    BOOL active = [commit[@"active"] boolValue];
-    uint64_t commitSession = [commit[@"sessionID"] unsignedLongLongValue];
-    uint64_t commitGeneration = [commit[@"generation"] unsignedLongLongValue];
-    uint64_t commitSceneHash = [commit[@"sceneHash"] unsignedLongLongValue];
-    uint64_t commitRevision = [commit[@"requestRevision"] unsignedLongLongValue];
-    NSString *commitSceneIdentifier =
-        [commit[@"sceneID"] isKindOfClass:[NSString class]]
-            ? commit[@"sceneID"]
-            : @"";
-    BOOL adapterReady = [commit[@"adapterReady"] boolValue];
-    BOOL applied = [commit[@"applied"] boolValue];
-    BOOL committed = [commit[@"committed"] boolValue];
-    CGFloat width = [commit[@"viewportWidth"] doubleValue];
-    CGFloat height = [commit[@"viewportHeight"] doubleValue];
-    BOOL bindingMatches = active &&
-                          commitSession == self.viewportSessionID &&
-                          commitGeneration == self.generation &&
-                          commitSceneHash == self.viewportSceneHash &&
-                          commitRevision == self.viewportRequestRevision &&
-                          [commitSceneIdentifier
-                              isEqualToString:self.viewportSceneIdentifier ?: @""] &&
-                          [commit[@"bundleID"] isEqualToString:self.identifier] &&
-                          fabs(width - FLMLandscapeAppVirtualViewportWidth) < 1.0 &&
-                          fabs(height - FLMLandscapeAppVirtualViewportHeight) < 1.0;
-    FLMLandscapeViewportState observedState =
-        bindingMatches && committed
-            ? FLMLandscapeViewportStateCommitted
-            : (bindingMatches && adapterReady
-                   ? FLMLandscapeViewportStateApplying
-                   : FLMLandscapeViewportStateWaitingForAdapter);
-    if (self.lastLoggedViewportState != observedState ||
-        self.lastLoggedViewportRevision != commitRevision) {
-        self.lastLoggedViewportState = observedState;
-        self.lastLoggedViewportRevision = commitRevision;
-        if (observedState == FLMLandscapeViewportStateWaitingForAdapter) {
-            FLMEnqueueDiagnosticLine(
-                @"sb viewport-adapter-wait session=%llu generation=%lu adapterReady=%d commitActive=%d commitSession=%llu commitGeneration=%llu commitRevision=%llu expectedRevision=%llu sceneHash=0x%llx",
-                (unsigned long long)self.viewportSessionID,
-                (unsigned long)self.generation, adapterReady, active,
-                (unsigned long long)commitSession,
-                (unsigned long long)commitGeneration,
-                (unsigned long long)commitRevision,
-                (unsigned long long)self.viewportRequestRevision,
-                (unsigned long long)commitSceneHash);
-        } else if (observedState == FLMLandscapeViewportStateApplying) {
-            FLMEnqueueDiagnosticLine(
-                @"sb viewport-app-applied session=%llu generation=%lu adapterReady=%d applied=%d committed=%d root={%.1f,%.1f}",
-                (unsigned long long)self.viewportSessionID,
-                (unsigned long)self.generation, adapterReady, applied,
-                committed, [commit[@"rootWidth"] doubleValue],
-                [commit[@"rootHeight"] doubleValue]);
-        } else {
-            FLMEnqueueDiagnosticLine(
-                @"sb viewport-committed session=%llu generation=%lu revision=%llu scene=%@ root={%.1f,%.1f}",
-                (unsigned long long)self.viewportSessionID,
-                (unsigned long)self.generation,
-                (unsigned long long)commitRevision,
-                commit[@"sceneID"] ?: @"<none>",
-                [commit[@"rootWidth"] doubleValue],
-                [commit[@"rootHeight"] doubleValue]);
-        }
-    }
-    self.viewportState = observedState;
-    if (!bindingMatches || !committed) {
-        return NO;
-    }
-    self.viewportResyncInProgress = NO;
-    return YES;
-}
-
-- (void)viewportStateDidChange {
-    if (!self.hasVisibleCard || self.closing) {
-        return;
-    }
-    BOOL committed = [self refreshViewportCommitForGeneration:self.generation];
-    if (committed && self.hostView) {
-        self.hostView.hidden = NO;
-        self.launchCoverView.hidden = YES;
-        self.launchCoverView.alpha = 1.0;
-        self.viewportState = FLMLandscapeViewportStateHostAttached;
-        [self layoutHost];
-        [self validateHostGeometry];
-        return;
-    }
-    if (committed && !self.hostView && self.scenePreparedAt > 0.0) {
-        [self resolveAndAttachForGeneration:self.generation];
-    }
-}
-
 - (BOOL)validateHostGeometry {
-    if (!self.hostView || self.viewportState != FLMLandscapeViewportStateHostAttached ||
-        self.viewportResyncInProgress) {
+    if (!self.hostView) {
         return YES;
     }
     CGRect actual = self.hostView.bounds;
@@ -997,21 +767,13 @@ static id FLMLandscapeSceneForHandle(id handle) {
         return YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb host-geometry-mismatch session=%llu generation=%lu expectedHost=%@ actualHost=%@ expectedViewport={%.1f,%.1f} expectedScene=%@ actualScene=%@",
-        (unsigned long long)self.viewportSessionID,
+        @"sb host-geometry-mismatch generation=%lu expectedContent=%@ actualHost=%@ expectedScene=%@ actualScene=%@ action=visual-relayout",
         (unsigned long)self.generation,
         NSStringFromCGRect(self.expectedHostBounds), NSStringFromCGRect(actual),
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight,
         self.expectedHostSceneIdentifier ?: @"<none>",
         sceneIdentifier ?: @"<none>");
-    self.viewportResyncInProgress = YES;
-    self.viewportState = FLMLandscapeViewportStateApplying;
-    self.hostView.hidden = YES;
-    self.launchCoverView.hidden = NO;
-    self.launchCoverView.alpha = 1.0;
-    [self publishViewportRequestForScene:self.scene reason:@"host-geometry-mismatch"];
-    return NO;
+    [self layoutHost];
+    return YES;
 }
 
 - (void)openIdentifier:(NSString *)identifier {
@@ -1038,17 +800,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.keyboardRoutePublished = NO;
     self.keyboardSessionGeneration =
         ((uint64_t)self.generation << 1) | 1ULL;
-    self.viewportState = FLMLandscapeViewportStateIdle;
-    self.viewportSessionID = self.keyboardSessionGeneration;
-    self.viewportSceneHash = 0;
-    self.viewportRequestRevision = 0;
-    self.viewportSceneIdentifier = nil;
-    self.viewportResyncInProgress = NO;
-    self.lastLoggedViewportState = FLMLandscapeViewportStateIdle;
-    self.lastLoggedViewportRevision = 0;
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         FLMLandscapeAppVirtualViewportWidth,
-                                         FLMLandscapeAppVirtualViewportHeight);
+                                         FLMLandscapeFullScreenContentWidth,
+                                         FLMLandscapeFullScreenContentHeight);
     self.expectedHostGeneration = self.generation;
     self.expectedHostSceneIdentifier = nil;
     self.hiddenCard = NO;
@@ -1081,10 +835,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
         (long)self.displayOrientation, safeArea.top, safeArea.left,
         safeArea.bottom, safeArea.right);
     FLMEnqueueDiagnosticLine(
-        @"sb virtual-viewport-enter scene={%.1f,%.1f} viewport={%.1f,%.1f}",
+        @"sb landscape-content-contract scene={%.1f,%.1f} orientation=%ld mode=full-screen-native",
         self.displayBounds.size.width, self.displayBounds.size.height,
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight);
+        (long)self.displayOrientation);
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@ safeAreaLeft=%.1f safeAreaRight=%.1f",
         self.identifier, (unsigned long)self.generation,
@@ -1118,9 +871,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
     if (self.hasVisibleCard && !self.hostView && self.openedAt > 0.0 &&
         CACurrentMediaTime() - self.openedAt > FLMLandscapeResolveTimeout) {
         FLMEnqueueDiagnosticLine(
-            @"sb viewport-commit-timeout session=%llu generation=%lu state=%lu",
-            (unsigned long long)self.viewportSessionID,
-            (unsigned long)self.generation, (unsigned long)self.viewportState);
+            @"sb landscape-host-timeout generation=%lu contract=full-screen-landscape",
+            (unsigned long)self.generation);
         [self closeKeepingApplication:YES];
     }
 }
@@ -1208,21 +960,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.presenter = nil;
         self.presentationManager = nil;
         self.presenterScene = nil;
-        // Do not guess when the app-side layout will finish. The adapter's
-        // viewport-committed notification is the only readiness signal. It
-        // may already have arrived while the Scene was being prepared, so
-        // consume the state once immediately as well.
-        [self viewportStateDidChange];
-        return;
-    }
-    if (![self refreshViewportCommitForGeneration:generation]) {
-        self.viewportState = self.viewportState == FLMLandscapeViewportStateRequested
-                                 ? FLMLandscapeViewportStateWaitingForAdapter
-                                 : self.viewportState;
-        FLMEnqueueDiagnosticLine(
-            @"sb host-attach-rejected reason=viewport-not-committed session=%llu generation=%lu state=%lu",
-            (unsigned long long)self.viewportSessionID,
-            (unsigned long)generation, (unsigned long)self.viewportState);
+        // The Scene itself is the readiness contract. The application remains
+        // full-screen landscape; only the presenter view is transformed
+        // inside the visual card.
+        [self scheduleResolveForGeneration:generation delay:0.0];
         return;
     }
     id manager = self.presentationManager;
@@ -1256,22 +997,24 @@ static id FLMLandscapeSceneForHandle(id handle) {
         [self.cardView insertSubview:host belowSubview:self.launchCoverView];
     }
     self.presenterScene = scene;
+    CGRect sceneFrame = FLMLandscapeSceneSettingsFrame(scene);
+    if (CGRectGetWidth(sceneFrame) <= 1.0 || CGRectGetHeight(sceneFrame) <= 1.0) {
+        sceneFrame = self.displayBounds;
+    }
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         FLMLandscapeAppVirtualViewportWidth,
-                                         FLMLandscapeAppVirtualViewportHeight);
+                                         CGRectGetWidth(sceneFrame),
+                                         CGRectGetHeight(sceneFrame));
     self.expectedHostGeneration = generation;
     self.expectedHostSceneIdentifier = FLMLandscapeSceneIdentifier(scene);
     host.hidden = NO;
     [self layoutHost];
     self.launchCoverView.hidden = YES;
     self.launchCoverView.alpha = 1.0;
-    self.viewportState = FLMLandscapeViewportStateHostAttached;
     FLMEnqueueDiagnosticLine(
-        @"sb host-attach session=%llu generation=%lu viewportCommitted=1 host=%@ expectedViewport={%.1f,%.1f}",
-        (unsigned long long)self.viewportSessionID,
+        @"sb host-attach session=%llu generation=%lu contentContract=full-screen-landscape host=%@ expectedScene=%@",
+        (unsigned long long)self.keyboardSessionGeneration,
         (unsigned long)generation, NSStringFromCGRect(host.bounds),
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight);
+        NSStringFromCGRect(self.expectedHostBounds));
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-attached app=%@ generation=%lu scene=%@ host=%p card=%@ display=%@",
         self.identifier, (unsigned long)generation,
@@ -1318,9 +1061,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
         if (!UIInterfaceOrientationIsLandscape(orientation)) {
             orientation = FLMLandscapeInterfaceOrientation();
         }
-        // The independent landscape module owns a real landscape Scene. Do
-        // not replace this system frame with the app's virtual viewport. The
-        // target application process owns the separate 390x844 content canvas.
+        // The independent landscape module owns a real full-screen landscape
+        // Scene. The card is only a SpringBoard presentation transform.
         CGRect systemSceneFrame = visualBounds;
         if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings setFrame:systemSceneFrame];
@@ -1341,7 +1083,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
             self.identifier, NSStringFromCGRect(systemSceneFrame),
             NSStringFromCGRect(visualBounds), (long)orientation,
             NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
-        [self publishViewportRequestForScene:scene reason:@"session-start"];
         self.keyboardRoutePublished = YES;
         FLMLandscapeKeyboardRouteOpen(self.identifier,
                                       scene,
@@ -1469,41 +1210,55 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.displayBounds.size.width <= 1.0) {
         return;
     }
-    CGRect systemSceneFrame = FLMLandscapeSceneSettingsFrame(self.scene);
+    CGRect sceneFrame = FLMLandscapeSceneSettingsFrame(self.scene);
+    if (CGRectGetWidth(sceneFrame) <= 1.0 ||
+        CGRectGetHeight(sceneFrame) <= 1.0 ||
+        CGRectGetWidth(sceneFrame) <= CGRectGetHeight(sceneFrame)) {
+        sceneFrame = self.displayBounds;
+    }
+    self.expectedHostBounds = CGRectMake(0.0, 0.0,
+                                         CGRectGetWidth(sceneFrame),
+                                         CGRectGetHeight(sceneFrame));
     UIInterfaceOrientation sceneOrientation =
         FLMLandscapeSceneSettingsOrientation(self.scene);
     if (!UIInterfaceOrientationIsLandscape(sceneOrientation)) {
         sceneOrientation = self.displayOrientation;
     }
-    CGRect logicalViewport = CGRectMake(
-        0.0, 0.0,
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight);
     CGSize target = self.cardView.bounds.size;
-    // The AppVirtualViewport is already portrait. The renderer is deliberately
-    // orientation-blind: it only applies one uniform scale and centers the
-    // resulting content inside the portrait card.
-    CGFloat scaleX = target.width / CGRectGetWidth(logicalViewport);
-    CGFloat scaleY = target.height / CGRectGetHeight(logicalViewport);
-    CGFloat uniformScale = MIN(scaleX, scaleY);
-    CGFloat renderedWidth = CGRectGetWidth(logicalViewport) * uniformScale;
-    CGFloat renderedHeight = CGRectGetHeight(logicalViewport) * uniformScale;
-    CGFloat translationX = (target.width - renderedWidth) * 0.5;
-    CGFloat translationY = (target.height - renderedHeight) * 0.5;
+    // The app's actual Scene stays full-screen landscape. Only this
+    // SpringBoard presentation view is rotated and scaled into the
+    // portrait-shaped card. UIKit, the app root view and the keyboard never
+    // receive this transform.
+    CGSize presentedSize = CGSizeMake(CGRectGetHeight(sceneFrame),
+                                      CGRectGetWidth(sceneFrame));
+    CGFloat uniformScale = MIN(target.width / presentedSize.width,
+                               target.height / presentedSize.height);
+    CGFloat renderedWidth = presentedSize.width * uniformScale;
+    CGFloat renderedHeight = presentedSize.height * uniformScale;
+    CGFloat letterboxX = MAX(0.0, (target.width - renderedWidth) * 0.5);
+    CGFloat letterboxY = MAX(0.0, (target.height - renderedHeight) * 0.5);
+    CGFloat rotation = sceneOrientation == UIInterfaceOrientationLandscapeRight
+                           ? -M_PI_2
+                           : M_PI_2;
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.bounds = logicalViewport;
+    self.hostView.bounds = CGRectMake(0.0, 0.0,
+                                      CGRectGetWidth(sceneFrame),
+                                      CGRectGetHeight(sceneFrame));
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
-    self.hostView.transform = CGAffineTransformMakeScale(uniformScale,
-                                                         uniformScale);
+    CGAffineTransform presentationTransform =
+        CGAffineTransformMakeScale(uniformScale, uniformScale);
+    self.hostView.transform = CGAffineTransformRotate(presentationTransform,
+                                                      rotation);
+    self.rootView.hostView = self.hostView;
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} systemScene={%.1f,%.1f} logicalViewport={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scaleXY={%.6f,%.6f} uniformScale=%.6f rendered={%.1f,%.1f} translation={%.1f,%.1f} rotation=0 orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} sceneFrame={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} presented={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterbox={%.1f,%.1f} visualRotation=%.0f orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
-        systemSceneFrame.size.width, systemSceneFrame.size.height,
-        logicalViewport.size.width, logicalViewport.size.height,
+        sceneFrame.size.width, sceneFrame.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
-        scaleX, scaleY, uniformScale, renderedWidth, renderedHeight,
-        translationX, translationY,
+        presentedSize.width, presentedSize.height, uniformScale,
+        renderedWidth, renderedHeight, letterboxX, letterboxY,
+        rotation * 180.0 / M_PI,
         (long)sceneOrientation);
 }
 
@@ -1607,19 +1362,17 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.resolveTimer = nil;
     [self.hostView removeFromSuperview];
     self.hostView = nil;
+    self.rootView.hostView = nil;
     id scene = self.scene;
     id presenter = self.presenter;
-    self.viewportState = FLMLandscapeViewportStateClosing;
-    [self invalidateViewportRequestForScene:scene];
     if (self.keyboardRoutePublished) {
         FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
         self.keyboardRoutePublished = NO;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb virtual-viewport-exit scene={%.1f,%.1f} viewport={%.1f,%.1f}",
+        @"sb landscape-content-exit scene={%.1f,%.1f} contract=full-screen-landscape orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
-        FLMLandscapeAppVirtualViewportWidth,
-        FLMLandscapeAppVirtualViewportHeight);
+        (long)self.displayOrientation);
     self.scene = nil;
     self.sceneHandle = nil;
     self.sceneEntity = nil;
@@ -1659,11 +1412,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
                           self.handleView.frame = CGRectZero;
                           self.identifier = nil;
                           self.hiddenCard = NO;
-                          self.viewportState = FLMLandscapeViewportStateIdle;
-                          self.viewportResyncInProgress = NO;
-                          self.viewportSessionID = 0;
-                          self.viewportSceneHash = 0;
-                          self.viewportSceneIdentifier = nil;
                           self.expectedHostSceneIdentifier = nil;
                           self.closing = NO;
                          FLMEnqueueDiagnosticLine(

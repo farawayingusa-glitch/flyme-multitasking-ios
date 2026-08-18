@@ -12,8 +12,8 @@ CGRect FLMLandscapeModuleVisualBounds(void);
 UIInterfaceOrientation FLMLandscapeModuleVisualOrientation(void);
 UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void);
 // Converts the system manager's fixed-coordinate point into the landscape
-// display space. This belongs to LandscapeEnvironment and is not used by the
-// AppVirtualViewport or MiniWindowRenderer content transforms.
+// display space. This belongs to LandscapeEnvironment and is independent of
+// the card's visual presenter transform.
 CGPoint FLMLandscapeEnvironmentConvertPoint(CGPoint rawPoint);
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint);
 
@@ -46,8 +46,9 @@ BOOL FLMLandscapeModuleHasVisibleCard(void);
 uint64_t FLMLandscapeModuleKeyboardSessionGeneration(void);
 
 // SpringBoard owns the landscape card, while the keyboard adapter is built as
-// a separate tweak.  These bridge calls publish the exact landscape Scene and
-// let SpringBoard move the native keyboard host to a full-display window.
+// a separate tweak. These bridge calls publish the exact full-screen
+// landscape Scene contract; the native keyboard host stays in UIKit's own
+// hierarchy and never becomes a child of the visual card.
 void FLMLandscapeKeyboardRouteOpen(NSString * _Nonnull identifier,
                                    id _Nonnull scene,
                                    uint64_t sessionGeneration);
