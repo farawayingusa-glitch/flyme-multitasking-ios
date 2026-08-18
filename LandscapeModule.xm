@@ -10,8 +10,11 @@
 static const CGFloat FLMLandscapeDefaultTriggerSize = 58.0;
 static const CGFloat FLMLandscapeMinimumTriggerSize = 36.0;
 static const CGFloat FLMLandscapeMaximumTriggerSize = 96.0;
-// Keep the visual card at the iPhone 13 Pro portrait aspect ratio even though
-// the owning display is landscape: 390 logical points wide by 844 high.
+// The system Scene is landscape, but the target application process exposes
+// this independent portrait content canvas to the presenter.
+static const CGFloat FLMLandscapeAppVirtualViewportWidth = 390.0;
+static const CGFloat FLMLandscapeAppVirtualViewportHeight = 844.0;
+// Keep the visual card at the iPhone 13 Pro portrait aspect ratio.
 static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
     390.0 / 844.0;
 static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;
@@ -384,9 +387,13 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPointInContext(
     return point;
 }
 
-CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
+CGPoint FLMLandscapeEnvironmentConvertPoint(CGPoint rawPoint) {
     return FLMLandscapeModuleVisualPointFromRawPointInContext(
         FLMLandscapeModuleCaptureTouchContext(), rawPoint);
+}
+
+CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
+    return FLMLandscapeEnvironmentConvertPoint(rawPoint);
 }
 
 static CGFloat FLMLandscapeTriggerSize(void) {
@@ -425,10 +432,54 @@ BOOL FLMLandscapeModulePointInsideCornerTrigger(CGPoint point,
     return insideLeft || insideRight;
 }
 
+static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
+                                             CGPoint screenPoint,
+                                             CGFloat *scaleOut) {
+    UIView *cardView = rootView.cardView;
+    if (!cardView) {
+        if (scaleOut) {
+            *scaleOut = 1.0;
+        }
+        return screenPoint;
+    }
+    CGPoint cardPoint = [cardView convertPoint:screenPoint fromView:rootView];
+    CGSize cardSize = cardView.bounds.size;
+    CGFloat scale = MIN(cardSize.width / FLMLandscapeAppVirtualViewportWidth,
+                        cardSize.height / FLMLandscapeAppVirtualViewportHeight);
+    scale = MAX(0.05, scale);
+    CGFloat renderedWidth = FLMLandscapeAppVirtualViewportWidth * scale;
+    CGFloat renderedHeight = FLMLandscapeAppVirtualViewportHeight * scale;
+    CGPoint renderedOrigin = CGPointMake(
+        (cardSize.width - renderedWidth) * 0.5,
+        (cardSize.height - renderedHeight) * 0.5);
+    if (scaleOut) {
+        *scaleOut = scale;
+    }
+    return CGPointMake((cardPoint.x - renderedOrigin.x) / scale,
+                       (cardPoint.y - renderedOrigin.y) / scale);
+}
+
 @implementation FLMLandscapeRootView
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
+    if (hit && self.cardView &&
+        [hit isDescendantOfView:self.cardView] && event.allTouches.count > 0) {
+        for (UITouch *touch in event.allTouches) {
+            if (touch.phase != UITouchPhaseBegan) {
+                continue;
+            }
+            CGPoint screenPoint = [touch locationInView:self];
+            CGFloat scale = 1.0;
+            CGPoint logicalPoint = FLMMiniWindowInputMapperPoint(
+                self, screenPoint, &scale);
+            FLMEnqueueDiagnosticLine(
+                @"sb miniwindow-touch screen={%.1f,%.1f} logical={%.1f,%.1f} scale=%.6f rotation=0",
+                screenPoint.x, screenPoint.y,
+                logicalPoint.x, logicalPoint.y, scale);
+            break;
+        }
+    }
     if (hit) {
         return hit;
     }
@@ -731,6 +782,16 @@ static id FLMLandscapeSceneForHandle(id handle) {
     [self layoutCardAnimated:YES];
     UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
     FLMEnqueueDiagnosticLine(
+        @"sb landscape-environment display={%.1f,%.1f} orientation=%ld safeArea={%.1f,%.1f,%.1f,%.1f}",
+        self.displayBounds.size.width, self.displayBounds.size.height,
+        (long)self.displayOrientation, safeArea.top, safeArea.left,
+        safeArea.bottom, safeArea.right);
+    FLMEnqueueDiagnosticLine(
+        @"sb virtual-viewport-enter scene={%.1f,%.1f} viewport={%.1f,%.1f}",
+        self.displayBounds.size.width, self.displayBounds.size.height,
+        FLMLandscapeAppVirtualViewportWidth,
+        FLMLandscapeAppVirtualViewportHeight);
+    FLMEnqueueDiagnosticLine(
         @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@ safeAreaLeft=%.1f safeAreaRight=%.1f",
         self.identifier, (unsigned long)self.generation,
         NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
@@ -931,11 +992,11 @@ static id FLMLandscapeSceneForHandle(id handle) {
             orientation = FLMLandscapeInterfaceOrientation();
         }
         // The independent landscape module owns a real landscape Scene. Do
-        // not swap this back to 390x844: the card wrapper performs the visual
-        // rotation later, while UIKit and the keyboard must see 844x390.
-        CGRect logicalFrame = visualBounds;
+        // not replace this system frame with the app's virtual viewport. The
+        // target application process owns the separate 390x844 content canvas.
+        CGRect systemSceneFrame = visualBounds;
         if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
-            [mutableSettings setFrame:logicalFrame];
+            [mutableSettings setFrame:systemSceneFrame];
         }
         if ([mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
@@ -949,8 +1010,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
         UIInterfaceOrientation appliedOrientation =
             FLMLandscapeSceneSettingsOrientation(scene);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-module-scene-frame app=%@ logical=%@ visual=%@ requestedOrientation=%ld applied=%@ appliedOrientation=%ld",
-            self.identifier, NSStringFromCGRect(logicalFrame),
+            @"sb landscape-module-scene-frame app=%@ systemScene=%@ display=%@ requestedOrientation=%ld applied=%@ appliedOrientation=%ld",
+            self.identifier, NSStringFromCGRect(systemSceneFrame),
             NSStringFromCGRect(visualBounds), (long)orientation,
             NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
         self.keyboardRoutePublished = YES;
@@ -1080,54 +1141,41 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.displayBounds.size.width <= 1.0) {
         return;
     }
-    CGRect logicalFrame = FLMLandscapeSceneSettingsFrame(self.scene);
+    CGRect systemSceneFrame = FLMLandscapeSceneSettingsFrame(self.scene);
     UIInterfaceOrientation sceneOrientation =
         FLMLandscapeSceneSettingsOrientation(self.scene);
     if (!UIInterfaceOrientationIsLandscape(sceneOrientation)) {
         sceneOrientation = self.displayOrientation;
     }
-    CGSize reference = self.displayBounds.size;
-    if (CGRectGetWidth(logicalFrame) > 1.0 &&
-        CGRectGetHeight(logicalFrame) > 1.0) {
-        // The Scene frame is now the true 844x390 landscape surface. Keep its
-        // bounds untouched; only the card presentation wrapper rotates it.
-        reference = logicalFrame.size;
-    }
-    if (reference.width <= 1.0 || reference.height <= 1.0 ||
-        reference.width <= reference.height) {
-        reference = self.displayBounds.size;
-    }
+    CGRect logicalViewport = CGRectMake(
+        0.0, 0.0,
+        FLMLandscapeAppVirtualViewportWidth,
+        FLMLandscapeAppVirtualViewportHeight);
     CGSize target = self.cardView.bounds.size;
-    // The card is visually vertical, while the hosted application surface is
-    // genuinely landscape. Rotate only this presentation layer, then apply a
-    // single uniform scale to the rotated 390x844 footprint. UIKit therefore
-    // keeps the app/keyboard in landscape and the card keeps the 13 Pro shape.
-    CGSize presentedReference = CGSizeMake(reference.height, reference.width);
-    CGFloat uniformScale = MIN(target.width / presentedReference.width,
-                               target.height / presentedReference.height);
-    CGFloat renderedWidth = presentedReference.width * uniformScale;
-    CGFloat renderedHeight = presentedReference.height * uniformScale;
-    CGFloat letterboxX = MAX(0.0, (target.width - renderedWidth) * 0.5);
-    CGFloat letterboxY = MAX(0.0, (target.height - renderedHeight) * 0.5);
-    CGFloat rotation = sceneOrientation == UIInterfaceOrientationLandscapeRight
-                           ? -M_PI_2
-                           : M_PI_2;
+    // The AppVirtualViewport is already portrait. The renderer is deliberately
+    // orientation-blind: it only applies one uniform scale and centers the
+    // resulting content inside the portrait card.
+    CGFloat scaleX = target.width / CGRectGetWidth(logicalViewport);
+    CGFloat scaleY = target.height / CGRectGetHeight(logicalViewport);
+    CGFloat uniformScale = MIN(scaleX, scaleY);
+    CGFloat renderedWidth = CGRectGetWidth(logicalViewport) * uniformScale;
+    CGFloat renderedHeight = CGRectGetHeight(logicalViewport) * uniformScale;
+    CGFloat translationX = (target.width - renderedWidth) * 0.5;
+    CGFloat translationY = (target.height - renderedHeight) * 0.5;
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
+    self.hostView.bounds = logicalViewport;
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
-    CGAffineTransform presentationTransform =
-        CGAffineTransformMakeScale(uniformScale, uniformScale);
-    self.hostView.transform = CGAffineTransformRotate(presentationTransform,
-                                                       rotation);
+    self.hostView.transform = CGAffineTransformMakeScale(uniformScale,
+                                                         uniformScale);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} sceneFrame={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} presented={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterbox={%.1f,%.1f} rotation=%.0f orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} systemScene={%.1f,%.1f} logicalViewport={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scaleXY={%.6f,%.6f} uniformScale=%.6f rendered={%.1f,%.1f} translation={%.1f,%.1f} rotation=0 orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
-        logicalFrame.size.width, logicalFrame.size.height,
+        systemSceneFrame.size.width, systemSceneFrame.size.height,
+        logicalViewport.size.width, logicalViewport.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
-        presentedReference.width, presentedReference.height,
-        uniformScale, renderedWidth, renderedHeight, letterboxX, letterboxY,
-        rotation * 180.0 / M_PI,
+        scaleX, scaleY, uniformScale, renderedWidth, renderedHeight,
+        translationX, translationY,
         (long)sceneOrientation);
 }
 
@@ -1237,6 +1285,11 @@ static id FLMLandscapeSceneForHandle(id handle) {
         FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
         self.keyboardRoutePublished = NO;
     }
+    FLMEnqueueDiagnosticLine(
+        @"sb virtual-viewport-exit scene={%.1f,%.1f} viewport={%.1f,%.1f}",
+        self.displayBounds.size.width, self.displayBounds.size.height,
+        FLMLandscapeAppVirtualViewportWidth,
+        FLMLandscapeAppVirtualViewportHeight);
     self.scene = nil;
     self.sceneHandle = nil;
     self.sceneEntity = nil;

@@ -494,7 +494,7 @@ static CGRect FLMVisualScreenBounds(void) {
 
 static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
     if (FLMLandscapeModuleIsLandscape()) {
-        return FLMLandscapeModuleVisualPointFromRawPoint(rawPoint);
+        return FLMLandscapeEnvironmentConvertPoint(rawPoint);
     }
     CGRect rawBounds = [UIScreen mainScreen].bounds;
     UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();

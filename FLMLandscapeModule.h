@@ -11,6 +11,10 @@ BOOL FLMLandscapeModuleIsLandscape(void);
 CGRect FLMLandscapeModuleVisualBounds(void);
 UIInterfaceOrientation FLMLandscapeModuleVisualOrientation(void);
 UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void);
+// Converts the system manager's fixed-coordinate point into the landscape
+// display space. This belongs to LandscapeEnvironment and is not used by the
+// AppVirtualViewport or MiniWindowRenderer content transforms.
+CGPoint FLMLandscapeEnvironmentConvertPoint(CGPoint rawPoint);
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint);
 
 // A system gesture can begin while UIKit is still publishing the portrait

@@ -13,10 +13,10 @@
 // independent landscape route this is explicitly 844x390, allowing a
 // third-party keyboard to select its native landscape layout. The card is
 // only a SpringBoard presentation surface:
-// portrait routes use 390x844, while the independent landscape route uses
-// 844x390. SpringBoard applies one uniform presentation scale after rotating
-// that landscape surface into the vertical card; it never changes the app's
-// keyboard coordinate system to the card's physical bounds.
+// the independent landscape route keeps the system display at 844x390 while
+// the target application's content root is given a separate 390x844 virtual
+// viewport. SpringBoard scales that portrait content into the card; it never
+// changes the keyboard's coordinate system to the card's physical bounds.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -64,26 +64,35 @@ static BOOL FLMKeyboardRouteObserversInstalled = NO;
 static BOOL FLMContentViewportAdapterApplying = NO;
 static BOOL FLMContentViewportAdapterActive = NO;
 static uint64_t FLMContentViewportAdapterGeneration = 0;
-static NSMapTable<UIView *, NSDictionary *> *FLMContentViewportOriginalLayouts;
+static __weak UIWindow *FLMVirtualViewportWindow;
+static __weak UIView *FLMVirtualViewportRootContentView;
+static BOOL FLMVirtualViewportOriginalCaptured = NO;
+static CGRect FLMVirtualViewportOriginalFrame = CGRectZero;
+static CGRect FLMVirtualViewportOriginalBounds = CGRectZero;
+static CGPoint FLMVirtualViewportOriginalCenter = CGPointZero;
+static CGAffineTransform FLMVirtualViewportOriginalTransform =
+    CGAffineTransformIdentity;
+static UIViewAutoresizing FLMVirtualViewportOriginalAutoresizingMask =
+    UIViewAutoresizingNone;
+static BOOL FLMVirtualViewportOriginalTranslatesAutoresizingMask = YES;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
-// The application-side logical viewport is deliberately fixed at the full
-// display size. Card width/crop values belong to SpringBoard presentation and
-// must not turn into a second application layout viewport.
+// The application-side logical viewport is an independent portrait canvas.
+// It is applied only to the target app's root content view during a landscape
+// mini-window session. The owning UIWindowScene remains a native 844x390
+// landscape Scene, and the native keyboard keeps that same system geometry.
 static CGSize FLMContentLogicalViewportSize = {
     390.0,
     844.0,
 };
-static CGFloat FLMContentExternalScale = 1.0;
-static CGSize FLMPhysicalCardSize = {
+static const CGSize FLMAppVirtualViewportSize = {
     390.0,
     844.0,
 };
-static BOOL FLMContentViewportUsesSharedCardSize = NO;
 
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
@@ -93,6 +102,9 @@ static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
+static CGRect FLMAppVirtualViewportBounds(void);
+static CGRect FLMSystemDisplayBoundsForScene(UIWindowScene *scene);
+static void FLMRestoreVirtualViewport(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -131,15 +143,14 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
 }
 
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
-    // Keep the app-side layout full-screen. The 0.8.59 presentation model
-    // crops the already-scaled host in SpringBoard; it does not ask the target
-    // application to lay out inside the physical card.
     (void)sharedState;
-    const CGSize fallback = {390.0, 844.0};
-    FLMContentLogicalViewportSize = fallback;
-    FLMContentExternalScale = 1.0;
-    FLMPhysicalCardSize = fallback;
-    FLMContentViewportUsesSharedCardSize = NO;
+    CGRect viewport = FLMAppVirtualViewportBounds();
+    FLMContentLogicalViewportSize = CGRectIsEmpty(viewport)
+                                        ? FLMAppVirtualViewportSize
+                                        : viewport.size;
+    if (CGRectIsEmpty(viewport)) {
+        FLMRestoreVirtualViewport();
+    }
 }
 
 static uint64_t FLMIdentifierHash(NSString *identifier) {
@@ -332,7 +343,7 @@ static UIInterfaceOrientation FLMKeyboardEffectiveInterfaceOrientation(
                : UIInterfaceOrientationUnknown;
 }
 
-static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
+static CGRect FLMSystemDisplayBoundsForScene(UIWindowScene *scene) {
     CGSize size = FLMFullPhysicalScreenSize();
     if (UIInterfaceOrientationIsLandscape(
             FLMKeyboardEffectiveInterfaceOrientation(scene))) {
@@ -341,9 +352,24 @@ static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
+static CGRect FLMAppVirtualViewportBounds(void) {
+    if (!FLMKeyboardRouteActive || !FLMKeyboardTargetApplication ||
+        !UIInterfaceOrientationIsLandscape(
+            FLMKeyboardSharedInterfaceOrientation)) {
+        return CGRectZero;
+    }
+    return CGRectMake(0.0, 0.0,
+                      FLMAppVirtualViewportSize.width,
+                      FLMAppVirtualViewportSize.height);
+}
+
 static CGRect FLMTargetApplicationLogicalBounds(void) {
     if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive) {
         return CGRectZero;
+    }
+    CGRect virtualViewport = FLMAppVirtualViewportBounds();
+    if (!CGRectIsEmpty(virtualViewport)) {
+        return virtualViewport;
     }
     for (UIScene *connectedScene in
          [UIApplication sharedApplication].connectedScenes) {
@@ -354,18 +380,14 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
         if (!FLMSceneMatchesKeyboardRoute(windowScene)) {
             continue;
         }
-        // Never use the hosted window/card bounds here. The hosted content
-        // view remains display-sized in the active Scene orientation before
-        // the single proportional card transform; keyboard avoidance stays
-        // in the application's full-screen coordinate space.
-        return FLMPhysicalReferenceBoundsForScene(windowScene);
+        // Portrait/ordinary sessions retain the original full-screen logical
+        // behavior. Landscape sessions return the independent virtual
+        // viewport above; system keyboard geometry always uses the separate
+        // FLMSystemDisplayBoundsForScene() path.
+        return FLMSystemDisplayBoundsForScene(windowScene);
     }
-    CGSize size = FLMFullPhysicalScreenSize();
-    if (UIInterfaceOrientationIsLandscape(
-            FLMKeyboardSharedInterfaceOrientation)) {
-        size = CGSizeMake(size.height, size.width);
-    }
-    return CGRectMake(0.0, 0.0, size.width, size.height);
+    return CGRectMake(0.0, 0.0, FLMContentLogicalViewportSize.width,
+                      FLMContentLogicalViewportSize.height);
 }
 
 static void FLMRefreshApplicationKeyboardLayout(void) {
@@ -724,115 +746,172 @@ static BOOL FLMIsApplicationContentWindow(UIWindow *window) {
     return YES;
 }
 
-static void FLMLogContentViewportLayout(NSString *stage,
+static void FLMLogVirtualViewportLayout(NSString *stage,
                                         UIWindow *window,
                                         UIView *contentView,
-                                        CGRect sceneLogicalBounds,
-                                        CGRect contentViewportBounds,
                                         CGRect previousBounds,
                                         CGRect currentBounds) {
-    (void)contentView;
-    CGRect windowBounds = window ? window.bounds : CGRectZero;
-    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+    CGRect systemDisplay = window
+        ? FLMSystemDisplayBoundsForScene(window.windowScene)
+        : CGRectZero;
+    CGRect loggedViewport = FLMAppVirtualViewportBounds();
+    if (CGRectIsEmpty(loggedViewport)) {
+        loggedViewport = CGRectMake(0.0, 0.0,
+                                    FLMContentLogicalViewportSize.width,
+                                    FLMContentLogicalViewportSize.height);
+    }
+    UIEdgeInsets rootSafeArea = contentView ? contentView.safeAreaInsets
+                                             : UIEdgeInsetsZero;
+    NSLog(@"[FlymeKeyboard] virtual-viewport-%@ bundle=%@ session=%llu systemDisplay=%@ viewport=%@ rootContentBefore=%@ rootContentAfter=%@ rootSafeArea={%.1f,%.1f,%.1f,%.1f} window=%@ route=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
           (unsigned long long)FLMKeyboardSessionGeneration,
-          NSStringFromCGRect(sceneLogicalBounds),
-          NSStringFromCGRect(contentViewportBounds),
-          FLMContentExternalScale, FLMPhysicalCardSize.width,
-          FLMPhysicalCardSize.height,
-          FLMContentViewportUsesSharedCardSize ? @"shared-card" : @"fullscreen-fallback",
-          NSStringFromCGRect(windowBounds),
-          NSStringFromCGRect(previousBounds), NSStringFromCGRect(currentBounds),
-          FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
+          NSStringFromCGRect(systemDisplay),
+          NSStringFromCGRect(loggedViewport),
+          NSStringFromCGRect(previousBounds),
+          NSStringFromCGRect(currentBounds),
+          rootSafeArea.top, rootSafeArea.left,
+          rootSafeArea.bottom, rootSafeArea.right,
+          NSStringFromCGRect(window.bounds),
+          FLMKeyboardRouteActive && contentView != nil);
 }
 
-static void FLMRestoreContentViewportLayouts(void) {
-    if (!FLMContentViewportOriginalLayouts ||
-        FLMContentViewportOriginalLayouts.count == 0) {
+static void FLMRestoreVirtualViewport(void) {
+    if (!FLMVirtualViewportOriginalCaptured ||
+        !FLMVirtualViewportRootContentView) {
         FLMContentViewportAdapterActive = NO;
         FLMContentViewportAdapterGeneration = 0;
+        FLMVirtualViewportOriginalCaptured = NO;
+        FLMVirtualViewportWindow = nil;
+        FLMVirtualViewportRootContentView = nil;
         return;
     }
     if (FLMContentViewportAdapterApplying) {
         return;
     }
+    UIView *contentView = FLMVirtualViewportRootContentView;
+    UIWindow *window = FLMVirtualViewportWindow;
+    CGRect previousBounds = contentView.bounds;
     FLMContentViewportAdapterApplying = YES;
     @try {
-        for (UIView *contentView in FLMContentViewportOriginalLayouts.keyEnumerator) {
-            NSDictionary *layout =
-                [FLMContentViewportOriginalLayouts objectForKey:contentView];
-            NSValue *savedFrame = layout[@"frame"];
-            NSValue *savedBounds = layout[@"bounds"];
-            if (!contentView || !savedFrame || !savedBounds) {
-                continue;
-            }
-            CGRect previousBounds = contentView.bounds;
-            contentView.frame = savedFrame.CGRectValue;
-            contentView.bounds = savedBounds.CGRectValue;
-            [contentView setNeedsLayout];
-            UIWindow *window = contentView.window;
-            FLMLogContentViewportLayout(
-                @"layout-restored", window, contentView,
-                window ? FLMPhysicalReferenceBoundsForScene(window.windowScene)
-                       : CGRectZero,
-                CGRectMake(0.0, 0.0, FLMContentLogicalViewportSize.width,
-                           FLMContentLogicalViewportSize.height),
-                previousBounds, contentView.bounds);
-        }
+        contentView.transform = CGAffineTransformIdentity;
+        contentView.bounds = FLMVirtualViewportOriginalBounds;
+        contentView.center = FLMVirtualViewportOriginalCenter;
+        contentView.frame = FLMVirtualViewportOriginalFrame;
+        contentView.autoresizingMask = FLMVirtualViewportOriginalAutoresizingMask;
+        contentView.translatesAutoresizingMaskIntoConstraints =
+            FLMVirtualViewportOriginalTranslatesAutoresizingMask;
+        contentView.transform = FLMVirtualViewportOriginalTransform;
+        [contentView setNeedsLayout];
+        [contentView setNeedsUpdateConstraints];
+        [contentView layoutIfNeeded];
+        FLMLogVirtualViewportLayout(@"exit", window, contentView,
+                                    previousBounds, contentView.bounds);
+    } @catch (__unused NSException *exception) {
     } @finally {
-        [FLMContentViewportOriginalLayouts removeAllObjects];
         FLMContentViewportAdapterApplying = NO;
         FLMContentViewportAdapterActive = NO;
         FLMContentViewportAdapterGeneration = 0;
+        FLMVirtualViewportWindow = nil;
+        FLMVirtualViewportRootContentView = nil;
+        FLMVirtualViewportOriginalCaptured = NO;
+        FLMVirtualViewportOriginalFrame = CGRectZero;
+        FLMVirtualViewportOriginalBounds = CGRectZero;
+        FLMVirtualViewportOriginalCenter = CGPointZero;
+        FLMVirtualViewportOriginalTransform = CGAffineTransformIdentity;
+        FLMVirtualViewportOriginalAutoresizingMask = UIViewAutoresizingNone;
+        FLMVirtualViewportOriginalTranslatesAutoresizingMask = YES;
     }
+}
+
+static UIWindow *FLMTargetApplicationContentWindow(void) {
+    UIWindow *fallback = nil;
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            if (!FLMIsApplicationContentWindow(window) ||
+                !window.rootViewController.view) {
+                continue;
+            }
+            if (window.isKeyWindow) {
+                return window;
+            }
+            if (!fallback) {
+                fallback = window;
+            }
+        }
+    }
+    return fallback;
+}
+
+static void FLMCaptureVirtualViewport(UIView *contentView,
+                                      UIWindow *window) {
+    if (!contentView || !window || FLMVirtualViewportOriginalCaptured) {
+        return;
+    }
+    FLMVirtualViewportWindow = window;
+    FLMVirtualViewportRootContentView = contentView;
+    FLMVirtualViewportOriginalFrame = contentView.frame;
+    FLMVirtualViewportOriginalBounds = contentView.bounds;
+    FLMVirtualViewportOriginalCenter = contentView.center;
+    FLMVirtualViewportOriginalTransform = contentView.transform;
+    FLMVirtualViewportOriginalAutoresizingMask = contentView.autoresizingMask;
+    FLMVirtualViewportOriginalTranslatesAutoresizingMask =
+        contentView.translatesAutoresizingMaskIntoConstraints;
+    FLMVirtualViewportOriginalCaptured = YES;
+    NSLog(@"[FlymeKeyboard] app virtual-viewport-enter scene=%@ viewport={%.1f,%.1f} root=%@ window=%@",
+          FLMSceneIdentifier(window.windowScene) ?: @"<none>",
+          FLMAppVirtualViewportSize.width, FLMAppVirtualViewportSize.height,
+          NSStringFromClass(contentView.class), NSStringFromClass(window.class));
 }
 
 static void FLMApplyContentViewportToRootView(UIView *contentView,
                                               UIWindow *window) {
-    if (!contentView || !window || !FLMContentViewportAdapterActive ||
+    CGRect virtualViewport = FLMAppVirtualViewportBounds();
+    if (!contentView || !window || CGRectIsEmpty(virtualViewport) ||
+        !FLMContentViewportAdapterActive ||
         FLMContentViewportAdapterApplying ||
         !FLMIsApplicationContentWindow(window)) {
         return;
     }
-    if (!FLMContentViewportOriginalLayouts) {
-        FLMContentViewportOriginalLayouts =
-            [NSMapTable weakToStrongObjectsMapTable];
-    }
-    if (![FLMContentViewportOriginalLayouts objectForKey:contentView]) {
-        [FLMContentViewportOriginalLayouts setObject:@{
-            @"frame": [NSValue valueWithCGRect:contentView.frame],
-            @"bounds": [NSValue valueWithCGRect:contentView.bounds],
-        }
-                                       forKey:contentView];
+    if (!FLMVirtualViewportOriginalCaptured) {
+        FLMCaptureVirtualViewport(contentView, window);
+    } else if (FLMVirtualViewportRootContentView != contentView ||
+               FLMVirtualViewportWindow != window) {
+        FLMRestoreVirtualViewport();
+        FLMCaptureVirtualViewport(contentView, window);
     }
     CGRect previousBounds = contentView.bounds;
-    CGRect targetBounds = CGRectMake(0.0, 0.0,
-                                     FLMContentLogicalViewportSize.width,
-                                     FLMContentLogicalViewportSize.height);
-    CGRect currentFrame = contentView.frame;
-    CGRect targetFrame = CGRectMake(0.0,
-                                    0.0,
-                                    FLMContentLogicalViewportSize.width,
-                                    FLMContentLogicalViewportSize.height);
+    CGRect targetBounds = virtualViewport;
+    CGRect targetFrame = CGRectMake(0.0, 0.0,
+                                    CGRectGetWidth(virtualViewport),
+                                    CGRectGetHeight(virtualViewport));
     BOOL alreadyApplied =
         fabs(CGRectGetWidth(previousBounds) - targetBounds.size.width) < 0.25 &&
         fabs(CGRectGetHeight(previousBounds) - targetBounds.size.height) < 0.25 &&
-        fabs(CGRectGetWidth(currentFrame) - targetFrame.size.width) < 0.25 &&
-        fabs(CGRectGetHeight(currentFrame) - targetFrame.size.height) < 0.25;
+        fabs(CGRectGetWidth(contentView.frame) - targetFrame.size.width) < 0.25 &&
+        fabs(CGRectGetHeight(contentView.frame) - targetFrame.size.height) < 0.25 &&
+        CGAffineTransformEqualToTransform(contentView.transform,
+                                           CGAffineTransformIdentity);
     if (alreadyApplied) {
         return;
     }
     FLMContentViewportAdapterApplying = YES;
     @try {
+        // Keep the UIWindow and UIWindowScene untouched. Only the target app's
+        // root content view receives the portrait logical canvas.
+        contentView.transform = CGAffineTransformIdentity;
+        contentView.translatesAutoresizingMaskIntoConstraints = YES;
+        contentView.autoresizingMask = UIViewAutoresizingNone;
         contentView.bounds = targetBounds;
         contentView.frame = targetFrame;
         [contentView setNeedsLayout];
         [contentView setNeedsUpdateConstraints];
         [contentView layoutIfNeeded];
-        CGRect sceneLogicalBounds =
-            FLMPhysicalReferenceBoundsForScene(window.windowScene);
-        FLMLogContentViewportLayout(@"layout-applied", window, contentView,
-                                    sceneLogicalBounds, targetBounds,
+        FLMLogVirtualViewportLayout(@"layout", window, contentView,
                                     previousBounds, contentView.bounds);
         FLMPublishDiagnosticEvent(
             FLMDiagnosticRoleApplication, FLMDiagnosticEventLayoutRefresh,
@@ -849,19 +928,10 @@ static void FLMApplyContentViewportToVisibleApplicationWindows(void) {
         !FLMIsEligibleApplicationProcess()) {
         return;
     }
-    for (UIScene *connectedScene in
-         [UIApplication sharedApplication].connectedScenes) {
-        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
-            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
-            continue;
-        }
-        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
-            if (!FLMIsApplicationContentWindow(window)) {
-                continue;
-            }
-            FLMApplyContentViewportToRootView(window.rootViewController.view,
-                                              window);
-        }
+    UIWindow *window = FLMTargetApplicationContentWindow();
+    if (window) {
+        FLMApplyContentViewportToRootView(window.rootViewController.view,
+                                          window);
     }
 }
 
@@ -875,39 +945,25 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (FLMContentViewportAdapterApplying) {
         return;
     }
-    // 0.8.60 keeps the target application and keyboard in their native
-    // full-screen 390x844 coordinate system.  The card is clipped and
-    // scaled only by SpringBoard's presentation host; this adapter must not
-    // rewrite an application's root view during Scene handoff.  The old
-    // Version C branch could repeatedly fight UIKit's own layout pass and
-    // was also capable of resurrecting a stale root after a rapid reopen.
-    BOOL shouldApply = NO;
-    if (!shouldApply) {
+    CGRect virtualViewport = FLMAppVirtualViewportBounds();
+    if (CGRectIsEmpty(virtualViewport)) {
         if (FLMContentViewportAdapterActive ||
-            FLMContentViewportOriginalLayouts.count > 0) {
-            NSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
-                  [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
-                  (unsigned long long)FLMKeyboardSessionGeneration,
-                  FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
-            FLMRestoreContentViewportLayouts();
+            FLMVirtualViewportOriginalCaptured) {
+            FLMRestoreVirtualViewport();
         }
         return;
     }
     if (FLMContentViewportAdapterActive &&
         FLMContentViewportAdapterGeneration != FLMKeyboardSessionGeneration) {
-        FLMRestoreContentViewportLayouts();
+        FLMRestoreVirtualViewport();
     }
     if (!FLMContentViewportAdapterActive) {
         FLMContentViewportAdapterActive = YES;
         FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
-        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
+        NSLog(@"[FlymeKeyboard] virtual-viewport-enter bundle=%@ session=%llu scene={844.0,390.0} viewport={%.1f,%.1f}",
               [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
               (unsigned long long)FLMKeyboardSessionGeneration,
-              FLMContentLogicalViewportSize.width,
-              FLMContentLogicalViewportSize.height, FLMContentExternalScale,
-              FLMPhysicalCardSize.width, FLMPhysicalCardSize.height,
-              FLMContentViewportUsesSharedCardSize ? @"shared-card"
-                                                    : @"fullscreen-fallback");
+              virtualViewport.size.width, virtualViewport.size.height);
     }
     FLMApplyContentViewportToVisibleApplicationWindows();
 }
@@ -938,6 +994,19 @@ static void FLMUpdateContentViewportAdapter(void) {
     }
 }
 
+- (void)viewSafeAreaInsetsDidChange {
+    %orig;
+    if (!FLMContentViewportAdapterActive || FLMContentViewportAdapterApplying ||
+        ![self.view isKindOfClass:[UIView class]]) {
+        return;
+    }
+    UIWindow *window = self.view.window;
+    if (window.rootViewController == self &&
+        FLMIsApplicationContentWindow(window)) {
+        FLMApplyContentViewportToRootView(self.view, window);
+    }
+}
+
 %end
 
 %end
@@ -952,7 +1021,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return %orig;
     }
-    CGSize size = FLMPhysicalReferenceBoundsForScene(scene).size;
+    CGSize size = FLMSystemDisplayBoundsForScene(scene).size;
     FLMPublishDiagnosticEvent(
         FLMKeyboardTargetApplication ? FLMDiagnosticRoleApplication
                                      : FLMDiagnosticRoleKeyboardExtension,
@@ -1094,11 +1163,9 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
         &FLMKeyboardAppCtorToken,
         FLYME_KEYBOARD_APP_CTOR_MAGIC,
         FLMDiagnosticEventAdapterCtor);
-    // Keep the legacy adapter group initialized so Logos does not leave an
-    // uninitialized hook group behind.  Its update routine is deliberately
-    // hard-disabled (shouldApply=NO), so it never rewrites the application's
-    // full-screen root layout.  The remote keyboard hook below remains gated
-    // by the exact Scene route.
+    // Keep the adapter group target-gated. It now owns the real portrait
+    // virtual viewport for the selected application; system keyboard hooks
+    // below continue to use the independent landscape display geometry.
     %init(FLMContentViewportAdapter);
     FLMInstallRemoteKeyboardGeometryIfAvailable();
     FLMReloadKeyboardRoute();
