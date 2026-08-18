@@ -159,15 +159,28 @@ for marker in \
     "FLMDiagnosticEventAdapterReady" \
     "FLMApplicationProcessIdentityFlags" \
     "FLMContentLogicalViewportSize" \
-    "FLMPhysicalCardSize" \
+    "FLMAppVirtualViewportSize" \
+    "FLMAppVirtualViewportBounds" \
+    "FLMSystemDisplayBoundsForScene" \
+    "FLMTargetApplicationContentWindow" \
+    "FLMRestoreVirtualViewport" \
     "FLMHandleKeyboardRouteNotification" \
     "FLMReloadContentViewportSelection" \
-    "BOOL shouldApply = NO;" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
         echo "missing native keyboard marker: $marker" >&2
         exit 1
     }
+done
+
+for marker in \
+    "BOOL shouldApply = NO;" \
+    "FLMPhysicalCardSize" \
+    "FLMContentViewportUsesSharedCardSize"; do
+    if grep -Fq -- "$marker" "$keyboard_source"; then
+        echo "obsolete virtual viewport path returned: $marker" >&2
+        exit 1
+    fi
 done
 
 require_source "sb host-update rejected=alternate-host"
