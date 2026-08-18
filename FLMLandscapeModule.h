@@ -9,6 +9,7 @@
 // no portrait presentation state is exposed here.
 BOOL FLMLandscapeModuleIsLandscape(void);
 CGRect FLMLandscapeModuleVisualBounds(void);
+UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void);
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint);
 
 // A system gesture can begin while UIKit is still publishing the portrait

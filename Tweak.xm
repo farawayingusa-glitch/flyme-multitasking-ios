@@ -1417,6 +1417,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) NSUInteger floatingKeyboardDeferredSessionGeneration;
 @property(nonatomic, assign) BOOL landscapeKeyboardVisible;
 @property(nonatomic, assign) CGRect landscapeKeyboardFrame;
+@property(nonatomic, assign) CGRect landscapeKeyboardDisplayBounds;
+@property(nonatomic, assign) UIInterfaceOrientation landscapeKeyboardDisplayOrientation;
 @property(nonatomic, assign) CGFloat landscapeKeyboardMaximumVisibleHeight;
 @property(nonatomic, weak) UIView *landscapeKeyboardLayerHostView;
 @property(nonatomic, strong) UIView *landscapeKeyboardOriginalSuperview;
@@ -1513,6 +1515,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)applyKeyboardFrame:(CGRect)frame visible:(BOOL)visible;
 - (void)finalizeKeyboardDismissalProtection;
 - (void)prepareKeyboardForwardingWindowIfNeeded;
+- (CGRect)landscapeKeyboardDisplayBoundsForSession;
 - (void)keyboardLayerHostView:(UIView *)hostView
              didUpdateForScene:(id)scene
              sessionGeneration:(NSUInteger)sessionGeneration;
@@ -1936,16 +1939,32 @@ void FLMLandscapeKeyboardRouteOpen(NSString *identifier,
     void (^openBlock)(void) = ^{
         FLMWheelController *controller =
             [FLMWheelController sharedController];
+        // Keyboard notifications can arrive after UIKit has started rotating
+        // the display. Snapshot the landscape display space when the card
+        // route opens, so a later portrait-shaped transition frame cannot
+        // silently redefine the keyboard window's coordinate system.
+        CGRect displayBounds = FLMLandscapeModuleVisualBounds();
+        if (CGRectGetWidth(displayBounds) <= 1.0 ||
+            CGRectGetHeight(displayBounds) <= 1.0 ||
+            CGRectGetWidth(displayBounds) <= CGRectGetHeight(displayBounds)) {
+            displayBounds = CGRectZero;
+        }
+        controller.landscapeKeyboardDisplayBounds = displayBounds;
+        controller.landscapeKeyboardDisplayOrientation =
+            FLMActiveInterfaceOrientation();
+        controller.landscapeKeyboardMaximumVisibleHeight = 0.0;
         controller.landscapeKeyboardIdentifier = [identifier copy];
         controller.landscapeKeyboardApplicationScene = scene;
         controller.landscapeKeyboardSessionGeneration =
             (NSUInteger)sessionGeneration;
         FLMPublishKeyboardState(identifier, scene, sessionGeneration);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-keyboard-route open app=%@ scene=%@ session=%llu foreground=%d",
+            @"sb landscape-keyboard-route open app=%@ scene=%@ session=%llu foreground=%d bounds=%@ orientation=%ld",
             identifier ?: @"<none>", FLMSceneIdentifier(scene) ?: @"<none>",
             (unsigned long long)sessionGeneration,
-            FLMLandscapeModuleHasVisibleCard());
+            FLMLandscapeModuleHasVisibleCard(),
+            NSStringFromCGRect(displayBounds),
+            (long)controller.landscapeKeyboardDisplayOrientation);
     };
     if ([NSThread isMainThread]) {
         openBlock();
@@ -2243,6 +2262,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
         self.landscapeKeyboardFrame = CGRectNull;
+        self.landscapeKeyboardDisplayBounds = CGRectZero;
+        self.landscapeKeyboardDisplayOrientation = UIInterfaceOrientationUnknown;
         self.landscapeKeyboardOriginalSubviewIndex = NSNotFound;
         // Dock presentation width is session-local. Every new dock transition
         // starts from the configured minimum size instead of restoring stale geometry.
@@ -3517,10 +3538,61 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
         }
     }
+    CGFloat landscapeHorizontalShift = 0.0;
+    UIEdgeInsets landscapeSafeArea = UIEdgeInsetsZero;
+    CGFloat landscapeMinItemX = CGFLOAT_MAX;
+    CGFloat landscapeMaxItemX = -CGFLOAT_MAX;
+    if (landscapeWheel) {
+        // The corner trigger is allowed to stay at the physical edge, but the
+        // fan itself must clear the notch. Calculate the complete item envelope
+        // (including icon radius) before placing the views, then translate the
+        // whole fan only as far as the opposite edge still permits.
+        landscapeSafeArea = FLMLandscapeModuleVisualSafeAreaInsets();
+        CGFloat safeMinX = MAX(0.0, MIN(width, landscapeSafeArea.left));
+        CGFloat safeMaxX = MIN(width,
+                               MAX(safeMinX, width -
+                                                   MAX(0.0,
+                                                       landscapeSafeArea.right)));
+        for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
+            NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
+            CGFloat radius = firstRadius + (CGFloat)ring * ringSpacing;
+            for (NSUInteger position = 0; position < ringCount; position++) {
+                CGFloat fraction = ringCount == 1
+                                       ? 0.5
+                                       : (CGFloat)position /
+                                             (CGFloat)(ringCount - 1);
+                CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
+                CGFloat leftX = 4.0 + radius * cos(angle);
+                CGFloat centerX = fromRight ? width - leftX : leftX;
+                landscapeMinItemX =
+                    MIN(landscapeMinItemX,
+                        centerX - self.wheelIconSize * 0.5);
+                landscapeMaxItemX =
+                    MAX(landscapeMaxItemX,
+                        centerX + self.wheelIconSize * 0.5);
+            }
+        }
+        if (landscapeMinItemX != CGFLOAT_MAX &&
+            landscapeMaxItemX != -CGFLOAT_MAX) {
+            if (fromRight) {
+                CGFloat overlap = MAX(0.0, landscapeMaxItemX - safeMaxX);
+                CGFloat available = MAX(0.0, landscapeMinItemX - safeMinX);
+                landscapeHorizontalShift = -MIN(overlap, available);
+            } else {
+                CGFloat overlap = MAX(0.0, safeMinX - landscapeMinItemX);
+                CGFloat available = MAX(0.0, safeMaxX - landscapeMaxItemX);
+                landscapeHorizontalShift = MIN(overlap, available);
+            }
+        }
+        anchor.x += landscapeHorizontalShift;
+    }
     if (landscapeWheel) {
         FLMEnqueueDiagnosticLine(
-            @"sb wheel-landscape-geometry side=%@ bounds=%@ anchor={%.1f,%.1f} radius=%.1f icon=%.1f surfaceWindow={frame:%@ bounds:%@} root={frame:%@ bounds:%@} container={frame:%@ bounds:%@}",
+            @"sb wheel-landscape-geometry side=%@ bounds=%@ safeArea={%.1f,%.1f,%.1f,%.1f} shiftX=%.1f itemX={%.1f,%.1f} anchor={%.1f,%.1f} radius=%.1f icon=%.1f surfaceWindow={frame:%@ bounds:%@} root={frame:%@ bounds:%@} container={frame:%@ bounds:%@}",
             fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
+            landscapeSafeArea.left, landscapeSafeArea.top,
+            landscapeSafeArea.right, landscapeSafeArea.bottom,
+            landscapeHorizontalShift, landscapeMinItemX, landscapeMaxItemX,
             anchor.x, anchor.y, firstRadius, self.wheelIconSize,
             NSStringFromCGRect(self.overlayWindow.frame),
             NSStringFromCGRect(self.overlayWindow.bounds),
@@ -3541,6 +3613,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
             CGFloat leftX = 4.0 + radius * cos(angle);
             CGFloat centerX = fromRight ? width - leftX : leftX;
+            if (landscapeWheel) {
+                centerX += landscapeHorizontalShift;
+            }
             CGFloat centerY = anchor.y + radius * sin(angle);
             NSString *identifier = self.itemIdentifiers[itemIndex++];
             FLMWheelItemView *item =
@@ -6437,22 +6512,40 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         existingWindow = nil;
     }
     if (existingWindow) {
-        CGRect bounds = landscapeRoute ? FLMLandscapeModuleVisualBounds()
-                                       : FLMVisualScreenBounds();
+        CGRect bounds = landscapeRoute
+                            ? [self landscapeKeyboardDisplayBoundsForSession]
+                            : FLMVisualScreenBounds();
+        if (landscapeRoute &&
+            (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0)) {
+            return;
+        }
+        CGRect rootBounds = CGRectMake(0.0, 0.0,
+                                       CGRectGetWidth(bounds),
+                                       CGRectGetHeight(bounds));
         existingWindow.frame = bounds;
-        existingWindow.rootViewController.view.frame = existingWindow.bounds;
+        existingWindow.bounds = rootBounds;
+        existingWindow.rootViewController.view.bounds = rootBounds;
+        existingWindow.rootViewController.view.frame = rootBounds;
         existingWindow.windowLevel = landscapeRoute
                                          ? UIWindowLevelAlert + 94.0
                                          : self.floatingWindow.windowLevel + 1.0;
         return;
     }
 
-    CGRect bounds = landscapeRoute ? FLMLandscapeModuleVisualBounds()
-                                   : FLMVisualScreenBounds();
+    CGRect bounds = landscapeRoute
+                        ? [self landscapeKeyboardDisplayBoundsForSession]
+                        : FLMVisualScreenBounds();
+    if (landscapeRoute &&
+        (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0)) {
+        return;
+    }
     FLMKeyboardForwardingWindow *window =
         [[FLMKeyboardForwardingWindow alloc]
             initWithWindowScene:targetWindowScene];
     window.frame = bounds;
+    window.bounds = CGRectMake(0.0, 0.0,
+                               CGRectGetWidth(bounds),
+                               CGRectGetHeight(bounds));
     // TrollOpen's level 45 sits above its own content hierarchy. Flyme's card
     // is itself an alert-level SpringBoard window, so the same absolute level
     // incorrectly places the native keyboard underneath it. Keep the keyboard
@@ -6468,6 +6561,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [[FLMOverlayViewController alloc] init];
     rootController.view.backgroundColor = [UIColor clearColor];
     rootController.view.frame = window.bounds;
+    rootController.view.bounds = window.bounds;
     rootController.view.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     window.rootViewController = rootController;
@@ -6481,6 +6575,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     window.hidden = YES;
     self.keyboardForwardingWindow = window;
+}
+
+- (CGRect)landscapeKeyboardDisplayBoundsForSession {
+    CGRect bounds = self.landscapeKeyboardDisplayBounds;
+    if (CGRectGetWidth(bounds) > 1.0 && CGRectGetHeight(bounds) > 1.0 &&
+        CGRectGetWidth(bounds) > CGRectGetHeight(bounds)) {
+        return bounds;
+    }
+
+    // The route snapshot normally exists before any keyboard host callback.
+    // Keep this fallback for a host that races the route publication, but only
+    // accept a genuinely landscape frame; never promote a transient 390x844
+    // frame into the forwarding window.
+    CGRect current = FLMLandscapeModuleVisualBounds();
+    if (CGRectGetWidth(current) > 1.0 && CGRectGetHeight(current) > 1.0 &&
+        CGRectGetWidth(current) > CGRectGetHeight(current)) {
+        self.landscapeKeyboardDisplayBounds = current;
+        if (!UIInterfaceOrientationIsLandscape(
+                self.landscapeKeyboardDisplayOrientation)) {
+            self.landscapeKeyboardDisplayOrientation =
+                FLMActiveInterfaceOrientation();
+        }
+        return current;
+    }
+    return CGRectZero;
 }
 
 - (BOOL)propagateLandscapeKeyboardScenePairing:(id)keyboardScene
@@ -6626,6 +6745,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMEnqueueDiagnosticLine(@"sb landscape-host-update rejected=inactive");
         return;
     }
+    // A rotation transaction can create a second remote-keyboard host in the
+    // old 390x844 space after the valid 844x390 host is already attached. Do
+    // not replace the active landscape host with that portrait instance.
+    CGRect incomingFrame = hostView.frame;
+    CGRect incomingBounds = hostView.bounds;
+    BOOL frameHasArea = CGRectGetWidth(incomingFrame) > 1.0 &&
+                        CGRectGetHeight(incomingFrame) > 1.0;
+    BOOL boundsHasArea = CGRectGetWidth(incomingBounds) > 1.0 &&
+                         CGRectGetHeight(incomingBounds) > 1.0;
+    BOOL incomingPortrait =
+        (frameHasArea && CGRectGetWidth(incomingFrame) <
+                             CGRectGetHeight(incomingFrame)) ||
+        (!frameHasArea && boundsHasArea &&
+         CGRectGetWidth(incomingBounds) < CGRectGetHeight(incomingBounds));
+    if (incomingPortrait) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-host-update rejected=portrait-transition host=%p session=%lu frame=%@ bounds=%@ active=%p",
+            (__bridge void *)hostView, (unsigned long)sessionGeneration,
+            NSStringFromCGRect(incomingFrame),
+            NSStringFromCGRect(incomingBounds),
+            (__bridge void *)self.landscapeKeyboardLayerHostView);
+        return;
+    }
 
     id keyboardScene = nil;
     id preferredHostIdentity = nil;
@@ -6683,11 +6825,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                     UIViewAutoresizingFlexibleHeight;
         hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = forwardingRoot.bounds;
+        hostView.bounds = forwardingRoot.bounds;
+        hostView.center = CGPointMake(CGRectGetMidX(forwardingRoot.bounds),
+                                      CGRectGetMidY(forwardingRoot.bounds));
         [forwardingRoot addSubview:hostView];
     } else {
         hostView.transform = CGAffineTransformIdentity;
-        hostView.frame = forwardingRoot.bounds;
+        hostView.bounds = forwardingRoot.bounds;
+        hostView.center = CGPointMake(CGRectGetMidX(forwardingRoot.bounds),
+                                      CGRectGetMidY(forwardingRoot.bounds));
     }
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
@@ -6697,9 +6843,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.keyboardForwardingWindow.hidden = YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-host-update paired=%d host=%p session=%lu visible=%d hostFrame=%@ windowLevel=%.1f key=%d",
+        @"sb landscape-host-update paired=%d host=%p session=%lu visible=%d hostFrame=%@ hostBounds=%@ rootBounds=%@ windowLevel=%.1f key=%d",
         paired, (__bridge void *)hostView, (unsigned long)sessionGeneration,
         self.landscapeKeyboardVisible, NSStringFromCGRect(hostView.frame),
+        NSStringFromCGRect(hostView.bounds),
+        NSStringFromCGRect(forwardingRoot.bounds),
         self.keyboardForwardingWindow.windowLevel,
         self.keyboardForwardingWindow.isKeyWindow);
 }
@@ -6720,7 +6868,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             (unsigned long)sessionGeneration);
         return;
     }
-    CGRect bounds = FLMLandscapeModuleVisualBounds();
+    CGRect bounds = [self landscapeKeyboardDisplayBoundsForSession];
+    if (CGRectGetWidth(bounds) <= 1.0 || CGRectGetHeight(bounds) <= 1.0) {
+        self.landscapeKeyboardVisible = NO;
+        self.landscapeKeyboardFrame = CGRectNull;
+        if (self.keyboardForwardingWindow) {
+            self.keyboardForwardingWindow.keyboardInteractionFrame = CGRectNull;
+            self.keyboardForwardingWindow.hidden = YES;
+        }
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard-frame ignored=no-landscape-bounds session=%lu raw=%@",
+            (unsigned long)sessionGeneration, NSStringFromCGRect(frame));
+        return;
+    }
+    if (CGRectGetWidth(frame) <= 1.0 || CGRectGetHeight(frame) <= 1.0 ||
+        CGRectGetWidth(frame) < CGRectGetHeight(frame)) {
+        // During rotation UIKit may publish one or more portrait-space frames
+        // while the landscape keyboard is still on screen. They are not a
+        // dismissal and must not be used to resize or reposition the route.
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard-frame ignored=portrait-transition session=%lu raw=%@ stableBounds=%@ retainedVisible=%d",
+            (unsigned long)sessionGeneration, NSStringFromCGRect(frame),
+            NSStringFromCGRect(bounds), self.landscapeKeyboardVisible);
+        return;
+    }
     CGFloat reportedHeight = CGRectGetHeight(frame);
     if (reportedHeight < 180.0) {
         reportedHeight = 207.0;
@@ -6743,9 +6914,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self.keyboardForwardingWindow makeKeyAndVisible];
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard-frame visible session=%lu raw=%@ bounds=%@ normalized=%@ host=%p forwardingKey=%d",
+        @"sb landscape-keyboard-frame visible session=%lu raw=%@ bounds=%@ normalized=%@ displayOrientation=%ld host=%p forwardingKey=%d",
         (unsigned long)sessionGeneration, NSStringFromCGRect(frame),
         NSStringFromCGRect(bounds), NSStringFromCGRect(normalizedFrame),
+        (long)self.landscapeKeyboardDisplayOrientation,
         (__bridge void *)self.landscapeKeyboardLayerHostView,
         self.keyboardForwardingWindow.isKeyWindow);
 }
@@ -6799,6 +6971,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.landscapeKeyboardIdentifier = nil;
     self.landscapeKeyboardApplicationScene = nil;
     self.landscapeKeyboardSessionGeneration = 0;
+    self.landscapeKeyboardDisplayBounds = CGRectZero;
+    self.landscapeKeyboardDisplayOrientation = UIInterfaceOrientationUnknown;
     FLMEnqueueDiagnosticLine(
         @"sb landscape-keyboard-session end requested=%lu current=%lu",
         (unsigned long)sessionGeneration, (unsigned long)current);
@@ -7471,15 +7645,38 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGRect frame = frameValue.CGRectValue;
-    CGRect bounds = FLMVisualScreenBounds();
-    BOOL visible = CGRectIntersectsRect(bounds, frame) &&
-                   CGRectGetMinY(frame) < CGRectGetHeight(bounds);
+    BOOL landscapeRoute = FLMLandscapeModuleHasVisibleCard() &&
+                          FLMLandscapeModuleKeyboardSessionGeneration() != 0;
+    CGRect bounds = landscapeRoute
+                        ? [self landscapeKeyboardDisplayBoundsForSession]
+                        : FLMVisualScreenBounds();
+    BOOL visible = NO;
+    if (landscapeRoute) {
+        BOOL hasArea = CGRectGetWidth(frame) > 1.0 &&
+                       CGRectGetHeight(frame) > 1.0;
+        BOOL frameIsLandscape = CGRectGetWidth(frame) >=
+                                CGRectGetHeight(frame);
+        if (hasArea && frameIsLandscape &&
+            CGRectGetWidth(bounds) > 1.0 && CGRectGetHeight(bounds) > 1.0) {
+            visible = CGRectIntersectsRect(bounds, frame) &&
+                      CGRectGetMinY(frame) < CGRectGetHeight(bounds);
+        } else if (hasArea && !frameIsLandscape) {
+            // Keep a portrait transition frame observable for diagnostics, but
+            // let applyLandscapeKeyboardFrame discard it without dismissing a
+            // valid landscape keyboard. A portrait frame at y=844 (the hidden
+            // state on a 390x844 source) remains non-visible.
+            visible = CGRectGetMinY(frame) <
+                      MAX(CGRectGetHeight(bounds), CGRectGetWidth(bounds));
+        }
+    } else {
+        visible = CGRectIntersectsRect(bounds, frame) &&
+                  CGRectGetMinY(frame) < CGRectGetHeight(bounds);
+    }
     FLMEnqueueDiagnosticLine(
-        @"sb notification=%@ rawFrame=%@ bounds=%@ computedVisible=%d",
+        @"sb notification=%@ rawFrame=%@ bounds=%@ computedVisible=%d landscapeRoute=%d",
         notification.name, NSStringFromCGRect(frame), NSStringFromCGRect(bounds),
-        visible);
-    if (FLMLandscapeModuleHasVisibleCard() &&
-        FLMLandscapeModuleKeyboardSessionGeneration() != 0) {
+        visible, landscapeRoute);
+    if (landscapeRoute) {
         [self applyLandscapeKeyboardFrame:frame visible:visible];
         return;
     }

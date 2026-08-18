@@ -268,6 +268,43 @@ CGRect FLMLandscapeModuleVisualBounds(void) {
         screen, FLMLandscapeInterfaceOrientation());
 }
 
+UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void) {
+    UIEdgeInsets result = UIEdgeInsetsZero;
+    UIWindowScene *scene = FLMLandscapeWindowScene();
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    if (scene) {
+        [windows addObjectsFromArray:scene.windows];
+    }
+    UIWindow *moduleWindow = [FLMLandscapeModule sharedModule].window;
+    if (moduleWindow && ![windows containsObject:moduleWindow]) {
+        [windows addObject:moduleWindow];
+    }
+
+    // The module window is sometimes the only window whose safe-area has
+    // already settled when the first landscape touch arrives. Include it
+    // explicitly, then use the largest edge reported by the scene windows so
+    // the notch inset is still available while SpringBoard is transitioning.
+    for (UIWindow *window in windows) {
+        if (![window isKindOfClass:[UIWindow class]]) {
+            continue;
+        }
+        UIEdgeInsets candidate = window.safeAreaInsets;
+        result.left = MAX(result.left, candidate.left);
+        result.right = MAX(result.right, candidate.right);
+        result.top = MAX(result.top, candidate.top);
+        result.bottom = MAX(result.bottom, candidate.bottom);
+        UIView *rootView = window.rootViewController.view;
+        if (rootView) {
+            candidate = rootView.safeAreaInsets;
+            result.left = MAX(result.left, candidate.left);
+            result.right = MAX(result.right, candidate.right);
+            result.top = MAX(result.top, candidate.top);
+            result.bottom = MAX(result.bottom, candidate.bottom);
+        }
+    }
+    return result;
+}
+
 static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
     CGRect bounds = CGRectZero;
     if (@available(iOS 8.0, *)) {
@@ -1053,33 +1090,38 @@ static id FLMLandscapeSceneForHandle(id handle) {
     CGSize reference = self.displayBounds.size;
     if (CGRectGetWidth(logicalFrame) > 1.0 &&
         CGRectGetHeight(logicalFrame) > 1.0) {
+        // The landscape Scene stays display-landscape so UIKit exposes the
+        // full-display horizontal keyboard.  Its settings frame is still the
+        // fixed 390x844 logical surface used by the vertical card. Do not
+        // rotate this reference back to 844x390 here: that was the source of
+        // the non-uniform {0.231043,0.917949} stretch in diagnostic 86.
         reference = logicalFrame.size;
-        if (UIInterfaceOrientationIsLandscape(sceneOrientation) &&
-            reference.width < reference.height) {
-            // The scene settings are logical/fixed-space dimensions.  The
-            // layer host itself must use the corresponding rotated visual
-            // dimensions, matching the orientation-aware layout used by
-            // MilkyWayReborn's content host.
-            reference = CGSizeMake(reference.height, reference.width);
-        }
     }
     if (reference.width <= 1.0 || reference.height <= 1.0) {
         reference = self.displayBounds.size;
     }
     CGSize target = self.cardView.bounds.size;
-    CGFloat scaleX = target.width / reference.width;
-    CGFloat scaleY = target.height / reference.height;
+    // Fill the vertical card without distorting the application surface. The
+    // card clips the small top/bottom crop produced by aspect-fill, just like
+    // the frozen centered presentation path.
+    CGFloat uniformScale = MAX(target.width / reference.width,
+                               target.height / reference.height);
+    CGFloat renderedWidth = reference.width * uniformScale;
+    CGFloat renderedHeight = reference.height * uniformScale;
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
-    self.hostView.transform = CGAffineTransformMakeScale(scaleX, scaleY);
+    self.hostView.transform = CGAffineTransformMakeScale(uniformScale,
+                                                         uniformScale);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} scale={%.6f,%.6f} orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} cropY=%.1f orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
         logicalFrame.size.width, logicalFrame.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
-        scaleX, scaleY, (long)sceneOrientation);
+        uniformScale, renderedWidth, renderedHeight,
+        MAX(0.0, (renderedHeight - target.height) * 0.5),
+        (long)sceneOrientation);
 }
 
 - (void)outsideTap:(UITapGestureRecognizer *)gesture {
@@ -1251,6 +1293,11 @@ static id FLMLandscapeSceneForHandle(id handle) {
         CGRect bounds = FLMLandscapeModuleVisualBounds();
         if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings setFrame:bounds];
+        }
+        UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
+        if (UIInterfaceOrientationIsLandscape(orientation) &&
+            [mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
+            [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
         }
         if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
             [mutableSettings setForeground:NO];
