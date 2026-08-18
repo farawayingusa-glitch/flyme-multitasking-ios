@@ -9,6 +9,7 @@
 // no portrait presentation state is exposed here.
 BOOL FLMLandscapeModuleIsLandscape(void);
 CGRect FLMLandscapeModuleVisualBounds(void);
+UIInterfaceOrientation FLMLandscapeModuleVisualOrientation(void);
 UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void);
 CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint);
 

@@ -23,6 +23,7 @@
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
+#define FLYME_KEYBOARD_ORIENTATION_NOTIFICATION "com.codex.flymemultitasking.keyboard-orientation-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
@@ -1630,6 +1631,7 @@ static int FlymeRuntimeToken = -1;
 static int FlymeKeyboardRouteToken = -1;
 static int FlymeKeyboardSceneToken = -1;
 static int FlymeKeyboardSessionToken = -1;
+static int FlymeKeyboardOrientationToken = -1;
 static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
 static int FlymeKeyboardAppCtorToken = -1;
@@ -1642,6 +1644,8 @@ static dispatch_queue_t FLMKeyboardSharedStateWriterQueue;
 static NSString *FLMKeyboardSharedIdentifier;
 static uint64_t FLMKeyboardSharedSceneHash = 0;
 static uint64_t FLMKeyboardSharedSessionGeneration = 0;
+static UIInterfaceOrientation FLMKeyboardSharedInterfaceOrientation =
+    UIInterfaceOrientationUnknown;
 static BOOL FLMKeyboardSharedAvoidanceVisible = NO;
 static CGFloat FLMKeyboardSharedAvoidanceHeight = 0.0;
 static BOOL FLMKeyboardSharedCardActive = NO;
@@ -1651,6 +1655,18 @@ static CGFloat FLMKeyboardSharedCardWidth = 0.0;
 static CGFloat FLMKeyboardSharedCardHeight = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportWidth = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportHeight = 0.0;
+
+static UIInterfaceOrientation FLMLandscapeKeyboardInterfaceOrientation(void) {
+    UIInterfaceOrientation orientation =
+        FLMLandscapeModuleVisualOrientation();
+    if (UIInterfaceOrientationIsLandscape(orientation)) {
+        return orientation;
+    }
+    // The landscape module is already the authoritative presentation path at
+    // this point. If UIKit is between rotation transactions, keep the shared
+    // keyboard contract explicitly landscape instead of leaking portrait.
+    return UIInterfaceOrientationLandscapeLeft;
+}
 
 static id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
@@ -1811,6 +1827,7 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         @"bundleID": FLMKeyboardSharedIdentifier ?: @"",
         @"sceneHash": @(FLMKeyboardSharedSceneHash),
         @"sessionGeneration": @(FLMKeyboardSharedSessionGeneration),
+        @"interfaceOrientation": @(FLMKeyboardSharedInterfaceOrientation),
         @"avoidanceVisible": @(FLMKeyboardSharedAvoidanceVisible),
         @"avoidanceHeight": @(FLMKeyboardSharedAvoidanceHeight),
         @"cardActive": @(FLMKeyboardSharedCardActive),
@@ -1865,9 +1882,10 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         }
     });
     FLMEnqueueDiagnosticLine(
-        @"sb shared-state publish active=%d app=%@ session=%llu avoidance=%d/%.2f card=%d/%.2f/%.5f",
+        @"sb shared-state publish active=%d app=%@ session=%llu orientation=%ld avoidance=%d/%.2f card=%d/%.2f/%.5f",
         active, FLMKeyboardSharedIdentifier ?: @"<none>",
         (unsigned long long)FLMKeyboardSharedSessionGeneration,
+        (long)FLMKeyboardSharedInterfaceOrientation,
         FLMKeyboardSharedAvoidanceVisible, FLMKeyboardSharedAvoidanceHeight,
         FLMKeyboardSharedCardActive, FLMKeyboardSharedCardBottom,
         FLMKeyboardSharedCardScale);
@@ -1882,6 +1900,7 @@ static void FLMPublishKeyboardState(NSString *identifier,
     FLMKeyboardSharedSceneHash = sceneHash;
     FLMKeyboardSharedSessionGeneration = sessionGeneration;
     if (identifier.length == 0 || sessionGeneration == 0) {
+        FLMKeyboardSharedInterfaceOrientation = UIInterfaceOrientationUnknown;
         FLMKeyboardSharedAvoidanceVisible = NO;
         FLMKeyboardSharedAvoidanceHeight = 0.0;
         FLMKeyboardSharedCardActive = NO;
@@ -1891,6 +1910,13 @@ static void FLMPublishKeyboardState(NSString *identifier,
         FLMKeyboardSharedCardHeight = 0.0;
         FLMKeyboardSharedContentViewportWidth = 0.0;
         FLMKeyboardSharedContentViewportHeight = 0.0;
+    } else if (FLMLandscapeModuleHasVisibleCard() &&
+               FLMLandscapeModuleKeyboardSessionGeneration() ==
+                   sessionGeneration) {
+        FLMKeyboardSharedInterfaceOrientation =
+            FLMLandscapeKeyboardInterfaceOrientation();
+    } else {
+        FLMKeyboardSharedInterfaceOrientation = FLMActiveInterfaceOrientation();
     }
     FLMScheduleKeyboardSharedStateWrite();
     if (FlymeKeyboardRouteToken < 0 &&
@@ -1906,6 +1932,10 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_register_check(FLYME_KEYBOARD_SESSION_NOTIFICATION,
                               &FlymeKeyboardSessionToken);
     }
+    if (FlymeKeyboardOrientationToken < 0) {
+        notify_register_check(FLYME_KEYBOARD_ORIENTATION_NOTIFICATION,
+                              &FlymeKeyboardOrientationToken);
+    }
     if (FlymeKeyboardRouteToken >= 0) {
         notify_set_state(FlymeKeyboardRouteToken, routeHash);
     }
@@ -1916,6 +1946,11 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_set_state(FlymeKeyboardSessionToken, sessionGeneration);
         notify_post(FLYME_KEYBOARD_SESSION_NOTIFICATION);
     }
+    if (FlymeKeyboardOrientationToken >= 0) {
+        notify_set_state(FlymeKeyboardOrientationToken,
+                         (uint64_t)FLMKeyboardSharedInterfaceOrientation);
+        notify_post(FLYME_KEYBOARD_ORIENTATION_NOTIFICATION);
+    }
     if (FlymeKeyboardSceneToken >= 0) {
         notify_post(FLYME_KEYBOARD_SCENE_NOTIFICATION);
     }
@@ -1923,9 +1958,10 @@ static void FLMPublishKeyboardState(NSString *identifier,
         notify_post(FLYME_KEYBOARD_NOTIFICATION);
     }
     FLMEnqueueDiagnosticLine(
-        @"sb route-publish app=%@ scene=%@ session=%llu routeHash=0x%llx sceneHash=0x%llx",
+        @"sb route-publish app=%@ scene=%@ session=%llu orientation=%ld routeHash=0x%llx sceneHash=0x%llx",
         identifier ?: @"<none>", FLMSceneIdentifier(scene) ?: @"<none>",
         (unsigned long long)sessionGeneration,
+        (long)FLMKeyboardSharedInterfaceOrientation,
         (unsigned long long)routeHash,
         (unsigned long long)sceneHash);
     if (identifier.length > 0 && sessionGeneration != 0) {
@@ -1951,7 +1987,7 @@ void FLMLandscapeKeyboardRouteOpen(NSString *identifier,
         }
         controller.landscapeKeyboardDisplayBounds = displayBounds;
         controller.landscapeKeyboardDisplayOrientation =
-            FLMActiveInterfaceOrientation();
+            FLMLandscapeKeyboardInterfaceOrientation();
         controller.landscapeKeyboardMaximumVisibleHeight = 0.0;
         controller.landscapeKeyboardIdentifier = [identifier copy];
         controller.landscapeKeyboardApplicationScene = scene;

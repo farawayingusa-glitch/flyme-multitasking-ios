@@ -268,6 +268,10 @@ CGRect FLMLandscapeModuleVisualBounds(void) {
         screen, FLMLandscapeInterfaceOrientation());
 }
 
+UIInterfaceOrientation FLMLandscapeModuleVisualOrientation(void) {
+    return FLMLandscapeInterfaceOrientation();
+}
+
 UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void) {
     UIEdgeInsets result = UIEdgeInsetsZero;
     UIWindowScene *scene = FLMLandscapeWindowScene();
@@ -737,11 +741,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.cardView.frame = CGRectOffset(target, -CGRectGetWidth(target) - 24.0, 0.0);
     [self setHandleVisible:YES];
     [self layoutCardAnimated:YES];
+    UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@",
+        @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@ safeAreaLeft=%.1f safeAreaRight=%.1f",
         self.identifier, (unsigned long)self.generation,
         NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
-        NSStringFromCGRect(target));
+        NSStringFromCGRect(target), safeArea.left, safeArea.right);
     [self prewarmIdentifier:self.identifier];
     [self.lockTimer invalidate];
     self.lockTimer = [NSTimer timerWithTimeInterval:0.25
@@ -983,12 +988,17 @@ static id FLMLandscapeSceneForHandle(id handle) {
                             MIN(FLMLandscapeCardMaximumWidth,
                                 displayHeight * FLMLandscapeCardWidthRatio));
     CGFloat cardHeight = displayHeight * FLMLandscapeCardMaximumHeightRatio;
-    CGRect visibleFrame = CGRectMake(0.0,
+    UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
+    CGFloat maximumCardOriginX = MAX(0.0, displayWidth - cardWidth);
+    CGFloat cardOriginX = MAX(0.0, MIN(maximumCardOriginX, safeArea.left));
+    CGRect visibleFrame = CGRectMake(floor(cardOriginX),
                                      floor((displayHeight - cardHeight) * 0.5),
                                      floor(cardWidth),
                                      floor(cardHeight));
     CGRect target = self.hiddenCard
-        ? CGRectMake(-CGRectGetWidth(visibleFrame) + FLMLandscapeHiddenRevealWidth,
+        ? CGRectMake(CGRectGetMinX(visibleFrame) -
+                         CGRectGetWidth(visibleFrame) +
+                         FLMLandscapeHiddenRevealWidth,
                      CGRectGetMinY(visibleFrame),
                      CGRectGetWidth(visibleFrame),
                      CGRectGetHeight(visibleFrame))
@@ -1014,7 +1024,11 @@ static id FLMLandscapeSceneForHandle(id handle) {
 
 - (void)layoutHandleForCardFrame:(CGRect)cardFrame visibleFrame:(CGRect)visibleFrame {
     BOOL hidden = self.hiddenCard;
-    CGFloat x = hidden ? 0.0 : CGRectGetMaxX(cardFrame);
+    // Keep the reveal handle on the safe side of the left notch as well. The
+    // card is always a left-attached landscape card, so visibleFrame already
+    // contains the horizontal safe-area correction calculated above.
+    CGFloat x = hidden ? MAX(0.0, CGRectGetMinX(visibleFrame))
+                       : CGRectGetMaxX(cardFrame);
     CGFloat y = CGRectGetMidY(visibleFrame) - CGRectGetHeight(visibleFrame) * 0.16;
     CGFloat height = CGRectGetHeight(visibleFrame) * 0.32;
     self.handleView.frame = CGRectMake(x, floor(y), FLMLandscapeHandleWidth, height);
@@ -1101,25 +1115,27 @@ static id FLMLandscapeSceneForHandle(id handle) {
         reference = self.displayBounds.size;
     }
     CGSize target = self.cardView.bounds.size;
-    // Fill the vertical card without distorting the application surface. The
-    // card clips the small top/bottom crop produced by aspect-fill, just like
-    // the frozen centered presentation path.
-    CGFloat uniformScale = MAX(target.width / reference.width,
+    // Fit the complete logical surface inside the vertical card. Aspect-fill
+    // made the proportions look right but clipped the first/last 32 points of
+    // the 390x844 application surface in diagnostic 87. The small horizontal
+    // letterbox is intentional; it preserves every application pixel.
+    CGFloat uniformScale = MIN(target.width / reference.width,
                                target.height / reference.height);
     CGFloat renderedWidth = reference.width * uniformScale;
     CGFloat renderedHeight = reference.height * uniformScale;
+    CGFloat letterboxX = MAX(0.0, (target.width - renderedWidth) * 0.5);
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
     self.hostView.transform = CGAffineTransformMakeScale(uniformScale,
                                                          uniformScale);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} cropY=%.1f orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterboxX=%.1f cropY=%.1f orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
         logicalFrame.size.width, logicalFrame.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
-        uniformScale, renderedWidth, renderedHeight,
+        uniformScale, renderedWidth, renderedHeight, letterboxX,
         MAX(0.0, (renderedHeight - target.height) * 0.5),
         (long)sceneOrientation);
 }

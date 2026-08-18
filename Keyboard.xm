@@ -9,15 +9,17 @@
 // is injected into UIKit application clients, but installs functional hooks
 // only after the shared route identifies the current card target. The card is
 // a presentation transform; it must never become the keyboard's coordinate
-// system. UIKit therefore receives the display-sized reference (390x844 on
-// the target device). The card is only a SpringBoard presentation surface:
+// system. UIKit therefore receives the full display-sized reference. On the
+// independent landscape route this is explicitly 844x390, allowing a
+// third-party keyboard to select its native landscape layout. The card is
+// only a SpringBoard presentation surface:
 // the app and keyboard continue to use the full-screen 390x844 logical space.
-// SpringBoard applies one uniform presentation scale and clips only the
-// explicitly selected top/bottom card crop; it never changes the app's
-// keyboard coordinate system to the card's physical bounds.
+// SpringBoard applies one uniform presentation scale; it never changes the
+// app's keyboard coordinate system to the card's physical bounds.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
+#define FLYME_KEYBOARD_ORIENTATION_NOTIFICATION "com.codex.flymemultitasking.keyboard-orientation-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
@@ -36,10 +38,13 @@ static NSString *const FLMKeyboardSharedStateRootlessPath =
 static BOOL FLMKeyboardRouteActive = NO;
 static BOOL FLMKeyboardTargetApplication = NO;
 static BOOL FLMKeyboardExtensionProcess = NO;
+static UIInterfaceOrientation FLMKeyboardSharedInterfaceOrientation =
+    UIInterfaceOrientationUnknown;
 static BOOL FLMRemoteKeyboardGeometryInstalled = NO;
 static int FLMKeyboardRouteToken = -1;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
+static int FLMKeyboardOrientationToken = -1;
 static int FLMKeyboardAvoidanceToken = -1;
 static int FLMKeyboardCardGeometryToken = -1;
 static int FLMKeyboardSharedStateToken = -1;
@@ -314,10 +319,22 @@ static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
     return NO;
 }
 
+static UIInterfaceOrientation FLMKeyboardEffectiveInterfaceOrientation(
+    UIWindowScene *scene) {
+    if (FLMKeyboardRouteActive &&
+        UIInterfaceOrientationIsLandscape(
+            FLMKeyboardSharedInterfaceOrientation)) {
+        return FLMKeyboardSharedInterfaceOrientation;
+    }
+    return [scene isKindOfClass:[UIWindowScene class]]
+               ? scene.interfaceOrientation
+               : UIInterfaceOrientationUnknown;
+}
+
 static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
     CGSize size = FLMFullPhysicalScreenSize();
-    if ([scene isKindOfClass:[UIWindowScene class]] &&
-        UIInterfaceOrientationIsLandscape(scene.interfaceOrientation)) {
+    if (UIInterfaceOrientationIsLandscape(
+            FLMKeyboardEffectiveInterfaceOrientation(scene))) {
         size = CGSizeMake(size.height, size.width);
     }
     return CGRectMake(0.0, 0.0, size.width, size.height);
@@ -343,6 +360,10 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
         return FLMPhysicalReferenceBoundsForScene(windowScene);
     }
     CGSize size = FLMFullPhysicalScreenSize();
+    if (UIInterfaceOrientationIsLandscape(
+            FLMKeyboardSharedInterfaceOrientation)) {
+        size = CGSizeMake(size.height, size.width);
+    }
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
@@ -428,6 +449,14 @@ static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
     uint64_t sceneHash = 0;
+    uint64_t orientationState = 0;
+    if (FLMKeyboardOrientationToken < 0) {
+        notify_register_check(FLYME_KEYBOARD_ORIENTATION_NOTIFICATION,
+                              &FLMKeyboardOrientationToken);
+    }
+    if (FLMKeyboardOrientationToken >= 0) {
+        notify_get_state(FLMKeyboardOrientationToken, &orientationState);
+    }
     NSDictionary *sharedState = FLMReadKeyboardSharedState();
     BOOL sharedStateAvailable = sharedState != nil;
     BOOL sharedStateActive =
@@ -437,6 +466,22 @@ static void FLMReloadKeyboardRoute(void) {
         [sharedState[@"bundleID"] isKindOfClass:[NSString class]]
             ? sharedState[@"bundleID"]
             : nil;
+    NSNumber *sharedOrientationNumber =
+        [sharedState[@"interfaceOrientation"] isKindOfClass:[NSNumber class]]
+            ? sharedState[@"interfaceOrientation"]
+            : nil;
+    UIInterfaceOrientation sharedOrientation =
+        sharedOrientationNumber
+            ? (UIInterfaceOrientation)sharedOrientationNumber.integerValue
+            : UIInterfaceOrientationUnknown;
+    UIInterfaceOrientation notifiedOrientation =
+        (UIInterfaceOrientation)orientationState;
+    if (UIInterfaceOrientationIsLandscape(notifiedOrientation)) {
+        // The notify state is updated before the route notification and before
+        // the asynchronous plist write, so the first keyboard frame already
+        // receives the landscape contract.
+        sharedOrientation = notifiedOrientation;
+    }
     if (sharedStateAvailable) {
         targetHash = sharedStateActive
                          ? FLMIdentifierHash(sharedTargetIdentifier)
@@ -467,6 +512,13 @@ static void FLMReloadKeyboardRoute(void) {
     FLMKeyboardRouteActive =
         FLMKeyboardTargetApplication ||
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
+    if (!FLMKeyboardRouteActive) {
+        FLMKeyboardSharedInterfaceOrientation = UIInterfaceOrientationUnknown;
+    } else {
+        // SpringBoard publishes this independently of the target app Scene.
+        // Prefer it over the transient Scene orientation during rotation.
+        FLMKeyboardSharedInterfaceOrientation = sharedOrientation;
+    }
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
 
@@ -507,7 +559,11 @@ static void FLMReloadKeyboardRoute(void) {
             ((applicationIdentityFlags & 2U) != 0 ? 64U : 0U) |
             ((applicationIdentityFlags & 4U) != 0 ? 128U : 0U) |
              (sharedStateAvailable ? 256U : 0U) |
-             (sharedStateActive ? 512U : 0U);
+            (sharedStateActive ? 512U : 0U) |
+            (UIInterfaceOrientationIsLandscape(
+                 FLMKeyboardSharedInterfaceOrientation)
+                 ? 1024U
+                 : 0U);
         FLMPublishDiagnosticEvent(
             role,
             FLMDiagnosticEventRouteReload,
@@ -635,6 +691,10 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
         return 0.0;
     }
     CGSize physicalSize = FLMFullPhysicalScreenSize();
+    if (UIInterfaceOrientationIsLandscape(
+            FLMKeyboardSharedInterfaceOrientation)) {
+        physicalSize = CGSizeMake(physicalSize.height, physicalSize.width);
+    }
     CGFloat physicalOverlap = MAX(0.0, physicalSize.height - keyboardTop);
     if (physicalOverlap <= 1.0) {
         return 0.0;
@@ -915,7 +975,8 @@ static void FLMUpdateContentViewportAdapter(void) {
                                    ignoreHorizontalOffset);
     if (!FLMKeyboardTargetApplication ||
         !FLMSceneMatchesKeyboardRoute(windowScene) ||
-        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        UIInterfaceOrientationIsLandscape(
+            FLMKeyboardEffectiveInterfaceOrientation(windowScene))) {
         return originalHeight;
     }
 
@@ -974,6 +1035,12 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                              });
     notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
                              &FLMKeyboardSessionToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMHandleKeyboardRouteNotification();
+                             });
+    notify_register_dispatch(FLYME_KEYBOARD_ORIENTATION_NOTIFICATION,
+                             &FLMKeyboardOrientationToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
                                  FLMHandleKeyboardRouteNotification();
