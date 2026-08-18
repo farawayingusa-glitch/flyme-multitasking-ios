@@ -87,6 +87,10 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, strong) FLMLandscapeWindow *window;
 @property(nonatomic, strong) FLMLandscapeRootView *rootView;
 @property(nonatomic, strong) UIView *cardView;
+// The application presentation host stays a native full-screen landscape
+// surface. This wrapper is the only layer allowed to carry the card's visual
+// transform; UIKit and the keyboard never receive the card transform.
+@property(nonatomic, strong) UIView *hostPresentationView;
 @property(nonatomic, strong) UIView *hostView;
 @property(nonatomic, strong) UIView *handleView;
 @property(nonatomic, strong) UIView *handleBar;
@@ -441,10 +445,19 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
     UIView *hostView = rootView.hostView;
     if (hostView) {
         if (scaleOut) {
-            *scaleOut = hypot(hostView.transform.a, hostView.transform.b);
+            // The real application host is deliberately kept at identity.
+            // The visual card transform belongs to its SpringBoard-only
+            // presentation container, and UIView conversion walks through
+            // that container when mapping the touch back to Scene space.
+            UIView *presentationView = hostView.superview;
+            CGAffineTransform visualTransform = presentationView
+                ? presentationView.transform
+                : hostView.transform;
+            *scaleOut = hypot(visualTransform.a, visualTransform.b);
         }
         // UIView conversion applies the inverse of the visual-only card
-        // rotation/scale, returning coordinates in the real landscape Scene.
+        // container rotation/scale, returning coordinates in the real
+        // full-screen landscape Scene.
         return [hostView convertPoint:screenPoint fromView:rootView];
     }
     UIView *cardView = rootView.cardView;
@@ -623,6 +636,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
     card.userInteractionEnabled = YES;
     [root addSubview:card];
 
+    UIView *hostPresentation = [[UIView alloc] initWithFrame:CGRectZero];
+    hostPresentation.backgroundColor = [UIColor clearColor];
+    hostPresentation.userInteractionEnabled = YES;
+    hostPresentation.clipsToBounds = NO;
+    [card addSubview:hostPresentation];
+
     UIView *cover = [[UIView alloc] initWithFrame:CGRectZero];
     cover.backgroundColor = [UIColor secondarySystemBackgroundColor];
     cover.hidden = YES;
@@ -656,6 +675,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.window = window;
     self.rootView = root;
     self.cardView = card;
+    self.hostPresentationView = hostPresentation;
     self.hostView = nil;
     self.handleView = handle;
     self.handleBar = bar;
@@ -708,6 +728,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.identifier, (unsigned long)self.generation);
     [self.hostView removeFromSuperview];
     self.hostView = nil;
+    self.hostPresentationView.transform = CGAffineTransformIdentity;
+    self.hostPresentationView.bounds = CGRectZero;
     self.scene = nil;
     self.sceneHandle = nil;
     self.sceneEntity = nil;
@@ -756,16 +778,26 @@ static id FLMLandscapeSceneForHandle(id handle) {
     BOOL sceneMatches = self.expectedHostSceneIdentifier.length == 0 ||
                         [self.expectedHostSceneIdentifier
                             isEqualToString:sceneIdentifier ?: @""];
+    CGAffineTransform hostTransform = self.hostView.transform;
+    BOOL hostTransformIsIdentity =
+        fabs(hostTransform.a - 1.0) < 0.01 &&
+        fabs(hostTransform.d - 1.0) < 0.01 &&
+        fabs(hostTransform.b) < 0.01 && fabs(hostTransform.c) < 0.01 &&
+        fabs(hostTransform.tx) < 0.01 && fabs(hostTransform.ty) < 0.01;
+    BOOL hostAttachedToPresentation =
+        self.hostPresentationView == self.hostView.superview;
     if (geometryMatches && sceneMatches &&
-        self.expectedHostGeneration == self.generation) {
+        self.expectedHostGeneration == self.generation &&
+        hostTransformIsIdentity && hostAttachedToPresentation) {
         return YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb host-geometry-mismatch generation=%lu expectedContent=%@ actualHost=%@ expectedScene=%@ actualScene=%@ action=visual-relayout",
+        @"sb host-geometry-mismatch generation=%lu expectedContent=%@ actualHost=%@ expectedScene=%@ actualScene=%@ hostTransform=%@ hostPresentation=%d action=visual-relayout",
         (unsigned long)self.generation,
         NSStringFromCGRect(self.expectedHostBounds), NSStringFromCGRect(actual),
         self.expectedHostSceneIdentifier ?: @"<none>",
-        sceneIdentifier ?: @"<none>");
+        sceneIdentifier ?: @"<none>", NSStringFromCGAffineTransform(hostTransform),
+        hostAttachedToPresentation);
     [self layoutHost];
     return YES;
 }
@@ -984,7 +1016,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
         host.backgroundColor = [UIColor blackColor];
         host.userInteractionEnabled = YES;
         host.clipsToBounds = NO;
-        [self.cardView insertSubview:host belowSubview:self.launchCoverView];
+        [self.hostPresentationView addSubview:host];
+    } else if (host.superview != self.hostPresentationView) {
+        [host removeFromSuperview];
+        [self.hostPresentationView addSubview:host];
     }
     self.presenterScene = scene;
     CGRect sceneFrame = FLMLandscapeSceneSettingsFrame(scene);
@@ -997,6 +1032,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.expectedHostGeneration = generation;
     self.expectedHostSceneIdentifier = FLMLandscapeSceneIdentifier(scene);
     host.hidden = NO;
+    host.transform = CGAffineTransformIdentity;
     [self layoutHost];
     self.launchCoverView.hidden = YES;
     self.launchCoverView.alpha = 1.0;
@@ -1195,6 +1231,14 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.displayBounds.size.width <= 1.0) {
         return;
     }
+    UIView *presentationView = self.hostPresentationView;
+    if (!presentationView) {
+        return;
+    }
+    if (self.hostView.superview != presentationView) {
+        [self.hostView removeFromSuperview];
+        [presentationView addSubview:self.hostView];
+    }
     CGRect sceneFrame = FLMLandscapeSceneSettingsFrame(self.scene);
     if (CGRectGetWidth(sceneFrame) <= 1.0 ||
         CGRectGetHeight(sceneFrame) <= 1.0 ||
@@ -1210,10 +1254,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
         sceneOrientation = self.displayOrientation;
     }
     CGSize target = self.cardView.bounds.size;
-    // The app's actual Scene stays full-screen landscape. Only this
-    // SpringBoard presentation view is rotated and scaled into the
-    // portrait-shaped card. UIKit, the app root view and the keyboard never
-    // receive this transform.
+    // The app's actual Scene and presentation host stay full-screen landscape
+    // at identity. Only the SpringBoard-owned wrapper is rotated and scaled
+    // into the portrait-shaped card. UIKit, the app root view and the keyboard
+    // never receive this visual transform.
     CGSize presentedSize = CGSizeMake(CGRectGetHeight(sceneFrame),
                                       CGRectGetWidth(sceneFrame));
     CGFloat uniformScale = MIN(target.width / presentedSize.width,
@@ -1225,22 +1269,31 @@ static id FLMLandscapeSceneForHandle(id handle) {
     CGFloat rotation = sceneOrientation == UIInterfaceOrientationLandscapeRight
                            ? -M_PI_2
                            : M_PI_2;
+    presentationView.transform = CGAffineTransformIdentity;
+    presentationView.bounds = CGRectMake(0.0, 0.0,
+                                          CGRectGetWidth(sceneFrame),
+                                          CGRectGetHeight(sceneFrame));
+    presentationView.center = CGPointMake(target.width * 0.5,
+                                           target.height * 0.5);
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0,
                                       CGRectGetWidth(sceneFrame),
                                       CGRectGetHeight(sceneFrame));
-    self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
+    self.hostView.center = CGPointMake(CGRectGetMidX(presentationView.bounds),
+                                       CGRectGetMidY(presentationView.bounds));
     CGAffineTransform presentationTransform =
         CGAffineTransformMakeScale(uniformScale, uniformScale);
-    self.hostView.transform = CGAffineTransformRotate(presentationTransform,
-                                                      rotation);
+    presentationView.transform = CGAffineTransformRotate(presentationTransform,
+                                                         rotation);
+    presentationView.hidden = NO;
     self.rootView.hostView = self.hostView;
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} sceneFrame={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} presented={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterbox={%.1f,%.1f} visualRotation=%.0f orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} sceneFrame={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} hostTransform=identity presenter={%.1f,%.1f} presented={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterbox={%.1f,%.1f} visualRotation=%.0f orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
         sceneFrame.size.width, sceneFrame.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
+        presentationView.bounds.size.width, presentationView.bounds.size.height,
         presentedSize.width, presentedSize.height, uniformScale,
         renderedWidth, renderedHeight, letterboxX, letterboxY,
         rotation * 180.0 / M_PI,
@@ -1347,6 +1400,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.resolveTimer = nil;
     [self.hostView removeFromSuperview];
     self.hostView = nil;
+    self.hostPresentationView.transform = CGAffineTransformIdentity;
+    self.hostPresentationView.bounds = CGRectZero;
     self.rootView.hostView = nil;
     id scene = self.scene;
     id presenter = self.presenter;

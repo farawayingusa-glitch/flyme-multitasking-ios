@@ -110,6 +110,9 @@ for marker in \
     "setInterfaceOrientation:(NSInteger)orientation" \
     "contentContract=full-screen-landscape" \
     "FLMLandscapeFullScreenContentWidth" \
+    "hostPresentationView" \
+    "hostTransform=identity" \
+    "presentationView.transform = CGAffineTransformRotate" \
     "CGAffineTransformRotate" \
     "visualRotation="; do
     grep -Fq -- "$marker" "$landscape_source" || {
