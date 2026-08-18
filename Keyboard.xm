@@ -425,7 +425,7 @@ static CGRect FLMKeyboardDisplayBoundsForScene(UIWindowScene *scene) {
     return FLMSystemDisplayBoundsForScene(scene);
 }
 
-static CGRect FLMAppVirtualViewportBounds(void) {
+static __attribute__((unused)) CGRect FLMAppVirtualViewportBounds(void) {
     // Named App-side API retained for compatibility with the frozen
     // foundation. Keyboard geometry never calls it; content layout uses the
     // explicit request-bounds helper while native keyboard geometry uses the
