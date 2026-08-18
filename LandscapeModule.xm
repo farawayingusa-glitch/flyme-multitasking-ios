@@ -43,6 +43,12 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)invalidate;
 - (void)setForeground:(BOOL)foreground;
 - (void)setBackgrounded:(BOOL)backgrounded;
+- (BOOL)foreground;
+- (BOOL)backgrounded;
+- (BOOL)isForeground;
+- (BOOL)isBackgrounded;
+- (BOOL)isActive;
+- (NSInteger)activationState;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
 - (void)setFrame:(CGRect)frame;
 - (void)setInterfaceOrientation:(NSInteger)orientation;
@@ -69,6 +75,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 
 @interface UIApplication (FLMLandscapeRuntimePrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier suspended:(BOOL)suspended;
+- (id)_accessibilityFrontMostApplication;
 @end
 
 @interface FLMLandscapeRootView : UIView
@@ -124,6 +131,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)updateFrames;
 - (void)orientationDidChange;
 - (void)openIdentifier:(NSString *)identifier;
+- (void)activateIdentifier:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
 - (void)refreshSceneForeground;
 - (BOOL)validateHostGeometry;
@@ -225,6 +233,191 @@ static UIInterfaceOrientation FLMLandscapeSceneSettingsOrientation(id scene) {
     } @catch (__unused NSException *exception) {
         return UIInterfaceOrientationUnknown;
     }
+}
+
+static BOOL FLMLandscapeReadBool(id object,
+                                 SEL selector,
+                                 BOOL *available) {
+    if (available) {
+        *available = NO;
+    }
+    if (!object || ![object respondsToSelector:selector]) {
+        return NO;
+    }
+    BOOL (*getter)(id, SEL) =
+        (BOOL (*)(id, SEL))[object methodForSelector:selector];
+    if (!getter) {
+        return NO;
+    }
+    if (available) {
+        *available = YES;
+    }
+    return getter(object, selector);
+}
+
+static NSInteger FLMLandscapeReadInteger(id object,
+                                         SEL selector,
+                                         BOOL *available) {
+    if (available) {
+        *available = NO;
+    }
+    if (!object || ![object respondsToSelector:selector]) {
+        return -1;
+    }
+    NSInteger (*getter)(id, SEL) =
+        (NSInteger (*)(id, SEL))[object methodForSelector:selector];
+    if (!getter) {
+        return -1;
+    }
+    if (available) {
+        *available = YES;
+    }
+    return getter(object, selector);
+}
+
+static BOOL FLMLandscapeSceneRuntimeIsForeground(id scene,
+                                                 BOOL *known,
+                                                 NSInteger *activationState) {
+    if (known) {
+        *known = NO;
+    }
+    if (activationState) {
+        *activationState = -1;
+    }
+    if (!scene) {
+        return NO;
+    }
+
+    BOOL activationStateKnown = NO;
+    NSInteger state = FLMLandscapeReadInteger(
+        scene, @selector(activationState), &activationStateKnown);
+    if (activationState) {
+        *activationState = state;
+    }
+    if (activationStateKnown) {
+        if (known) {
+            *known = YES;
+        }
+        return state == UISceneActivationStateForegroundActive ||
+               state == UISceneActivationStateForegroundInactive;
+    }
+
+    BOOL foregroundKnown = NO;
+    BOOL foreground = FLMLandscapeReadBool(
+        scene, @selector(isForeground), &foregroundKnown);
+    if (foregroundKnown) {
+        if (known) {
+            *known = YES;
+        }
+        return foreground;
+    }
+
+    BOOL activeKnown = NO;
+    BOOL active = FLMLandscapeReadBool(scene, @selector(isActive), &activeKnown);
+    if (activeKnown) {
+        if (known) {
+            *known = YES;
+        }
+        return active;
+    }
+
+    // Some iOS 16 SpringBoard scene objects do not expose activation state to
+    // SpringBoard. In that case the non-suspended application activation and
+    // the protected-scene settings are the only available contract; do not
+    // reject a valid scene merely because the private getter is absent.
+    return YES;
+}
+
+static NSString *FLMLandscapeSceneRuntimeSummary(id scene) {
+    BOOL activationStateKnown = NO;
+    NSInteger activationState = FLMLandscapeReadInteger(
+        scene, @selector(activationState), &activationStateKnown);
+    BOOL foregroundKnown = NO;
+    BOOL foreground = FLMLandscapeReadBool(
+        scene, @selector(isForeground), &foregroundKnown);
+    BOOL activeKnown = NO;
+    BOOL active = FLMLandscapeReadBool(scene, @selector(isActive), &activeKnown);
+    BOOL backgroundedKnown = NO;
+    BOOL backgrounded = FLMLandscapeReadBool(
+        scene, @selector(isBackgrounded), &backgroundedKnown);
+    id settings = [scene respondsToSelector:@selector(settings)]
+                      ? [scene settings]
+                      : nil;
+    BOOL settingsForegroundKnown = NO;
+    BOOL settingsForeground = FLMLandscapeReadBool(
+        settings, @selector(foreground), &settingsForegroundKnown);
+    BOOL settingsBackgroundedKnown = NO;
+    BOOL settingsBackgrounded = FLMLandscapeReadBool(
+        settings, @selector(backgrounded), &settingsBackgroundedKnown);
+    return [NSString stringWithFormat:
+                       @"activationState=%ld/%d isForeground=%d/%d isActive=%d/%d isBackgrounded=%d/%d settingsForeground=%d/%d settingsBackgrounded=%d/%d",
+                       (long)activationState, activationStateKnown,
+                       foreground, foregroundKnown, active, activeKnown,
+                       backgrounded, backgroundedKnown, settingsForeground,
+                       settingsForegroundKnown, settingsBackgrounded,
+                       settingsBackgroundedKnown];
+}
+
+static BOOL FLMLandscapeSceneHasNativeLandscapeSettings(id scene) {
+    CGRect frame = FLMLandscapeSceneSettingsFrame(scene);
+    UIInterfaceOrientation orientation =
+        FLMLandscapeSceneSettingsOrientation(scene);
+    return CGRectGetWidth(frame) > CGRectGetHeight(frame) &&
+           CGRectGetWidth(frame) > 1.0 && CGRectGetHeight(frame) > 1.0 &&
+           UIInterfaceOrientationIsLandscape(orientation);
+}
+
+static BOOL FLMLandscapeTransformIsIdentity(CGAffineTransform transform) {
+    return fabs(transform.a - 1.0) < 0.01 &&
+           fabs(transform.d - 1.0) < 0.01 && fabs(transform.b) < 0.01 &&
+           fabs(transform.c) < 0.01 && fabs(transform.tx) < 0.01 &&
+           fabs(transform.ty) < 0.01;
+}
+
+static NSString *FLMLandscapeApplicationIdentifier(id application) {
+    if (!application) {
+        return nil;
+    }
+    SEL selectors[] = {
+        @selector(bundleIdentifier),
+        @selector(displayIdentifier),
+    };
+    for (NSUInteger index = 0;
+         index < sizeof(selectors) / sizeof(selectors[0]);
+         index++) {
+        SEL selector = selectors[index];
+        if (![application respondsToSelector:selector]) {
+            continue;
+        }
+        NSString *(*getter)(id, SEL) =
+            (NSString *(*)(id, SEL))[application methodForSelector:selector];
+        NSString *identifier = getter ? getter(application, selector) : nil;
+        if (identifier.length > 0) {
+            return identifier;
+        }
+    }
+    return nil;
+}
+
+static NSString *FLMLandscapeFrontmostApplicationIdentifier(void) {
+    Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
+    id workspace = [workspaceClass respondsToSelector:@selector(sharedInstance)]
+                       ? [workspaceClass sharedInstance]
+                       : nil;
+    if ([workspace respondsToSelector:@selector(frontmostApplication)]) {
+        NSString *identifier = FLMLandscapeApplicationIdentifier(
+            [workspace frontmostApplication]);
+        if (identifier.length > 0) {
+            return identifier;
+        }
+    }
+    UIApplication *springBoard = [UIApplication sharedApplication];
+    if ([springBoard respondsToSelector:
+                     @selector(_accessibilityFrontMostApplication)]) {
+        return FLMLandscapeApplicationIdentifier(
+            [springBoard _accessibilityFrontMostApplication]);
+    }
+    return nil;
 }
 
 BOOL FLMLandscapeModuleIsLandscape(void) {
@@ -516,7 +709,10 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
 @implementation FLMLandscapeWindow
 
 - (BOOL)canBecomeKeyWindow {
-    return YES;
+    // The target application Scene, not the SpringBoard card window, owns
+    // first responder and keyboard focus. The card remains visible and
+    // touchable without entering the system keyboard responder chain.
+    return NO;
 }
 
 @end
@@ -618,7 +814,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
         ? [[FLMLandscapeWindow alloc] initWithWindowScene:scene]
         : [[FLMLandscapeWindow alloc] initWithFrame:bounds];
     window.frame = bounds;
-    window.windowLevel = UIWindowLevelAlert + 93.0;
+    // Keep the visual card below the native keyboard surface. It is a
+    // presentation window only and must not win key-window arbitration.
+    window.windowLevel = UIWindowLevelAlert + 92.0;
     window.backgroundColor = [UIColor clearColor];
     FLMLandscapeRootViewController *controller =
         [[FLMLandscapeRootViewController alloc] init];
@@ -866,7 +1064,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.identifier, (unsigned long)self.generation,
         NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
         NSStringFromCGRect(target), safeArea.left, safeArea.right);
-    [self prewarmIdentifier:self.identifier];
+    [self activateIdentifier:self.identifier];
     [self.lockTimer invalidate];
     self.lockTimer = [NSTimer timerWithTimeInterval:0.25
                                              target:self
@@ -880,6 +1078,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
 - (void)lockTimerFired:(NSTimer *)timer {
     (void)timer;
     if (self.hasVisibleCard) {
+        NSString *frontmostIdentifier =
+            FLMLandscapeFrontmostApplicationIdentifier();
+        if (frontmostIdentifier.length > 0 &&
+            ![frontmostIdentifier isEqualToString:self.identifier]) {
+            [self activateIdentifier:self.identifier];
+        }
         // SceneLifecycle protects this scene from normal deactivation. Reassert
         // the foreground contract while the independent landscape card lives.
         [self refreshSceneForeground];
@@ -899,12 +1103,37 @@ static id FLMLandscapeSceneForHandle(id handle) {
     }
 }
 
-- (void)prewarmIdentifier:(NSString *)identifier {
+- (void)activateIdentifier:(NSString *)identifier {
+    if (identifier.length == 0) {
+        return;
+    }
     UIApplication *application = [UIApplication sharedApplication];
+    BOOL launchRequested = NO;
     if ([application respondsToSelector:
                          @selector(launchApplicationWithIdentifier:suspended:)]) {
-        [application launchApplicationWithIdentifier:identifier suspended:YES];
+        // The landscape card is only a visual presentation. The target app
+        // must be a real foreground application so UIKit attaches the native
+        // keyboard to its full-screen landscape Scene.
+        launchRequested =
+            [application launchApplicationWithIdentifier:identifier
+                                                suspended:NO];
     }
+    BOOL workspaceRequested = NO;
+    if (!launchRequested) {
+        Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
+        id workspace =
+            [workspaceClass respondsToSelector:@selector(sharedInstance)]
+                ? [workspaceClass sharedInstance]
+                : nil;
+        if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)]) {
+            workspaceRequested =
+                [workspace openApplicationWithBundleID:identifier];
+        }
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-scene-activate app=%@ suspended=0 launchRequested=%d workspaceRequested=%d frontmost=%@",
+        identifier, launchRequested, workspaceRequested,
+        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
 }
 
 - (void)scheduleResolveForGeneration:(NSUInteger)generation delay:(NSTimeInterval)delay {
@@ -988,6 +1217,31 @@ static id FLMLandscapeSceneForHandle(id handle) {
         [self scheduleResolveForGeneration:generation delay:0.0];
         return;
     }
+    BOOL runtimeStateKnown = NO;
+    NSInteger activationState = -1;
+    BOOL runtimeForeground = FLMLandscapeSceneRuntimeIsForeground(
+        scene, &runtimeStateKnown, &activationState);
+    if (runtimeStateKnown && !runtimeForeground) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-scene-ready rejected=not-foreground app=%@ activationState=%ld runtime={%@}",
+            self.identifier, (long)activationState,
+            FLMLandscapeSceneRuntimeSummary(scene));
+        [self refreshSceneForeground];
+        [self scheduleResolveForGeneration:generation
+                                      delay:FLMLandscapeResolveInterval];
+        return;
+    }
+    if (!FLMLandscapeSceneHasNativeLandscapeSettings(scene)) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-scene-ready rejected=not-native-landscape app=%@ frame=%@ orientation=%ld runtime={%@}",
+            self.identifier, NSStringFromCGRect(FLMLandscapeSceneSettingsFrame(scene)),
+            (long)FLMLandscapeSceneSettingsOrientation(scene),
+            FLMLandscapeSceneRuntimeSummary(scene));
+        [self refreshSceneForeground];
+        [self scheduleResolveForGeneration:generation
+                                      delay:FLMLandscapeResolveInterval];
+        return;
+    }
     id manager = self.presentationManager;
     if (!manager && [scene respondsToSelector:@selector(uiPresentationManager)]) {
         manager = [scene uiPresentationManager];
@@ -1008,6 +1262,23 @@ static id FLMLandscapeSceneForHandle(id handle) {
                        : nil;
     if (![host isKindOfClass:[UIView class]]) {
         [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
+        return;
+    }
+    CGRect initialHostBounds = host.bounds;
+    BOOL initialHostHasGeometry = CGRectGetWidth(initialHostBounds) > 1.0 &&
+                                  CGRectGetHeight(initialHostBounds) > 1.0;
+    if (initialHostHasGeometry &&
+        (CGRectGetWidth(initialHostBounds) <= CGRectGetHeight(initialHostBounds) ||
+         !FLMLandscapeTransformIsIdentity(host.transform))) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-host-rejected reason=non-native-host hostBounds=%@ hostTransform=%@ sceneFrame=%@ sceneOrientation=%ld runtime={%@}",
+            NSStringFromCGRect(initialHostBounds),
+            NSStringFromCGAffineTransform(host.transform),
+            NSStringFromCGRect(FLMLandscapeSceneSettingsFrame(scene)),
+            (long)FLMLandscapeSceneSettingsOrientation(scene),
+            FLMLandscapeSceneRuntimeSummary(scene));
+        [self scheduleResolveForGeneration:generation
+                                      delay:FLMLandscapeResolveInterval];
         return;
     }
     if (self.hostView != host) {
@@ -1041,10 +1312,13 @@ static id FLMLandscapeSceneForHandle(id handle) {
         (unsigned long)generation, NSStringFromCGRect(host.bounds),
         NSStringFromCGRect(self.expectedHostBounds));
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-attached app=%@ generation=%lu scene=%@ host=%p card=%@ display=%@",
+        @"sb landscape-module-attached app=%@ generation=%lu scene=%@ host=%p card=%@ display=%@ sceneRuntime={%@} frontmost=%@ cardWindowKey=%d windowLevel=%.1f",
         self.identifier, (unsigned long)generation,
         FLMLandscapeSceneIdentifier(scene), (__bridge void *)host,
-        NSStringFromCGRect(self.cardView.frame), NSStringFromCGRect(self.displayBounds));
+        NSStringFromCGRect(self.cardView.frame), NSStringFromCGRect(self.displayBounds),
+        FLMLandscapeSceneRuntimeSummary(scene),
+        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>",
+        self.window.isKeyWindow, self.window.windowLevel);
 }
 
 - (BOOL)prepareScene:(id)scene handle:(id)handle {
@@ -1100,14 +1374,40 @@ static id FLMLandscapeSceneForHandle(id handle) {
             return NO;
         }
         [scene updateSettings:mutableSettings withTransitionContext:nil];
+        // The settings transaction is asynchronous on some SpringBoard
+        // builds. Re-activate after committing the full-screen landscape
+        // settings so the application, not the card window, owns the real
+        // foreground Scene and keyboard responder route.
+        if ([scene respondsToSelector:@selector(activate)]) {
+            [scene activate];
+        }
+        if ([scene respondsToSelector:@selector(setForeground:)]) {
+            [scene setForeground:YES];
+        }
+        if ([scene respondsToSelector:@selector(setBackgrounded:)]) {
+            [scene setBackgrounded:NO];
+        }
         CGRect appliedFrame = FLMLandscapeSceneSettingsFrame(scene);
         UIInterfaceOrientation appliedOrientation =
             FLMLandscapeSceneSettingsOrientation(scene);
+        BOOL runtimeStateKnown = NO;
+        NSInteger activationState = -1;
+        BOOL runtimeForeground = FLMLandscapeSceneRuntimeIsForeground(
+            scene, &runtimeStateKnown, &activationState);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-module-scene-frame app=%@ systemScene=%@ display=%@ requestedOrientation=%ld applied=%@ appliedOrientation=%ld",
+            @"sb landscape-module-scene-frame app=%@ systemScene=%@ display=%@ requestedOrientation=%ld applied=%@ appliedOrientation=%ld runtimeForeground=%d/%d activationState=%ld runtime={%@} frontmost=%@",
             self.identifier, NSStringFromCGRect(systemSceneFrame),
             NSStringFromCGRect(visualBounds), (long)orientation,
-            NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
+            NSStringFromCGRect(appliedFrame), (long)appliedOrientation,
+            runtimeForeground, runtimeStateKnown, (long)activationState,
+            FLMLandscapeSceneRuntimeSummary(scene),
+            FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
+        if (runtimeStateKnown && !runtimeForeground) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-scene-activation pending app=%@ runtime={%@}",
+                self.identifier, FLMLandscapeSceneRuntimeSummary(scene));
+            return NO;
+        }
         return YES;
     } @catch (__unused NSException *exception) {
         FLMClearProtectedScene(scene);
@@ -1217,6 +1517,26 @@ static id FLMLandscapeSceneForHandle(id handle) {
             }
         }
         [scene updateSettings:mutableSettings withTransitionContext:nil];
+        if ([scene respondsToSelector:@selector(activate)]) {
+            [scene activate];
+        }
+        if ([scene respondsToSelector:@selector(setForeground:)]) {
+            [scene setForeground:YES];
+        }
+        if ([scene respondsToSelector:@selector(setBackgrounded:)]) {
+            [scene setBackgrounded:NO];
+        }
+        BOOL runtimeStateKnown = NO;
+        NSInteger activationState = -1;
+        BOOL runtimeForeground = FLMLandscapeSceneRuntimeIsForeground(
+            scene, &runtimeStateKnown, &activationState);
+        if (runtimeStateKnown && !runtimeForeground) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-scene-foreground reactivation-pending app=%@ activationState=%ld runtime={%@} frontmost=%@",
+                self.identifier, (long)activationState,
+                FLMLandscapeSceneRuntimeSummary(scene),
+                FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
+        }
     } @catch (__unused NSException *exception) {
     }
 }
@@ -1243,7 +1563,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
     if (CGRectGetWidth(sceneFrame) <= 1.0 ||
         CGRectGetHeight(sceneFrame) <= 1.0 ||
         CGRectGetWidth(sceneFrame) <= CGRectGetHeight(sceneFrame)) {
-        sceneFrame = self.displayBounds;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-layout rejected=non-native-scene-frame sceneFrame=%@ display=%@",
+            NSStringFromCGRect(sceneFrame), NSStringFromCGRect(self.displayBounds));
+        return;
     }
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
                                          CGRectGetWidth(sceneFrame),
@@ -1251,7 +1574,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
     UIInterfaceOrientation sceneOrientation =
         FLMLandscapeSceneSettingsOrientation(self.scene);
     if (!UIInterfaceOrientationIsLandscape(sceneOrientation)) {
-        sceneOrientation = self.displayOrientation;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-layout rejected=non-landscape-scene orientation=%ld displayOrientation=%ld",
+            (long)sceneOrientation, (long)self.displayOrientation);
+        return;
     }
     CGSize target = self.cardView.bounds.size;
     // The app's actual Scene and presentation host stay full-screen landscape
