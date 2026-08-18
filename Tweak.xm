@@ -395,6 +395,8 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
 - (void)setForeground:(BOOL)foreground;
 - (void)setBackgrounded:(BOOL)backgrounded;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
+- (CGRect)frame;
+- (NSInteger)interfaceOrientation;
 - (void)setFrame:(CGRect)frame;
 - (void)setInterfaceOrientation:(NSInteger)orientation;
 - (void)updateSettings:(id)settings withTransitionContext:(id)context;
@@ -1432,6 +1434,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, strong) id landscapeKeyboardScene;
 @property(nonatomic, strong) id landscapeKeyboardPreferredHostIdentity;
 @property(nonatomic, assign) NSUInteger landscapeKeyboardPairingSessionGeneration;
+@property(nonatomic, assign) CGRect landscapeKeyboardOriginalSceneFrame;
+@property(nonatomic, assign) UIInterfaceOrientation landscapeKeyboardOriginalSceneOrientation;
+@property(nonatomic, assign) BOOL landscapeKeyboardOriginalSceneSettingsCaptured;
 @property(nonatomic, copy) NSString *landscapeKeyboardIdentifier;
 @property(nonatomic, strong) id landscapeKeyboardApplicationScene;
 @property(nonatomic, assign) NSUInteger landscapeKeyboardSessionGeneration;
@@ -2300,6 +2305,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.landscapeKeyboardFrame = CGRectNull;
         self.landscapeKeyboardDisplayBounds = CGRectZero;
         self.landscapeKeyboardDisplayOrientation = UIInterfaceOrientationUnknown;
+        self.landscapeKeyboardOriginalSceneFrame = CGRectZero;
+        self.landscapeKeyboardOriginalSceneOrientation =
+            UIInterfaceOrientationUnknown;
+        self.landscapeKeyboardOriginalSceneSettingsCaptured = NO;
         self.landscapeKeyboardOriginalSubviewIndex = NSNotFound;
         // Dock presentation width is session-local. Every new dock transition
         // starts from the configured minimum size instead of restoring stale geometry.
@@ -6606,8 +6615,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if ([window respondsToSelector:autorotationSelector]) {
         ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(window,
                                                      autorotationSelector,
-                                                     NO,
-                                                     NO);
+                                                     YES,
+                                                     YES);
     }
     window.hidden = YES;
     self.keyboardForwardingWindow = window;
@@ -6631,7 +6640,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (!UIInterfaceOrientationIsLandscape(
                 self.landscapeKeyboardDisplayOrientation)) {
             self.landscapeKeyboardDisplayOrientation =
-                FLMActiveInterfaceOrientation();
+                FLMLandscapeKeyboardInterfaceOrientation();
         }
         return current;
     }
@@ -6663,7 +6672,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.landscapeKeyboardScene = keyboardScene;
     self.landscapeKeyboardPreferredHostIdentity = preferredHostIdentity;
     self.landscapeKeyboardPairingSessionGeneration = sessionGeneration;
+    if (!self.landscapeKeyboardOriginalSceneSettingsCaptured) {
+        self.landscapeKeyboardOriginalSceneFrame = CGRectZero;
+        self.landscapeKeyboardOriginalSceneOrientation =
+            UIInterfaceOrientationUnknown;
+        @try {
+            id originalSettings = [keyboardScene respondsToSelector:@selector(settings)]
+                                       ? [keyboardScene settings]
+                                       : nil;
+            if ([originalSettings respondsToSelector:@selector(frame)]) {
+                self.landscapeKeyboardOriginalSceneFrame =
+                    [originalSettings frame];
+            }
+            if ([originalSettings respondsToSelector:
+                     @selector(interfaceOrientation)]) {
+                self.landscapeKeyboardOriginalSceneOrientation =
+                    (UIInterfaceOrientation)[originalSettings interfaceOrientation];
+            }
+            self.landscapeKeyboardOriginalSceneSettingsCaptured = YES;
+        } @catch (__unused NSException *exception) {
+        }
+    }
     __block BOOL applied = NO;
+    __block BOOL orientationApplied = NO;
     __block NSString *failure = nil;
     void (^settingsBlock)(id) = ^(id mutableSettings) {
         @try {
@@ -6688,6 +6719,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [mutableSettings setValue:preferredHostIdentity
                                    forKey:@"preferredSceneHostIdentity"];
             }
+            UIInterfaceOrientation landscapeOrientation =
+                FLMLandscapeKeyboardInterfaceOrientation();
+            if ([mutableSettings respondsToSelector:
+                     @selector(setInterfaceOrientation:)]) {
+                [mutableSettings setInterfaceOrientation:
+                                      (NSInteger)landscapeOrientation];
+                orientationApplied = YES;
+            }
             applied = YES;
         } @catch (NSException *exception) {
             failure = exception.name ?: @"exception";
@@ -6706,8 +6745,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.landscapeKeyboardPairingSessionGeneration = 0;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-pair apply=%d session=%lu keyboardScene=%@ preferredClass=%@ preferred=%p failure=%@",
-        applied, (unsigned long)sessionGeneration,
+        @"sb landscape-scene-pair apply=%d orientation=%d session=%lu keyboardScene=%@ preferredClass=%@ preferred=%p failure=%@",
+        applied, orientationApplied, (unsigned long)sessionGeneration,
         FLMSceneIdentifier(keyboardScene) ?: @"<none>",
         NSStringFromClass([preferredHostIdentity class]),
         (__bridge void *)preferredHostIdentity, failure ?: @"<none>");
@@ -6745,6 +6784,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     [mutableSettings setValue:nil
                                        forKey:@"preferredSceneHostIdentity"];
                 }
+                if (self.landscapeKeyboardOriginalSceneSettingsCaptured) {
+                    if ([mutableSettings respondsToSelector:@selector(setFrame:)] &&
+                        !CGRectIsEmpty(self.landscapeKeyboardOriginalSceneFrame)) {
+                        [mutableSettings setFrame:
+                                              self.landscapeKeyboardOriginalSceneFrame];
+                    }
+                    if ([mutableSettings respondsToSelector:
+                             @selector(setInterfaceOrientation:)] &&
+                        self.landscapeKeyboardOriginalSceneOrientation !=
+                            UIInterfaceOrientationUnknown) {
+                        [mutableSettings setInterfaceOrientation:
+                            (NSInteger)self.landscapeKeyboardOriginalSceneOrientation];
+                    }
+                }
                 cleared = YES;
             } @catch (__unused NSException *exception) {
             }
@@ -6764,6 +6817,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.landscapeKeyboardScene = nil;
     self.landscapeKeyboardPreferredHostIdentity = nil;
     self.landscapeKeyboardPairingSessionGeneration = 0;
+    self.landscapeKeyboardOriginalSceneFrame = CGRectZero;
+    self.landscapeKeyboardOriginalSceneOrientation = UIInterfaceOrientationUnknown;
+    self.landscapeKeyboardOriginalSceneSettingsCaptured = NO;
 }
 
 - (void)landscapeKeyboardLayerHostView:(UIView *)hostView
@@ -6790,6 +6846,26 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         CGRectGetHeight(incomingFrame) > 1.0;
     BOOL boundsHasArea = CGRectGetWidth(incomingBounds) > 1.0 &&
                          CGRectGetHeight(incomingBounds) > 1.0;
+    id keyboardScene = nil;
+    id preferredHostIdentity = nil;
+    BOOL paired = NO;
+    @try {
+        keyboardScene = [hostView valueForKey:@"_keyboardScene"];
+        preferredHostIdentity =
+            [hostView valueForKey:@"_keyboardPreferredHostIdentity"];
+        id pairedValue = [hostView valueForKey:@"_isPaired"];
+        paired = [pairedValue respondsToSelector:@selector(boolValue)] &&
+                 [pairedValue boolValue];
+    } @catch (__unused NSException *exception) {
+    }
+    // Apply the keyboard Scene's landscape contract before filtering a stale
+    // portrait host. The first host callback can itself be portrait while
+    // UIKit is rebuilding the remote keyboard after the app Scene rotates.
+    if (paired && keyboardScene && preferredHostIdentity) {
+        [self propagateLandscapeKeyboardScenePairing:keyboardScene
+                               preferredHostIdentity:preferredHostIdentity
+                                   sessionGeneration:sessionGeneration];
+    }
     BOOL incomingPortrait =
         (frameHasArea && CGRectGetWidth(incomingFrame) <
                              CGRectGetHeight(incomingFrame)) ||
@@ -6803,24 +6879,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             NSStringFromCGRect(incomingBounds),
             (__bridge void *)self.landscapeKeyboardLayerHostView);
         return;
-    }
-
-    id keyboardScene = nil;
-    id preferredHostIdentity = nil;
-    BOOL paired = NO;
-    @try {
-        keyboardScene = [hostView valueForKey:@"_keyboardScene"];
-        preferredHostIdentity =
-            [hostView valueForKey:@"_keyboardPreferredHostIdentity"];
-        id pairedValue = [hostView valueForKey:@"_isPaired"];
-        paired = [pairedValue respondsToSelector:@selector(boolValue)] &&
-                 [pairedValue boolValue];
-    } @catch (__unused NSException *exception) {
-    }
-    if (paired && keyboardScene && preferredHostIdentity) {
-        [self propagateLandscapeKeyboardScenePairing:keyboardScene
-                               preferredHostIdentity:preferredHostIdentity
-                                   sessionGeneration:sessionGeneration];
     }
 
     if (self.landscapeKeyboardLayerHostView &&

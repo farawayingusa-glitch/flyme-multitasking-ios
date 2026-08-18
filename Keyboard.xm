@@ -13,9 +13,10 @@
 // independent landscape route this is explicitly 844x390, allowing a
 // third-party keyboard to select its native landscape layout. The card is
 // only a SpringBoard presentation surface:
-// the app and keyboard continue to use the full-screen 390x844 logical space.
-// SpringBoard applies one uniform presentation scale; it never changes the
-// app's keyboard coordinate system to the card's physical bounds.
+// portrait routes use 390x844, while the independent landscape route uses
+// 844x390. SpringBoard applies one uniform presentation scale after rotating
+// that landscape surface into the vertical card; it never changes the app's
+// keyboard coordinate system to the card's physical bounds.
 #define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
@@ -354,9 +355,9 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
             continue;
         }
         // Never use the hosted window/card bounds here. The hosted content
-        // view remains display-sized at 390x844 before the single proportional
-        // card transform; keyboard avoidance therefore stays in the same
-        // 390x844 application coordinate space.
+        // view remains display-sized in the active Scene orientation before
+        // the single proportional card transform; keyboard avoidance stays
+        // in the application's full-screen coordinate space.
         return FLMPhysicalReferenceBoundsForScene(windowScene);
     }
     CGSize size = FLMFullPhysicalScreenSize();

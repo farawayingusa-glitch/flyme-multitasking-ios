@@ -10,9 +10,10 @@
 static const CGFloat FLMLandscapeDefaultTriggerSize = 58.0;
 static const CGFloat FLMLandscapeMinimumTriggerSize = 36.0;
 static const CGFloat FLMLandscapeMaximumTriggerSize = 96.0;
-static const CGFloat FLMLandscapeCardWidthRatio = 0.50;
-static const CGFloat FLMLandscapeCardMinimumWidth = 168.0;
-static const CGFloat FLMLandscapeCardMaximumWidth = 240.0;
+// Keep the visual card at the iPhone 13 Pro portrait aspect ratio even though
+// the owning display is landscape: 390 logical points wide by 844 high.
+static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
+    390.0 / 844.0;
 static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;
 static const CGFloat FLMLandscapeHandleWidth = 44.0;
 static const CGFloat FLMLandscapeHandleBarWidth = 5.0;
@@ -215,19 +216,6 @@ static UIInterfaceOrientation FLMLandscapeSceneSettingsOrientation(id scene) {
     } @catch (__unused NSException *exception) {
         return UIInterfaceOrientationUnknown;
     }
-}
-
-static CGRect FLMLandscapeLogicalSceneFrame(CGRect visualBounds,
-                                            UIInterfaceOrientation orientation) {
-    CGRect frame = visualBounds;
-    frame.origin = CGPointZero;
-    if (UIInterfaceOrientationIsLandscape(orientation) &&
-        CGRectGetWidth(frame) > CGRectGetHeight(frame)) {
-        // FBScene settings.frame remains in the scene's logical/fixed space.
-        // The layer host is laid out in the rotated visual space below.
-        frame.size = CGSizeMake(CGRectGetHeight(frame), CGRectGetWidth(frame));
-    }
-    return frame;
 }
 
 BOOL FLMLandscapeModuleIsLandscape(void) {
@@ -942,8 +930,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
         if (!UIInterfaceOrientationIsLandscape(orientation)) {
             orientation = FLMLandscapeInterfaceOrientation();
         }
-        CGRect logicalFrame = FLMLandscapeLogicalSceneFrame(visualBounds,
-                                                              orientation);
+        // The independent landscape module owns a real landscape Scene. Do
+        // not swap this back to 390x844: the card wrapper performs the visual
+        // rotation later, while UIKit and the keyboard must see 844x390.
+        CGRect logicalFrame = visualBounds;
         if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
             [mutableSettings setFrame:logicalFrame];
         }
@@ -981,13 +971,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
     if (displayWidth <= displayHeight || displayWidth <= 1.0 || displayHeight <= 1.0) {
         return;
     }
-    // Landscape is intentionally a side card, not a scaled copy of the full
-    // display. Keep it tall and narrow so the right-side handle has a stable
-    // physical position and the card remains a vertical long rectangle.
-    CGFloat cardWidth = MAX(FLMLandscapeCardMinimumWidth,
-                            MIN(FLMLandscapeCardMaximumWidth,
-                                displayHeight * FLMLandscapeCardWidthRatio));
     CGFloat cardHeight = displayHeight * FLMLandscapeCardMaximumHeightRatio;
+    CGFloat cardWidth = cardHeight *
+                        FLMLandscapePortraitCardWidthToHeightRatio;
     UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
     CGFloat maximumCardOriginX = MAX(0.0, displayWidth - cardWidth);
     CGFloat cardOriginX = MAX(0.0, MIN(maximumCardOriginX, safeArea.left));
@@ -1073,8 +1059,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
             CGRectGetHeight(visualBounds) > 1.0 &&
             UIInterfaceOrientationIsLandscape(orientation)) {
             if ([mutableSettings respondsToSelector:@selector(setFrame:)]) {
-                [mutableSettings setFrame:FLMLandscapeLogicalSceneFrame(
-                                                visualBounds, orientation)];
+                [mutableSettings setFrame:visualBounds];
             }
             if ([mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
                 [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
@@ -1104,39 +1089,45 @@ static id FLMLandscapeSceneForHandle(id handle) {
     CGSize reference = self.displayBounds.size;
     if (CGRectGetWidth(logicalFrame) > 1.0 &&
         CGRectGetHeight(logicalFrame) > 1.0) {
-        // The landscape Scene stays display-landscape so UIKit exposes the
-        // full-display horizontal keyboard.  Its settings frame is still the
-        // fixed 390x844 logical surface used by the vertical card. Do not
-        // rotate this reference back to 844x390 here: that was the source of
-        // the non-uniform {0.231043,0.917949} stretch in diagnostic 86.
+        // The Scene frame is now the true 844x390 landscape surface. Keep its
+        // bounds untouched; only the card presentation wrapper rotates it.
         reference = logicalFrame.size;
     }
-    if (reference.width <= 1.0 || reference.height <= 1.0) {
+    if (reference.width <= 1.0 || reference.height <= 1.0 ||
+        reference.width <= reference.height) {
         reference = self.displayBounds.size;
     }
     CGSize target = self.cardView.bounds.size;
-    // Fit the complete logical surface inside the vertical card. Aspect-fill
-    // made the proportions look right but clipped the first/last 32 points of
-    // the 390x844 application surface in diagnostic 87. The small horizontal
-    // letterbox is intentional; it preserves every application pixel.
-    CGFloat uniformScale = MIN(target.width / reference.width,
-                               target.height / reference.height);
-    CGFloat renderedWidth = reference.width * uniformScale;
-    CGFloat renderedHeight = reference.height * uniformScale;
+    // The card is visually vertical, while the hosted application surface is
+    // genuinely landscape. Rotate only this presentation layer, then apply a
+    // single uniform scale to the rotated 390x844 footprint. UIKit therefore
+    // keeps the app/keyboard in landscape and the card keeps the 13 Pro shape.
+    CGSize presentedReference = CGSizeMake(reference.height, reference.width);
+    CGFloat uniformScale = MIN(target.width / presentedReference.width,
+                               target.height / presentedReference.height);
+    CGFloat renderedWidth = presentedReference.width * uniformScale;
+    CGFloat renderedHeight = presentedReference.height * uniformScale;
     CGFloat letterboxX = MAX(0.0, (target.width - renderedWidth) * 0.5);
+    CGFloat letterboxY = MAX(0.0, (target.height - renderedHeight) * 0.5);
+    CGFloat rotation = sceneOrientation == UIInterfaceOrientationLandscapeRight
+                           ? -M_PI_2
+                           : M_PI_2;
     self.hostView.transform = CGAffineTransformIdentity;
     self.hostView.bounds = CGRectMake(0.0, 0.0, reference.width, reference.height);
     self.hostView.center = CGPointMake(target.width * 0.5, target.height * 0.5);
-    self.hostView.transform = CGAffineTransformMakeScale(uniformScale,
-                                                         uniformScale);
+    CGAffineTransform presentationTransform =
+        CGAffineTransformMakeScale(uniformScale, uniformScale);
+    self.hostView.transform = CGAffineTransformRotate(presentationTransform,
+                                                       rotation);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-layout display={%.1f,%.1f} logical={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterboxX=%.1f cropY=%.1f orientation=%ld",
+        @"sb landscape-module-layout display={%.1f,%.1f} sceneFrame={%.1f,%.1f} card={%.1f,%.1f} host={%.1f,%.1f} presented={%.1f,%.1f} uniformScale=%.6f rendered={%.1f,%.1f} letterbox={%.1f,%.1f} rotation=%.0f orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
         logicalFrame.size.width, logicalFrame.size.height,
         target.width, target.height,
         self.hostView.bounds.size.width, self.hostView.bounds.size.height,
-        uniformScale, renderedWidth, renderedHeight, letterboxX,
-        MAX(0.0, (renderedHeight - target.height) * 0.5),
+        presentedReference.width, presentedReference.height,
+        uniformScale, renderedWidth, renderedHeight, letterboxX, letterboxY,
+        rotation * 180.0 / M_PI,
         (long)sceneOrientation);
 }
 
