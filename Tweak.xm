@@ -16,6 +16,7 @@
 #import "FLMDiagnostics.h"
 #import "FLMSceneLifecycle.h"
 #import "FLMLandscapeModule.h"
+#import "FLMViewportHandshake.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION CFSTR("com.codex.flymemultitasking.preferences-changed")
@@ -36,7 +37,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.44"
+#define FLMLogBuildString @"0.9.45"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -322,6 +323,14 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
     FLMFloatingLaunchStateAttached,
     FLMFloatingLaunchStateFailing,
     FLMFloatingLaunchStateClosing,
+};
+
+typedef NS_ENUM(NSUInteger, FLMKeyboardPairState) {
+    FLMKeyboardPairStateNone,
+    FLMKeyboardPairStateUnsupported,
+    FLMKeyboardPairStateNativeLandscape,
+    FLMKeyboardPairStatePaired,
+    FLMKeyboardPairStateFailed,
 };
 
 @interface NSObject (FLMRuntimePrivate)
@@ -1434,6 +1443,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, strong) id landscapeKeyboardScene;
 @property(nonatomic, strong) id landscapeKeyboardPreferredHostIdentity;
 @property(nonatomic, assign) NSUInteger landscapeKeyboardPairingSessionGeneration;
+@property(nonatomic, assign) FLMKeyboardPairState landscapeKeyboardPairState;
 @property(nonatomic, assign) CGRect landscapeKeyboardOriginalSceneFrame;
 @property(nonatomic, assign) UIInterfaceOrientation landscapeKeyboardOriginalSceneOrientation;
 @property(nonatomic, assign) BOOL landscapeKeyboardOriginalSceneSettingsCaptured;
@@ -1671,6 +1681,63 @@ static UIInterfaceOrientation FLMLandscapeKeyboardInterfaceOrientation(void) {
     // this point. If UIKit is between rotation transactions, keep the shared
     // keyboard contract explicitly landscape instead of leaking portrait.
     return UIInterfaceOrientationLandscapeLeft;
+}
+
+static NSString *FLMKeyboardPairStateName(FLMKeyboardPairState state) {
+    switch (state) {
+        case FLMKeyboardPairStateUnsupported:
+            return @"Unsupported";
+        case FLMKeyboardPairStateNativeLandscape:
+            return @"NativeLandscape";
+        case FLMKeyboardPairStatePaired:
+            return @"Paired";
+        case FLMKeyboardPairStateFailed:
+            return @"Failed";
+        case FLMKeyboardPairStateNone:
+        default:
+            return @"None";
+    }
+}
+
+static UIWindow *FLMFindKeyboardWindowForDiagnostics(void) {
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            NSString *className = NSStringFromClass(window.class).lowercaseString;
+            if ([className containsString:@"keyboard"] ||
+                [className containsString:@"texteffects"] ||
+                [className containsString:@"inputset"] ||
+                [className containsString:@"remote"]) {
+                return window;
+            }
+        }
+    }
+    return nil;
+}
+
+static void FLMLogLandscapeKeyboardGeometryMismatch(FLMWheelController *controller,
+                                                      CGRect receivedFrame,
+                                                      CGRect expectedDisplay,
+                                                      NSString *source) {
+    UIWindow *keyboardWindow = FLMFindKeyboardWindowForDiagnostics();
+    UIView *host = controller.landscapeKeyboardLayerHostView;
+    id keyboardScene = controller.landscapeKeyboardScene;
+    UIScreen *screen = [UIScreen mainScreen];
+    FLMEnqueueDiagnosticLine(
+        @"sb keyboard-geometry-space-mismatch source=%@ session=%lu expectedDisplay=%@ receivedFrame=%@ receivedWidth=%.1f expectedWidth=%.1f orientation=%ld landscapeRoute=1 keyboardWindowClass=%@ keyboardWindowBounds=%@ keyboardSceneClass=%@ textEffectsWindowBounds=%@ UIScreenBounds=%@ systemDisplayBounds=%@ appVirtualViewport={0,0,390,844}",
+        source ?: @"unknown",
+        (unsigned long)controller.landscapeKeyboardSessionGeneration,
+        NSStringFromCGRect(expectedDisplay), NSStringFromCGRect(receivedFrame),
+        CGRectGetWidth(receivedFrame), CGRectGetWidth(expectedDisplay),
+        (long)controller.landscapeKeyboardDisplayOrientation,
+        keyboardWindow ? NSStringFromClass(keyboardWindow.class) : @"<none>",
+        keyboardWindow ? NSStringFromCGRect(keyboardWindow.bounds) : @"<none>",
+        keyboardScene ? NSStringFromClass([keyboardScene class]) : @"<none>",
+        host && host.window ? NSStringFromCGRect(host.window.bounds) : @"<none>",
+        NSStringFromCGRect(screen.bounds), NSStringFromCGRect(FLMVisualScreenBounds()));
 }
 
 static id FLMCopyPreference(NSString *key) {
@@ -1998,14 +2065,19 @@ void FLMLandscapeKeyboardRouteOpen(NSString *identifier,
         controller.landscapeKeyboardApplicationScene = scene;
         controller.landscapeKeyboardSessionGeneration =
             (NSUInteger)sessionGeneration;
+        // Native landscape is the safe baseline. Forwarding/reparenting is
+        // opt-in only after the private Scene pairing is explicitly confirmed.
+        controller.landscapeKeyboardPairState =
+            FLMKeyboardPairStateNativeLandscape;
         FLMPublishKeyboardState(identifier, scene, sessionGeneration);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-keyboard-route open app=%@ scene=%@ session=%llu foreground=%d bounds=%@ orientation=%ld",
+            @"sb landscape-keyboard-route open app=%@ scene=%@ session=%llu foreground=%d bounds=%@ orientation=%ld pairState=%@",
             identifier ?: @"<none>", FLMSceneIdentifier(scene) ?: @"<none>",
             (unsigned long long)sessionGeneration,
             FLMLandscapeModuleHasVisibleCard(),
             NSStringFromCGRect(displayBounds),
-            (long)controller.landscapeKeyboardDisplayOrientation);
+            (long)controller.landscapeKeyboardDisplayOrientation,
+            FLMKeyboardPairStateName(controller.landscapeKeyboardPairState));
     };
     if ([NSThread isMainThread]) {
         openBlock();
@@ -2029,6 +2101,7 @@ void FLMLandscapeKeyboardRouteClose(uint64_t sessionGeneration) {
             controller.landscapeKeyboardIdentifier = nil;
             controller.landscapeKeyboardApplicationScene = nil;
             controller.landscapeKeyboardSessionGeneration = 0;
+            controller.landscapeKeyboardPairState = FLMKeyboardPairStateNone;
         }
     };
     if ([NSThread isMainThread]) {
@@ -2310,6 +2383,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             UIInterfaceOrientationUnknown;
         self.landscapeKeyboardOriginalSceneSettingsCaptured = NO;
         self.landscapeKeyboardOriginalSubviewIndex = NSNotFound;
+        self.landscapeKeyboardPairState = FLMKeyboardPairStateNone;
         // Dock presentation width is session-local. Every new dock transition
         // starts from the configured minimum size instead of restoring stale geometry.
         self.floatingDockWidth = FLMDefaultDockWidth;
@@ -3265,7 +3339,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     // A new opener touch owns a fresh snapshot. Once the wheel is pinned,
     // keep that exact snapshot for the modal selection stream; re-reading the
-    // scene orientation there was the source of the 0.9.44 side/offset drift.
+    // scene orientation there was the source of the earlier side/offset drift.
     if (!self.wheelPinned || !self.wheelTouchContextValid) {
         self.wheelTouchContext = FLMLandscapeModuleCaptureTouchContext();
         self.wheelTouchContextValid = self.wheelTouchContext.valid;
@@ -6537,6 +6611,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)prepareKeyboardForwardingWindowIfNeeded {
     BOOL landscapeRoute = FLMLandscapeModuleHasVisibleCard() &&
                            FLMLandscapeModuleKeyboardSessionGeneration() != 0;
+    if (landscapeRoute &&
+        self.landscapeKeyboardPairState != FLMKeyboardPairStatePaired) {
+        FLMEnqueueDiagnosticLine(
+            @"sb forwarding-prepare rejected=landscape-pair-state session=%lu pairState=%@",
+            (unsigned long)self.landscapeKeyboardSessionGeneration,
+            FLMKeyboardPairStateName(self.landscapeKeyboardPairState));
+        return;
+    }
     UIWindowScene *targetWindowScene = landscapeRoute
                                            ? nil
                                            : self.floatingWindow.windowScene;
@@ -6658,15 +6740,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.landscapeKeyboardScene == keyboardScene &&
         self.landscapeKeyboardPreferredHostIdentity == preferredHostIdentity &&
         self.landscapeKeyboardPairingSessionGeneration == sessionGeneration) {
-        return YES;
+        return self.landscapeKeyboardPairState == FLMKeyboardPairStatePaired;
     }
     SEL updateSelector = NSSelectorFromString(@"updateClientSettingsWithBlock:");
     if (![keyboardScene respondsToSelector:updateSelector]) {
+        if (self.landscapeKeyboardLayerHostView) {
+            [self restoreLandscapeKeyboardLayerHost];
+        }
+        self.landscapeKeyboardPairState = FLMKeyboardPairStateUnsupported;
+        self.landscapeKeyboardScene = nil;
+        self.landscapeKeyboardPreferredHostIdentity = nil;
+        self.landscapeKeyboardPairingSessionGeneration = 0;
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-scene-pair apply=unsupported session=%lu keyboardScene=%@ class=%@",
+            @"sb landscape-scene-pair apply=unsupported session=%lu keyboardScene=%@ class=%@ pairState=%@ forwarding=0",
             (unsigned long)sessionGeneration,
             FLMSceneIdentifier(keyboardScene) ?: @"<none>",
-            NSStringFromClass([keyboardScene class]));
+            NSStringFromClass([keyboardScene class]),
+            FLMKeyboardPairStateName(self.landscapeKeyboardPairState));
         return NO;
     }
     self.landscapeKeyboardScene = keyboardScene;
@@ -6740,16 +6830,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         failure = exception.name ?: @"exception";
     }
     if (!applied) {
+        if (self.landscapeKeyboardLayerHostView) {
+            [self restoreLandscapeKeyboardLayerHost];
+        }
+        self.landscapeKeyboardPairState = FLMKeyboardPairStateFailed;
         self.landscapeKeyboardScene = nil;
         self.landscapeKeyboardPreferredHostIdentity = nil;
         self.landscapeKeyboardPairingSessionGeneration = 0;
+    } else {
+        self.landscapeKeyboardPairState = FLMKeyboardPairStatePaired;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-pair apply=%d orientation=%d session=%lu keyboardScene=%@ preferredClass=%@ preferred=%p failure=%@",
+        @"sb landscape-scene-pair apply=%d orientation=%d session=%lu keyboardScene=%@ preferredClass=%@ preferred=%p failure=%@ pairState=%@ forwarding=%d",
         applied, orientationApplied, (unsigned long)sessionGeneration,
         FLMSceneIdentifier(keyboardScene) ?: @"<none>",
         NSStringFromClass([preferredHostIdentity class]),
-        (__bridge void *)preferredHostIdentity, failure ?: @"<none>");
+        (__bridge void *)preferredHostIdentity, failure ?: @"<none>",
+        FLMKeyboardPairStateName(self.landscapeKeyboardPairState),
+        self.landscapeKeyboardPairState == FLMKeyboardPairStatePaired);
     return applied;
 }
 
@@ -6820,6 +6918,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.landscapeKeyboardOriginalSceneFrame = CGRectZero;
     self.landscapeKeyboardOriginalSceneOrientation = UIInterfaceOrientationUnknown;
     self.landscapeKeyboardOriginalSceneSettingsCaptured = NO;
+    self.landscapeKeyboardPairState =
+        (self.landscapeKeyboardSessionGeneration != 0 &&
+         FLMLandscapeModuleHasVisibleCard())
+            ? FLMKeyboardPairStateNativeLandscape
+            : FLMKeyboardPairStateNone;
 }
 
 - (void)landscapeKeyboardLayerHostView:(UIView *)hostView
@@ -6835,6 +6938,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!hostView || sessionGeneration == 0 ||
         !FLMLandscapeModuleHasVisibleCard()) {
         FLMEnqueueDiagnosticLine(@"sb landscape-host-update rejected=inactive");
+        return;
+    }
+    NSString *updatedSceneIdentifier = FLMSceneIdentifier(scene);
+    NSString *targetSceneIdentifier =
+        FLMSceneIdentifier(self.landscapeKeyboardApplicationScene);
+    if (targetSceneIdentifier.length > 0 && updatedSceneIdentifier.length > 0 &&
+        ![targetSceneIdentifier isEqualToString:updatedSceneIdentifier]) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-host-update rejected=scene-mismatch session=%lu targetScene=%@ updatedScene=%@",
+            (unsigned long)sessionGeneration, targetSceneIdentifier,
+            updatedSceneIdentifier);
         return;
     }
     // A rotation transaction can create a second remote-keyboard host in the
@@ -6861,10 +6975,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Apply the keyboard Scene's landscape contract before filtering a stale
     // portrait host. The first host callback can itself be portrait while
     // UIKit is rebuilding the remote keyboard after the app Scene rotates.
-    if (paired && keyboardScene && preferredHostIdentity) {
+    if (keyboardScene && preferredHostIdentity) {
         [self propagateLandscapeKeyboardScenePairing:keyboardScene
                                preferredHostIdentity:preferredHostIdentity
                                    sessionGeneration:sessionGeneration];
+    }
+    if (self.landscapeKeyboardPairState != FLMKeyboardPairStatePaired) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-host-update native-host-preserved session=%lu host=%p paired=%d pairState=%@ forwarding=0",
+            (unsigned long)sessionGeneration, (__bridge void *)hostView,
+            paired, FLMKeyboardPairStateName(self.landscapeKeyboardPairState));
+        return;
     }
     BOOL incomingPortrait =
         (frameHasArea && CGRectGetWidth(incomingFrame) <
@@ -6975,6 +7096,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             (unsigned long)sessionGeneration, NSStringFromCGRect(frame));
         return;
     }
+    CGFloat expectedWidth = CGRectGetWidth(bounds);
+    CGFloat receivedWidth = CGRectGetWidth(frame);
+    if (receivedWidth > 1.0 &&
+        fabs(receivedWidth - expectedWidth) > 4.0) {
+        FLMLogLandscapeKeyboardGeometryMismatch(self, frame, bounds,
+                                                 @"apply-landscape-frame");
+        return;
+    }
     if (CGRectGetWidth(frame) <= 1.0 || CGRectGetHeight(frame) <= 1.0 ||
         CGRectGetWidth(frame) < CGRectGetHeight(frame)) {
         // During rotation UIKit may publish one or more portrait-space frames
@@ -7001,7 +7130,25 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                         height);
     self.landscapeKeyboardVisible = YES;
     self.landscapeKeyboardFrame = normalizedFrame;
+    if (self.landscapeKeyboardPairState != FLMKeyboardPairStatePaired) {
+        // NativeLandscape/Unsupported/Failed deliberately keeps UIKit's
+        // original keyboard host hierarchy. Only a confirmed Paired state may
+        // create a forwarding window or reparent the host.
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard-frame native-landscape session=%lu raw=%@ normalized=%@ pairState=%@ forwarding=0",
+            (unsigned long)sessionGeneration, NSStringFromCGRect(frame),
+            NSStringFromCGRect(normalizedFrame),
+            FLMKeyboardPairStateName(self.landscapeKeyboardPairState));
+        return;
+    }
     [self prepareKeyboardForwardingWindowIfNeeded];
+    if (!self.keyboardForwardingWindow) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard-frame rejected=no-forwarding-window session=%lu pairState=%@",
+            (unsigned long)sessionGeneration,
+            FLMKeyboardPairStateName(self.landscapeKeyboardPairState));
+        return;
+    }
     self.keyboardForwardingWindow.windowLevel = UIWindowLevelAlert + 94.0;
     self.keyboardForwardingWindow.keyboardInteractionFrame = normalizedFrame;
     if (self.landscapeKeyboardLayerHostView) {
@@ -7067,6 +7214,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.landscapeKeyboardSessionGeneration = 0;
     self.landscapeKeyboardDisplayBounds = CGRectZero;
     self.landscapeKeyboardDisplayOrientation = UIInterfaceOrientationUnknown;
+    self.landscapeKeyboardPairState = FLMKeyboardPairStateNone;
     FLMEnqueueDiagnosticLine(
         @"sb landscape-keyboard-session end requested=%lu current=%lu",
         (unsigned long)sessionGeneration, (unsigned long)current);
@@ -7748,6 +7896,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (landscapeRoute) {
         BOOL hasArea = CGRectGetWidth(frame) > 1.0 &&
                        CGRectGetHeight(frame) > 1.0;
+        if (hasArea &&
+            fabs(CGRectGetWidth(frame) - CGRectGetWidth(bounds)) > 4.0) {
+            // A 390-wide frame is a portrait VirtualViewport frame. Do not
+            // intersect it with the 844x390 system display: that produces a
+            // false computedVisible=0 and hides a valid native landscape
+            // keyboard. The mismatch is diagnostic and non-destructive.
+            FLMLogLandscapeKeyboardGeometryMismatch(self, frame, bounds,
+                                                     @"notification");
+            return;
+        }
         BOOL frameIsLandscape = CGRectGetWidth(frame) >=
                                 CGRectGetHeight(frame);
         if (hasArea && frameIsLandscape &&
@@ -9218,6 +9376,15 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
         }
         NSUInteger activeLandscapeSession =
             (NSUInteger)FLMLandscapeModuleKeyboardSessionGeneration();
+        if (landscapeSessionGeneration != activeLandscapeSession &&
+            (landscapeSessionGeneration != 0 || activeLandscapeSession != 0)) {
+            FLMEnqueueDiagnosticLine(
+                @"sb host-hook rejected=stale-landscape-callback capturedSession=%lu activeSession=%lu scene=%@",
+                (unsigned long)landscapeSessionGeneration,
+                (unsigned long)activeLandscapeSession,
+                FLMSceneIdentifier(updatedScene) ?: @"<none>");
+            return;
+        }
         if (activeLandscapeSession != 0 &&
             FLMLandscapeModuleHasVisibleCard()) {
             [controller landscapeKeyboardLayerHostView:hostView

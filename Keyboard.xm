@@ -4,6 +4,7 @@
 #import <unistd.h>
 
 #import "FLMDiagnostics.h"
+#import "FLMViewportHandshake.h"
 
 // SpringBoard owns the real keyboard Scene and its touch routing. This adapter
 // is injected into UIKit application clients, but installs functional hooks
@@ -49,6 +50,7 @@ static int FLMKeyboardOrientationToken = -1;
 static int FLMKeyboardAvoidanceToken = -1;
 static int FLMKeyboardCardGeometryToken = -1;
 static int FLMKeyboardSharedStateToken = -1;
+static int FLMKeyboardViewportRequestToken = -1;
 static uint64_t FLMKeyboardTargetSceneHash = 0;
 static uint64_t FLMKeyboardSessionGeneration = 0;
 static uint64_t FLMExternalKeyboardAvoidanceGeneration = 0;
@@ -75,6 +77,17 @@ static CGAffineTransform FLMVirtualViewportOriginalTransform =
 static UIViewAutoresizing FLMVirtualViewportOriginalAutoresizingMask =
     UIViewAutoresizingNone;
 static BOOL FLMVirtualViewportOriginalTranslatesAutoresizingMask = YES;
+static NSDictionary *FLMVirtualViewportPendingRequest;
+static BOOL FLMVirtualViewportRequestActive = NO;
+static uint64_t FLMVirtualViewportRequestSession = 0;
+static uint64_t FLMVirtualViewportRequestGeneration = 0;
+static uint64_t FLMVirtualViewportRequestSceneHash = 0;
+static uint64_t FLMVirtualViewportRequestRevision = 0;
+static FLMViewportHandshakePhase FLMVirtualViewportPublishedPhase =
+    FLMViewportHandshakePhaseIdle;
+static BOOL FLMVirtualViewportAdapterReady = NO;
+static BOOL FLMVirtualViewportApplied = NO;
+static BOOL FLMVirtualViewportCommitted = NO;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
@@ -103,8 +116,14 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
 static CGRect FLMAppVirtualViewportBounds(void);
+static CGRect FLMContentViewportRequestBounds(void);
 static CGRect FLMSystemDisplayBoundsForScene(UIWindowScene *scene);
+static CGRect FLMKeyboardDisplayBoundsForScene(UIWindowScene *scene);
 static void FLMRestoreVirtualViewport(void);
+static void FLMReloadVirtualViewportRequest(void);
+static void FLMPublishVirtualViewportCommit(FLMViewportHandshakePhase phase,
+                                             UIWindow *window,
+                                             UIView *contentView);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -144,7 +163,7 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
 
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
     (void)sharedState;
-    CGRect viewport = FLMAppVirtualViewportBounds();
+    CGRect viewport = FLMContentViewportRequestBounds();
     FLMContentLogicalViewportSize = CGRectIsEmpty(viewport)
                                         ? FLMAppVirtualViewportSize
                                         : viewport.size;
@@ -166,6 +185,47 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
+}
+
+static BOOL FLMViewportRequestMatchesActiveRoute(NSDictionary *request) {
+    if (![request isKindOfClass:[NSDictionary class]] ||
+        ![request[@"active"] boolValue] || !FLMKeyboardRouteActive ||
+        !FLMKeyboardTargetApplication || FLMKeyboardSessionGeneration == 0) {
+        return NO;
+    }
+    NSString *bundleID = [request[@"bundleID"] isKindOfClass:[NSString class]]
+                             ? request[@"bundleID"]
+                             : nil;
+    uint64_t session = [request[@"sessionID"] unsignedLongLongValue];
+    uint64_t generation = [request[@"generation"] unsignedLongLongValue];
+    uint64_t sceneHash = [request[@"sceneHash"] unsignedLongLongValue];
+    uint64_t routeHash = [request[@"routeHash"] unsignedLongLongValue];
+    UIInterfaceOrientation orientation =
+        (UIInterfaceOrientation)[request[@"orientation"] integerValue];
+    CGFloat width = [request[@"viewportWidth"] doubleValue];
+    CGFloat height = [request[@"viewportHeight"] doubleValue];
+    uint64_t currentRouteHash =
+        FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier);
+    return bundleID.length > 0 &&
+           [bundleID isEqualToString:[NSBundle mainBundle].bundleIdentifier] &&
+           session == FLMKeyboardSessionGeneration && generation != 0 &&
+           FLMKeyboardTargetSceneHash != 0 && sceneHash != 0 &&
+           sceneHash == FLMKeyboardTargetSceneHash &&
+           routeHash == currentRouteHash &&
+           UIInterfaceOrientationIsLandscape(orientation) &&
+           fabs(width - FLMAppVirtualViewportSize.width) < 1.0 &&
+           fabs(height - FLMAppVirtualViewportSize.height) < 1.0;
+}
+
+static CGRect FLMContentViewportRequestBounds(void) {
+    if (!FLMVirtualViewportRequestActive ||
+        FLMVirtualViewportRequestSession != FLMKeyboardSessionGeneration ||
+        FLMVirtualViewportRequestGeneration == 0) {
+        return CGRectZero;
+    }
+    return CGRectMake(0.0, 0.0,
+                      FLMAppVirtualViewportSize.width,
+                      FLMAppVirtualViewportSize.height);
 }
 
 static BOOL FLMProcessIsKeyboardExtension(void) {
@@ -338,6 +398,13 @@ static UIInterfaceOrientation FLMKeyboardEffectiveInterfaceOrientation(
             FLMKeyboardSharedInterfaceOrientation)) {
         return FLMKeyboardSharedInterfaceOrientation;
     }
+    UIInterfaceOrientation requestedOrientation =
+        (UIInterfaceOrientation)[FLMVirtualViewportPendingRequest[@"orientation"]
+                                    integerValue];
+    if (FLMKeyboardRouteActive &&
+        UIInterfaceOrientationIsLandscape(requestedOrientation)) {
+        return requestedOrientation;
+    }
     return [scene isKindOfClass:[UIWindowScene class]]
                ? scene.interfaceOrientation
                : UIInterfaceOrientationUnknown;
@@ -352,25 +419,26 @@ static CGRect FLMSystemDisplayBoundsForScene(UIWindowScene *scene) {
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
+static CGRect FLMKeyboardDisplayBoundsForScene(UIWindowScene *scene) {
+    // Native keyboard geometry is always measured in the system display
+    // coordinate space. This function must never consult the App viewport.
+    return FLMSystemDisplayBoundsForScene(scene);
+}
+
 static CGRect FLMAppVirtualViewportBounds(void) {
-    if (!FLMKeyboardRouteActive || !FLMKeyboardTargetApplication ||
-        !UIInterfaceOrientationIsLandscape(
-            FLMKeyboardSharedInterfaceOrientation)) {
-        return CGRectZero;
-    }
-    return CGRectMake(0.0, 0.0,
-                      FLMAppVirtualViewportSize.width,
-                      FLMAppVirtualViewportSize.height);
+    // Named App-side API retained for compatibility with the frozen
+    // foundation. Keyboard geometry never calls it; content layout uses the
+    // explicit request-bounds helper while native keyboard geometry uses the
+    // system-display helper below.
+    return FLMContentViewportRequestBounds();
 }
 
 static CGRect FLMTargetApplicationLogicalBounds(void) {
     if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive) {
         return CGRectZero;
     }
-    CGRect virtualViewport = FLMAppVirtualViewportBounds();
-    if (!CGRectIsEmpty(virtualViewport)) {
-        return virtualViewport;
-    }
+    // This fallback belongs to ordinary UIKit avoidance only. It is kept
+    // system-display-sized so no keyboard geometry path can inherit 390x844.
     for (UIScene *connectedScene in
          [UIApplication sharedApplication].connectedScenes) {
         if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
@@ -388,6 +456,145 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
     }
     return CGRectMake(0.0, 0.0, FLMContentLogicalViewportSize.width,
                       FLMContentLogicalViewportSize.height);
+}
+
+static void FLMPublishVirtualViewportCommit(FLMViewportHandshakePhase phase,
+                                             UIWindow *window,
+                                             UIView *contentView) {
+    if (!FLMVirtualViewportRequestActive ||
+        FLMVirtualViewportRequestSession != FLMKeyboardSessionGeneration ||
+        FLMVirtualViewportRequestRevision == 0) {
+        return;
+    }
+    CGRect rootBounds = contentView ? contentView.bounds : CGRectZero;
+    BOOL rootMatches = contentView &&
+                       fabs(CGRectGetWidth(rootBounds) -
+                            FLMAppVirtualViewportSize.width) < 0.25 &&
+                       fabs(CGRectGetHeight(rootBounds) -
+                            FLMAppVirtualViewportSize.height) < 0.25 &&
+                       CGAffineTransformEqualToTransform(
+                           contentView.transform, CGAffineTransformIdentity);
+    BOOL applied = phase >= FLMViewportHandshakePhaseApplying && rootMatches;
+    BOOL committed = phase == FLMViewportHandshakePhaseCommitted && applied &&
+                     FLMKeyboardHooksInstalled;
+    if (committed && FLMVirtualViewportPublishedPhase ==
+                         FLMViewportHandshakePhaseCommitted &&
+        FLMVirtualViewportCommitted) {
+        return;
+    }
+    FLMVirtualViewportPublishedPhase = phase;
+    FLMVirtualViewportAdapterReady = FLMKeyboardHooksInstalled;
+    FLMVirtualViewportApplied = applied;
+    FLMVirtualViewportCommitted = committed;
+    NSDictionary *request = FLMVirtualViewportPendingRequest;
+    NSDictionary *commit = @{
+        @"version": @(FLM_VIEWPORT_HANDSHAKE_VERSION),
+        @"active": @YES,
+        @"phase": @(phase),
+        @"sessionID": @(FLMVirtualViewportRequestSession),
+        @"generation": @(FLMVirtualViewportRequestGeneration),
+        @"sceneHash": @(FLMVirtualViewportRequestSceneHash),
+        @"sceneID": [request[@"sceneID"] isKindOfClass:[NSString class]]
+                        ? request[@"sceneID"]
+                        : @"",
+        @"bundleID": [NSBundle mainBundle].bundleIdentifier ?: @"",
+        @"requestRevision": @(FLMVirtualViewportRequestRevision),
+        @"viewportWidth": @(FLMAppVirtualViewportSize.width),
+        @"viewportHeight": @(FLMAppVirtualViewportSize.height),
+        @"adapterReady": @(FLMVirtualViewportAdapterReady),
+        @"applied": @(applied),
+        @"committed": @(committed),
+        @"rootWidth": @(CGRectGetWidth(rootBounds)),
+        @"rootHeight": @(CGRectGetHeight(rootBounds)),
+        @"rootClass": contentView ? NSStringFromClass(contentView.class) : @"",
+        @"windowClass": window ? NSStringFromClass(window.class) : @"",
+        @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
+    };
+    BOOL wrote = FLMWriteViewportCommitState(commit);
+    NSLog(@"[FlymeKeyboard] viewport-%@ session=%llu generation=%llu revision=%llu adapterReady=%d applied=%d committed=%d root={%.1f,%.1f} scene=%@ wrote=%d",
+          phase == FLMViewportHandshakePhaseAdapterReady
+              ? @"adapter-ready"
+              : (phase == FLMViewportHandshakePhaseApplying
+                     ? @"applying"
+                     : (phase == FLMViewportHandshakePhaseCommitted
+                            ? @"committed"
+                            : @"state")),
+          (unsigned long long)FLMVirtualViewportRequestSession,
+          (unsigned long long)FLMVirtualViewportRequestGeneration,
+          (unsigned long long)FLMVirtualViewportRequestRevision,
+          FLMVirtualViewportAdapterReady, applied, committed,
+          CGRectGetWidth(rootBounds), CGRectGetHeight(rootBounds),
+          commit[@"sceneID"], wrote);
+}
+
+static void FLMReloadVirtualViewportRequest(void) {
+    NSDictionary *request = FLMReadViewportRequestState();
+    BOOL current = FLMViewportRequestMatchesActiveRoute(request);
+    if (!current) {
+        if (FLMVirtualViewportRequestActive) {
+            NSLog(@"[FlymeKeyboard] viewport-request stale session=%llu generation=%llu revision=%llu routeSession=%llu targetScene=%llu",
+                  (unsigned long long)FLMVirtualViewportRequestSession,
+                  (unsigned long long)FLMVirtualViewportRequestGeneration,
+                  (unsigned long long)FLMVirtualViewportRequestRevision,
+                  (unsigned long long)FLMKeyboardSessionGeneration,
+                  (unsigned long long)FLMKeyboardTargetSceneHash);
+        }
+        FLMVirtualViewportPendingRequest = nil;
+        FLMVirtualViewportRequestActive = NO;
+        FLMVirtualViewportRequestSession = 0;
+        FLMVirtualViewportRequestGeneration = 0;
+        FLMVirtualViewportRequestSceneHash = 0;
+        FLMVirtualViewportRequestRevision = 0;
+        FLMVirtualViewportPublishedPhase = FLMViewportHandshakePhaseIdle;
+        FLMVirtualViewportAdapterReady = NO;
+        FLMVirtualViewportApplied = NO;
+        FLMVirtualViewportCommitted = NO;
+        return;
+    }
+
+    uint64_t session = [request[@"sessionID"] unsignedLongLongValue];
+    uint64_t generation = [request[@"generation"] unsignedLongLongValue];
+    uint64_t sceneHash = [request[@"sceneHash"] unsignedLongLongValue];
+    uint64_t revision = [request[@"requestRevision"] unsignedLongValue];
+    BOOL changed = !FLMVirtualViewportRequestActive ||
+                   FLMVirtualViewportRequestSession != session ||
+                   FLMVirtualViewportRequestGeneration != generation ||
+                   FLMVirtualViewportRequestSceneHash != sceneHash ||
+                   FLMVirtualViewportRequestRevision != revision;
+    FLMVirtualViewportPendingRequest = [request copy];
+    FLMVirtualViewportRequestActive = YES;
+    FLMVirtualViewportRequestSession = session;
+    FLMVirtualViewportRequestGeneration = generation;
+    FLMVirtualViewportRequestSceneHash = sceneHash;
+    FLMVirtualViewportRequestRevision = revision;
+    UIInterfaceOrientation requestOrientation =
+        (UIInterfaceOrientation)[request[@"orientation"] integerValue];
+    if (UIInterfaceOrientationIsLandscape(requestOrientation)) {
+        // The request is the system LandscapeEnvironment contract. It is
+        // independent from the target app's 390x844 root content semantics.
+        FLMKeyboardSharedInterfaceOrientation = requestOrientation;
+    }
+    if (changed) {
+        FLMVirtualViewportPublishedPhase = FLMViewportHandshakePhaseIdle;
+        FLMVirtualViewportAdapterReady = FLMKeyboardHooksInstalled;
+        FLMVirtualViewportApplied = NO;
+        FLMVirtualViewportCommitted = NO;
+        NSLog(@"[FlymeKeyboard] viewport-request session=%llu generation=%llu revision=%llu scene=%@ requested={%.1f,%.1f} adapterReady=%d hooks=%d",
+              (unsigned long long)session, (unsigned long long)generation,
+              (unsigned long long)revision,
+              request[@"sceneID"] ?: @"<none>",
+              FLMAppVirtualViewportSize.width,
+              FLMAppVirtualViewportSize.height,
+              FLMKeyboardHooksInstalled, FLMKeyboardHooksInstalled);
+        if (!FLMKeyboardHooksInstalled) {
+            NSLog(@"[FlymeKeyboard] viewport-adapter-wait session=%llu generation=%llu adapterReady=0",
+                  (unsigned long long)session,
+                  (unsigned long long)generation);
+        } else {
+            FLMPublishVirtualViewportCommit(
+                FLMViewportHandshakePhaseAdapterReady, nil, nil);
+        }
+    }
 }
 
 static void FLMRefreshApplicationKeyboardLayout(void) {
@@ -477,6 +684,18 @@ static void FLMReloadKeyboardRoute(void) {
         notify_register_check(FLYME_KEYBOARD_ORIENTATION_NOTIFICATION,
                               &FLMKeyboardOrientationToken);
     }
+    if (FLMKeyboardRouteToken < 0) {
+        notify_register_check(FLYME_KEYBOARD_NOTIFICATION,
+                              &FLMKeyboardRouteToken);
+    }
+    if (FLMKeyboardSessionToken < 0) {
+        notify_register_check(FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                              &FLMKeyboardSessionToken);
+    }
+    if (FLMKeyboardSceneToken < 0) {
+        notify_register_check(FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                              &FLMKeyboardSceneToken);
+    }
     if (FLMKeyboardOrientationToken >= 0) {
         notify_get_state(FLMKeyboardOrientationToken, &orientationState);
     }
@@ -505,21 +724,22 @@ static void FLMReloadKeyboardRoute(void) {
         // receives the landscape contract.
         sharedOrientation = notifiedOrientation;
     }
-    if (sharedStateAvailable) {
+    BOOL notifyRouteStateAvailable =
+        FLMKeyboardRouteToken >= 0 && FLMKeyboardSessionToken >= 0 &&
+        FLMKeyboardSceneToken >= 0 &&
+        notify_get_state(FLMKeyboardRouteToken, &targetHash) ==
+            NOTIFY_STATUS_OK &&
+        notify_get_state(FLMKeyboardSessionToken, &sessionGeneration) ==
+            NOTIFY_STATUS_OK &&
+        notify_get_state(FLMKeyboardSceneToken, &sceneHash) ==
+            NOTIFY_STATUS_OK;
+    if (!notifyRouteStateAvailable && sharedStateAvailable) {
         targetHash = sharedStateActive
                          ? FLMIdentifierHash(sharedTargetIdentifier)
                          : 0;
         sessionGeneration =
             [sharedState[@"sessionGeneration"] unsignedLongLongValue];
         sceneHash = [sharedState[@"sceneHash"] unsignedLongLongValue];
-    } else if (FLMKeyboardRouteToken >= 0) {
-        notify_get_state(FLMKeyboardRouteToken, &targetHash);
-        if (FLMKeyboardSessionToken >= 0) {
-            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
-        }
-        if (FLMKeyboardSceneToken >= 0) {
-            notify_get_state(FLMKeyboardSceneToken, &sceneHash);
-        }
     }
 
     BOOL previousTargetApplication = FLMKeyboardTargetApplication;
@@ -544,6 +764,19 @@ static void FLMReloadKeyboardRoute(void) {
     }
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
+    FLMReloadVirtualViewportRequest();
+    if (FLMKeyboardRouteActive || previousTargetApplication ||
+        previousGeneration != sessionGeneration) {
+        NSLog(@"[FlymeKeyboard] keyboard-route-state session=%llu active=%d target=%d orientation=%ld display=%@ appViewport=%@ request=%d revision=%llu source=%@",
+              (unsigned long long)FLMKeyboardSessionGeneration,
+              FLMKeyboardRouteActive, FLMKeyboardTargetApplication,
+              (long)FLMKeyboardSharedInterfaceOrientation,
+              NSStringFromCGRect(FLMKeyboardDisplayBoundsForScene(nil)),
+              NSStringFromCGRect(FLMContentViewportRequestBounds()),
+              FLMVirtualViewportRequestActive,
+              (unsigned long long)FLMVirtualViewportRequestRevision,
+              notifyRouteStateAvailable ? @"notify" : @"plist");
+    }
 
     BOOL startingTargetSession =
         FLMKeyboardTargetApplication && sessionGeneration != 0 &&
@@ -727,20 +960,28 @@ static CGFloat FLMLogicalAvoidanceForPhysicalKeyboardTop(CGFloat keyboardTop,
 }
 
 static BOOL FLMIsApplicationContentWindow(UIWindow *window) {
+    NSString *className = window ? NSStringFromClass(window.class) : @"";
+    NSString *sceneIdentifier = window.windowScene
+                                    ? FLMSceneIdentifier(window.windowScene)
+                                    : nil;
+    NSString *lowerClassName = className.lowercaseString;
+    NSString *lowerSceneIdentifier = sceneIdentifier.lowercaseString;
+    BOOL keyboardWindow =
+        [lowerClassName containsString:@"texteffects"] ||
+        [lowerClassName containsString:@"keyboard"] ||
+        [lowerClassName containsString:@"remote"] ||
+        [lowerClassName containsString:@"inputset"];
+    BOOL keyboardScene =
+        [lowerSceneIdentifier containsString:@"remote-keyboard"] ||
+        [lowerSceneIdentifier containsString:@"keyboard"] ||
+        [lowerSceneIdentifier containsString:@"texteffects"];
     if (!window || window.hidden || window.alpha <= 0.01 ||
         !window.rootViewController || !window.windowScene ||
+        keyboardWindow || keyboardScene ||
         !FLMSceneMatchesKeyboardRoute(window.windowScene)) {
         return NO;
     }
     if (window.windowLevel != UIWindowLevelNormal) {
-        return NO;
-    }
-    NSString *className = NSStringFromClass(window.class);
-    if ([className rangeOfString:@"TextEffects"].location != NSNotFound ||
-        [className rangeOfString:@"Keyboard" options:NSCaseInsensitiveSearch].location !=
-            NSNotFound ||
-        [className rangeOfString:@"Remote" options:NSCaseInsensitiveSearch].location !=
-            NSNotFound) {
         return NO;
     }
     return YES;
@@ -754,7 +995,7 @@ static void FLMLogVirtualViewportLayout(NSString *stage,
     CGRect systemDisplay = window
         ? FLMSystemDisplayBoundsForScene(window.windowScene)
         : CGRectZero;
-    CGRect loggedViewport = FLMAppVirtualViewportBounds();
+    CGRect loggedViewport = FLMContentViewportRequestBounds();
     if (CGRectIsEmpty(loggedViewport)) {
         loggedViewport = CGRectMake(0.0, 0.0,
                                     FLMContentLogicalViewportSize.width,
@@ -780,6 +1021,10 @@ static void FLMRestoreVirtualViewport(void) {
         !FLMVirtualViewportRootContentView) {
         FLMContentViewportAdapterActive = NO;
         FLMContentViewportAdapterGeneration = 0;
+        FLMVirtualViewportPublishedPhase = FLMViewportHandshakePhaseIdle;
+        FLMVirtualViewportAdapterReady = NO;
+        FLMVirtualViewportApplied = NO;
+        FLMVirtualViewportCommitted = NO;
         FLMVirtualViewportOriginalCaptured = NO;
         FLMVirtualViewportWindow = nil;
         FLMVirtualViewportRootContentView = nil;
@@ -811,6 +1056,10 @@ static void FLMRestoreVirtualViewport(void) {
         FLMContentViewportAdapterApplying = NO;
         FLMContentViewportAdapterActive = NO;
         FLMContentViewportAdapterGeneration = 0;
+        FLMVirtualViewportPublishedPhase = FLMViewportHandshakePhaseIdle;
+        FLMVirtualViewportAdapterReady = NO;
+        FLMVirtualViewportApplied = NO;
+        FLMVirtualViewportCommitted = NO;
         FLMVirtualViewportWindow = nil;
         FLMVirtualViewportRootContentView = nil;
         FLMVirtualViewportOriginalCaptured = NO;
@@ -870,7 +1119,7 @@ static void FLMCaptureVirtualViewport(UIView *contentView,
 
 static void FLMApplyContentViewportToRootView(UIView *contentView,
                                               UIWindow *window) {
-    CGRect virtualViewport = FLMAppVirtualViewportBounds();
+    CGRect virtualViewport = FLMContentViewportRequestBounds();
     if (!contentView || !window || CGRectIsEmpty(virtualViewport) ||
         !FLMContentViewportAdapterActive ||
         FLMContentViewportAdapterApplying ||
@@ -897,10 +1146,24 @@ static void FLMApplyContentViewportToRootView(UIView *contentView,
         CGAffineTransformEqualToTransform(contentView.transform,
                                            CGAffineTransformIdentity);
     if (alreadyApplied) {
+        if (!FLMVirtualViewportCommitted) {
+            FLMVirtualViewportApplied = YES;
+            NSLog(@"[FlymeKeyboard] viewport-app-applied session=%llu generation=%llu revision=%llu window=%@ root=%@ bounds=%@",
+                  (unsigned long long)FLMVirtualViewportRequestSession,
+                  (unsigned long long)FLMVirtualViewportRequestGeneration,
+                  (unsigned long long)FLMVirtualViewportRequestRevision,
+                  NSStringFromClass(window.class),
+                  NSStringFromClass(contentView.class),
+                  NSStringFromCGRect(contentView.bounds));
+            FLMPublishVirtualViewportCommit(
+                FLMViewportHandshakePhaseCommitted, window, contentView);
+        }
         return;
     }
     FLMContentViewportAdapterApplying = YES;
     @try {
+        FLMPublishVirtualViewportCommit(FLMViewportHandshakePhaseApplying,
+                                        window, contentView);
         // Keep the UIWindow and UIWindowScene untouched. Only the target app's
         // root content view receives the portrait logical canvas.
         contentView.transform = CGAffineTransformIdentity;
@@ -913,6 +1176,25 @@ static void FLMApplyContentViewportToRootView(UIView *contentView,
         [contentView layoutIfNeeded];
         FLMLogVirtualViewportLayout(@"layout", window, contentView,
                                     previousBounds, contentView.bounds);
+        BOOL committedBounds =
+            fabs(CGRectGetWidth(contentView.bounds) -
+                 FLMAppVirtualViewportSize.width) < 0.25 &&
+            fabs(CGRectGetHeight(contentView.bounds) -
+                 FLMAppVirtualViewportSize.height) < 0.25 &&
+            CGAffineTransformEqualToTransform(contentView.transform,
+                                               CGAffineTransformIdentity);
+        if (committedBounds) {
+            FLMVirtualViewportApplied = YES;
+            NSLog(@"[FlymeKeyboard] viewport-app-applied session=%llu generation=%llu revision=%llu window=%@ root=%@ bounds=%@",
+                  (unsigned long long)FLMVirtualViewportRequestSession,
+                  (unsigned long long)FLMVirtualViewportRequestGeneration,
+                  (unsigned long long)FLMVirtualViewportRequestRevision,
+                  NSStringFromClass(window.class),
+                  NSStringFromClass(contentView.class),
+                  NSStringFromCGRect(contentView.bounds));
+            FLMPublishVirtualViewportCommit(
+                FLMViewportHandshakePhaseCommitted, window, contentView);
+        }
         FLMPublishDiagnosticEvent(
             FLMDiagnosticRoleApplication, FLMDiagnosticEventLayoutRefresh,
             FLMKeyboardSessionGeneration,
@@ -942,10 +1224,15 @@ static void FLMUpdateContentViewportAdapter(void) {
         });
         return;
     }
-    if (FLMContentViewportAdapterApplying) {
+    if (FLMContentViewportAdapterApplying || !FLMKeyboardHooksInstalled ||
+        !FLMIsEligibleApplicationProcess()) {
+        // The request is intentionally retained in
+        // FLMVirtualViewportPendingRequest until the target-gated adapter is
+        // actually initialized. A direct route reload before %init must not
+        // count as adapter-ready or publish a committed viewport.
         return;
     }
-    CGRect virtualViewport = FLMAppVirtualViewportBounds();
+    CGRect virtualViewport = FLMContentViewportRequestBounds();
     if (CGRectIsEmpty(virtualViewport)) {
         if (FLMContentViewportAdapterActive ||
             FLMVirtualViewportOriginalCaptured) {
@@ -965,6 +1252,10 @@ static void FLMUpdateContentViewportAdapter(void) {
               (unsigned long long)FLMKeyboardSessionGeneration,
               virtualViewport.size.width, virtualViewport.size.height);
     }
+    if (FLMVirtualViewportPublishedPhase == FLMViewportHandshakePhaseIdle) {
+        FLMPublishVirtualViewportCommit(
+            FLMViewportHandshakePhaseAdapterReady, nil, nil);
+    }
     FLMApplyContentViewportToVisibleApplicationWindows();
 }
 
@@ -974,7 +1265,12 @@ static void FLMUpdateContentViewportAdapter(void) {
 
 - (void)layoutSubviews {
     %orig;
-    FLMUpdateContentViewportAdapter();
+    // The hook is installed in a generic UIKit client. Only the routed app's
+    // ordinary main window may enter the VirtualViewport adapter; keyboard,
+    // text-effects, remote-input and unrelated app windows are hard excluded.
+    if (FLMIsApplicationContentWindow((UIWindow *)self)) {
+        FLMUpdateContentViewportAdapter();
+    }
 }
 
 %end
@@ -1021,7 +1317,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return %orig;
     }
-    CGSize size = FLMSystemDisplayBoundsForScene(scene).size;
+    CGSize size = FLMKeyboardDisplayBoundsForScene(scene).size;
     FLMPublishDiagnosticEvent(
         FLMKeyboardTargetApplication ? FLMDiagnosticRoleApplication
                                      : FLMDiagnosticRoleKeyboardExtension,
@@ -1129,6 +1425,12 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                              });
     notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
                              &FLMKeyboardSharedStateToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMHandleKeyboardRouteNotification();
+                             });
+    notify_register_dispatch(FLM_VIEWPORT_REQUEST_NOTIFICATION,
+                             &FLMKeyboardViewportRequestToken,
                              dispatch_get_main_queue(),
                              ^(__unused int token) {
                                  FLMHandleKeyboardRouteNotification();
