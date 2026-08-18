@@ -49,6 +49,8 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (BOOL)isBackgrounded;
 - (BOOL)isActive;
 - (NSInteger)activationState;
+- (id)frontmostApplication;
+- (BOOL)openApplicationWithBundleID:(NSString *)bundleIdentifier;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
 - (void)setFrame:(CGRect)frame;
 - (void)setInterfaceOrientation:(NSInteger)orientation;
