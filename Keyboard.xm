@@ -314,12 +314,8 @@ static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene) {
     return NO;
 }
 
-static CGRect FLMPhysicalReferenceBoundsForScene(UIWindowScene *scene) {
+static CGRect FLMPhysicalReferenceBounds(void) {
     CGSize size = FLMFullPhysicalScreenSize();
-    if ([scene isKindOfClass:[UIWindowScene class]] &&
-        UIInterfaceOrientationIsLandscape(scene.interfaceOrientation)) {
-        size = CGSizeMake(size.height, size.width);
-    }
     return CGRectMake(0.0, 0.0, size.width, size.height);
 }
 
@@ -340,7 +336,7 @@ static CGRect FLMTargetApplicationLogicalBounds(void) {
         // view remains display-sized at 390x844 before the single proportional
         // card transform; keyboard avoidance therefore stays in the same
         // 390x844 application coordinate space.
-        return FLMPhysicalReferenceBoundsForScene(windowScene);
+        return FLMPhysicalReferenceBounds();
     }
     CGSize size = FLMFullPhysicalScreenSize();
     return CGRectMake(0.0, 0.0, size.width, size.height);
@@ -712,7 +708,7 @@ static void FLMRestoreContentViewportLayouts(void) {
             UIWindow *window = contentView.window;
             FLMLogContentViewportLayout(
                 @"layout-restored", window, contentView,
-                window ? FLMPhysicalReferenceBoundsForScene(window.windowScene)
+                window ? FLMPhysicalReferenceBounds()
                        : CGRectZero,
                 CGRectMake(0.0, 0.0, FLMContentLogicalViewportSize.width,
                            FLMContentLogicalViewportSize.height),
@@ -769,7 +765,7 @@ static void FLMApplyContentViewportToRootView(UIView *contentView,
         [contentView setNeedsUpdateConstraints];
         [contentView layoutIfNeeded];
         CGRect sceneLogicalBounds =
-            FLMPhysicalReferenceBoundsForScene(window.windowScene);
+            FLMPhysicalReferenceBounds();
         FLMLogContentViewportLayout(@"layout-applied", window, contentView,
                                     sceneLogicalBounds, targetBounds,
                                     previousBounds, contentView.bounds);
@@ -891,7 +887,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMSceneMatchesKeyboardRoute(scene)) {
         return %orig;
     }
-    CGSize size = FLMPhysicalReferenceBoundsForScene(scene).size;
+    CGSize size = FLMPhysicalReferenceBounds().size;
     FLMPublishDiagnosticEvent(
         FLMKeyboardTargetApplication ? FLMDiagnosticRoleApplication
                                      : FLMDiagnosticRoleKeyboardExtension,
@@ -914,8 +910,7 @@ static void FLMUpdateContentViewportAdapter(void) {
                                    isLocalMinimumHeightOut,
                                    ignoreHorizontalOffset);
     if (!FLMKeyboardTargetApplication ||
-        !FLMSceneMatchesKeyboardRoute(windowScene) ||
-        UIInterfaceOrientationIsLandscape(windowScene.interfaceOrientation)) {
+        !FLMSceneMatchesKeyboardRoute(windowScene)) {
         return originalHeight;
     }
 

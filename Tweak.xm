@@ -367,7 +367,6 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
 @end
 
 @interface FLMApplicationSceneHandle : NSObject
-- (NSInteger)currentInterfaceOrientation;
 - (id)sceneIfExists;
 - (id)scene;
 @end
@@ -421,91 +420,13 @@ static BOOL FLMDeviceIsLocked(void) {
     return NO;
 }
 
-static UIInterfaceOrientation FLMActiveInterfaceOrientation(void) {
-    UIInterfaceOrientation portraitCandidate = UIInterfaceOrientationUnknown;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) {
-                continue;
-            }
-            if (scene.activationState == UISceneActivationStateForegroundActive ||
-                scene.activationState == UISceneActivationStateForegroundInactive) {
-                UIInterfaceOrientation orientation =
-                    ((UIWindowScene *)scene).interfaceOrientation;
-                if (UIInterfaceOrientationIsLandscape(orientation)) {
-                    return orientation;
-                }
-                if (orientation != UIInterfaceOrientationUnknown) {
-                    portraitCandidate = orientation;
-                }
-            }
-        }
-    }
-    UIApplication *application = [UIApplication sharedApplication];
-    SEL statusBarSelector = NSSelectorFromString(@"statusBarOrientation");
-    if ([application respondsToSelector:statusBarSelector]) {
-        UIInterfaceOrientation (*orientationGetter)(id, SEL) =
-            (UIInterfaceOrientation (*)(id, SEL))
-                [application methodForSelector:statusBarSelector];
-        UIInterfaceOrientation statusBarOrientation =
-            orientationGetter
-                ? orientationGetter(application, statusBarSelector)
-                : UIInterfaceOrientationUnknown;
-        if (UIInterfaceOrientationIsLandscape(statusBarOrientation)) {
-            return statusBarOrientation;
-        }
-        if (statusBarOrientation != UIInterfaceOrientationUnknown) {
-            portraitCandidate = statusBarOrientation;
-        }
-    }
-    UIDeviceOrientation deviceOrientation = [UIDevice currentDevice].orientation;
-    if (deviceOrientation == UIDeviceOrientationLandscapeLeft) {
-        return UIInterfaceOrientationLandscapeRight;
-    }
-    if (deviceOrientation == UIDeviceOrientationLandscapeRight) {
-        return UIInterfaceOrientationLandscapeLeft;
-    }
-    if (deviceOrientation == UIDeviceOrientationPortraitUpsideDown) {
-        return UIInterfaceOrientationPortraitUpsideDown;
-    }
-    return portraitCandidate != UIInterfaceOrientationUnknown
-               ? portraitCandidate
-               : UIInterfaceOrientationPortrait;
-}
-
 static CGRect FLMVisualScreenBounds(void) {
-    CGRect bounds = [UIScreen mainScreen].bounds;
-    UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
-    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
-    BOOL boundsLandscape =
-        CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-    if (targetLandscape && !boundsLandscape) {
-        bounds.size = CGSizeMake(bounds.size.height, bounds.size.width);
-    }
-    return bounds;
+    return [UIScreen mainScreen].bounds;
 }
 
 static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
-    CGRect rawBounds = [UIScreen mainScreen].bounds;
-    UIInterfaceOrientation orientation = FLMActiveInterfaceOrientation();
-    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
-    BOOL rawBoundsLandscape =
-        CGRectGetWidth(rawBounds) > CGRectGetHeight(rawBounds);
-    if (rawBoundsLandscape || !targetLandscape) {
-        return rawPoint;
-    }
-
-    CGFloat rawWidth = CGRectGetWidth(rawBounds);
-    CGFloat rawHeight = CGRectGetHeight(rawBounds);
-    if (orientation == UIInterfaceOrientationLandscapeLeft) {
-        return CGPointMake(rawPoint.y, rawWidth - rawPoint.x);
-    }
-    if (orientation == UIInterfaceOrientationLandscapeRight) {
-        return CGPointMake(rawHeight - rawPoint.y, rawPoint.x);
-    }
-    if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-        return CGPointMake(rawHeight - rawPoint.y, rawWidth - rawPoint.x);
-    }
+    // Portrait-only build: the global gesture coordinate space is already the
+    // same space used by the SpringBoard windows and the centered card.
     return rawPoint;
 }
 
@@ -612,11 +533,11 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 }
 
 - (BOOL)shouldAutorotate {
-    return YES;
+    return NO;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskAll;
+    return UIInterfaceOrientationMaskPortrait;
 }
 
 @end
@@ -1438,7 +1359,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)createFloatingWindow;
 - (BOOL)registerGlobalCornerGesture;
 - (void)updateWindowFrames;
-- (void)orientationDidChange:(NSNotification *)notification;
 - (void)handleCornerGuardGesture:(UIGestureRecognizer *)gesture;
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture;
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
@@ -2121,12 +2041,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                         FLYME_PREFERENCES_NOTIFICATION,
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-        [[NSNotificationCenter defaultCenter]
-            addObserver:self
-               selector:@selector(orientationDidChange:)
-                   name:UIDeviceOrientationDidChangeNotification
-                 object:nil];
         [[NSNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(protectedSceneDidDisappear:)
@@ -2632,16 +2546,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                          !self.usesSystemGestureManager;
     self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
-}
-
-- (void)orientationDidChange:(NSNotification *)notification {
-    (void)notification;
-    [self dismissWheelLaunchingItem:nil];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.08 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [self updateWindowFrames];
-    });
 }
 
 - (void)updateWindowFrames {
@@ -4642,7 +4546,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *rootView = self.floatingWindow.rootViewController.view;
     CGPoint point = [gesture locationInView:rootView];
     CGRect bounds = rootView.bounds;
-    BOOL landscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
         // A centered card always starts a new dock gesture at the fixed
@@ -4662,45 +4565,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 
     CGFloat primaryMovement =
-        landscape ? point.x - self.floatingHandleStartPoint.x
-                  : point.y - self.floatingHandleStartPoint.y;
-    CGFloat crossMovement =
-        landscape ? point.y - self.floatingHandleStartPoint.y
-                  : point.x - self.floatingHandleStartPoint.x;
+        point.y - self.floatingHandleStartPoint.y;
 
     if (gesture.state == UIGestureRecognizerStateChanged) {
-        if (landscape) {
-            BOOL directionIsPrimary =
-                fabs(primaryMovement) >= fabs(crossMovement) * 0.55;
-            if (directionIsPrimary && primaryMovement >= 3.0) {
-                self.floatingHandleMoved = YES;
-                self.floatingDockTransitionActive = NO;
-                if (!self.floatingInteractiveScenePrepared) {
-                    [self prepareFloatingSceneForInteractiveFullscreen];
-                }
-                CGFloat available =
-                    MAX(1.0,
-                        CGRectGetWidth(bounds) -
-                            CGRectGetMaxX(self.floatingHandleInitialContainerFrame));
-                CGFloat progress =
-                    MIN(1.0, MAX(0.0, primaryMovement / available));
-                [self updateFloatingFullscreenSnapshotForProgress:progress];
-                if (progress >= FLMFloatingFullscreenActivationThreshold &&
-                    !self.floatingFullscreenActivationArmed &&
-                    self.floatingIdentifier.length > 0) {
-                    self.floatingFullscreenActivationArmed = YES;
-                    self.floatingReconnectSuppressed = YES;
-                    [self activateIdentifierFullscreen:self.floatingIdentifier];
-                }
-            } else {
-                CGFloat resistance =
-                    MAX(-14.0, MIN(0.0, primaryMovement * 0.18));
-                self.floatingHandleBar.transform =
-                    CGAffineTransformMakeTranslation(resistance, 0.0);
-            }
-            return;
-        }
-
         if (primaryMovement <= -3.0) {
             if (self.floatingInteractiveScenePrepared) {
                 [self restoreFloatingSceneAfterCancelledTransition];
@@ -4810,7 +4677,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    if (!landscape && gesture.state == UIGestureRecognizerStateEnded &&
+    if (gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingDockReady && primaryMovement < 0.0) {
         self.floatingDockReady = NO;
         [self transitionFloatingWindowToDocked];
@@ -4819,8 +4686,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gesture.state == UIGestureRecognizerStateEnded &&
         self.floatingHandleMoved && !self.floatingDockTransitionActive &&
         primaryMovement > 0.0 &&
-        (landscape ||
-         point.y >= CGRectGetHeight(bounds) - 80.0)) {
+        point.y >= CGRectGetHeight(bounds) - 80.0) {
         self.floatingDockReady = NO;
         [self transitionFloatingWindowToFullscreen];
         return;
@@ -5172,18 +5038,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Scene geometry. The app itself remains a full-screen Scene underneath.
     const CGFloat containerWidth = [self effectiveCenteredCardWidth];
     const CGFloat containerHeight = [self effectiveCenteredCardHeight];
-    CGFloat top = MAX(safeInsets.top, width > height ? 12.0 : 10.0);
-    BOOL landscape = width > height;
-    CGFloat originX = 0.0;
-    if (landscape) {
-        top = floor((height - containerHeight) * 0.5);
-        originX = MAX(0.0, safeInsets.left);
-    } else {
-        CGFloat centeredUpperTop =
-            floor((height - containerHeight) * 0.5 - 44.0);
-        top = MAX(safeInsets.top + 8.0, centeredUpperTop);
-        originX = floor((width - containerWidth) * 0.5);
-    }
+    CGFloat centeredUpperTop =
+        floor((height - containerHeight) * 0.5 - 44.0);
+    CGFloat top = MAX(safeInsets.top + 8.0, centeredUpperTop);
+    CGFloat originX = floor((width - containerWidth) * 0.5);
     return CGRectMake(originX, top, containerWidth, containerHeight);
 }
 
@@ -5883,10 +5741,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)layoutFloatingHandleForCurrentContainer {
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    BOOL landscape =
-        CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
     CGFloat containerWidth = CGRectGetWidth(self.floatingContainer.frame);
-    CGFloat containerHeight = CGRectGetHeight(self.floatingContainer.frame);
     if (self.floatingDockHidden) {
         CGFloat handleWidth = 44.0;
         CGFloat handleHeight = 72.0;
@@ -5906,35 +5761,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        barLength);
         return;
     }
-    if (landscape) {
-        CGFloat handleHeight = containerHeight * 0.30;
-        self.floatingHandle.frame =
-            CGRectMake(CGRectGetMaxX(self.floatingContainer.frame) + 2.0,
-                       floor(CGRectGetMidY(self.floatingContainer.frame) -
-                             handleHeight * 0.5),
-                       44.0,
-                       handleHeight);
-        self.floatingHandleBar.frame =
-            CGRectMake(0.0, 0.0, 5.0, handleHeight);
-    } else {
-        CGFloat visibleHandleWidth = containerWidth * 0.30;
-        // Keep the invisible hit target outside the application card.  The
-        // visible bar remains centered, with exactly 20 pt of horizontal
-        // reach on each side and a little more vertical forgiveness.
-        CGFloat handleWidth = visibleHandleWidth + 40.0;
-        CGFloat handleHeight = 58.0;
-        self.floatingHandle.frame =
-            CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
-                             handleWidth * 0.5),
-                       CGRectGetMaxY(self.floatingContainer.frame),
-                       handleWidth,
-                       handleHeight);
-        self.floatingHandleBar.frame =
-            CGRectMake(20.0,
-                       floor((handleHeight - 5.0) * 0.5),
-                       visibleHandleWidth,
-                       5.0);
-    }
+    CGFloat visibleHandleWidth = containerWidth * 0.30;
+    // Keep the invisible hit target outside the application card. The visible
+    // bar remains centered, with exactly 20 pt of horizontal reach on each
+    // side and a little more vertical forgiveness.
+    CGFloat handleWidth = visibleHandleWidth + 40.0;
+    CGFloat handleHeight = 58.0;
+    self.floatingHandle.frame =
+        CGRectMake(floor(CGRectGetMidX(self.floatingContainer.frame) -
+                         handleWidth * 0.5),
+                   CGRectGetMaxY(self.floatingContainer.frame),
+                   handleWidth,
+                   handleHeight);
+    self.floatingHandleBar.frame =
+        CGRectMake(20.0,
+                   floor((handleHeight - 5.0) * 0.5),
+                   visibleHandleWidth,
+                   5.0);
 }
 
 - (void)layoutFloatingHostView {
@@ -5950,13 +5793,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGSize targetSize = self.floatingContainer.bounds.size;
     if (targetSize.width < 1.0 || targetSize.height < 1.0) {
         return;
-    }
-
-    BOOL targetIsLandscape = targetSize.width > targetSize.height;
-    BOOL referenceIsLandscape = referenceSize.width > referenceSize.height;
-    if (targetIsLandscape != referenceIsLandscape) {
-        referenceSize =
-            CGSizeMake(referenceSize.height, referenceSize.width);
     }
 
     CGFloat widthScale = targetSize.width / referenceSize.width;
@@ -7163,18 +6999,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [self effectiveCenteredCardWidth],
                 [self effectiveCenteredCardHeight]);
         }
-        BOOL landscapeWindow =
-            CGRectGetWidth(self.floatingWindow.bounds) >
-            CGRectGetHeight(self.floatingWindow.bounds);
-        NSInteger orientation = 1;
-        if (!landscapeWindow &&
-            [sceneHandle respondsToSelector:
-                             @selector(currentInterfaceOrientation)]) {
-            orientation = [sceneHandle currentInterfaceOrientation];
-        }
-        if (orientation < 1 || orientation > 4) {
-            orientation = 1;
-        }
+        NSInteger orientation = UIInterfaceOrientationPortrait;
         if ([mutableSettings respondsToSelector:
                              @selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:orientation];
@@ -7214,11 +7039,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                   CGRectGetWidth(screenBounds),
                                                   CGRectGetHeight(screenBounds))];
         }
-        NSInteger orientation = (NSInteger)FLMActiveInterfaceOrientation();
-        if (orientation >= 1 && orientation <= 4 &&
-            [mutableSettings respondsToSelector:
-                                 @selector(setInterfaceOrientation:)]) {
-            [mutableSettings setInterfaceOrientation:orientation];
+        if ([mutableSettings respondsToSelector:
+                             @selector(setInterfaceOrientation:)]) {
+            [mutableSettings setInterfaceOrientation:
+                              UIInterfaceOrientationPortrait];
         }
         if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
             [mutableSettings setForeground:NO];

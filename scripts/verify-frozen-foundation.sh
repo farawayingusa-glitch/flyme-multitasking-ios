@@ -145,6 +145,21 @@ for marker in \
     reject_source "$marker"
 done
 
+# The portrait freeze must not silently regain any landscape entry point,
+# coordinate conversion, or alternate card/Scene layout branch.
+for marker in \
+    "UIInterfaceOrientationIsLandscape" \
+    "UIDeviceOrientationLandscape" \
+    "UIInterfaceOrientationMaskAll" \
+    "UIDeviceOrientationDidChangeNotification" \
+    "orientationDidChange:" \
+    "BOOL landscape =" \
+    "landscapeWindow" \
+    "targetIsLandscape" \
+    "referenceIsLandscape"; do
+    reject_source "$marker"
+done
+
 for marker in \
     "%hook UITextEffectsWindow" \
     "keyboardScreenReferenceSize" \
@@ -168,6 +183,15 @@ for marker in \
         echo "missing native keyboard marker: $marker" >&2
         exit 1
     }
+done
+
+for marker in \
+    "UIInterfaceOrientationIsLandscape" \
+    "FLMPhysicalReferenceBoundsForScene"; do
+    if grep -Fq -- "$marker" "$keyboard_source"; then
+        echo "landscape keyboard path returned: $marker" >&2
+        exit 1
+    fi
 done
 
 require_source "sb host-update rejected=alternate-host"
