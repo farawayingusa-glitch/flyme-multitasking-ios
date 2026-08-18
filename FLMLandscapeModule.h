@@ -43,15 +43,5 @@ void FLMLandscapeModuleOrientationDidChange(void);
 void FLMLandscapeModuleOpenIdentifier(NSString * _Nonnull identifier);
 void FLMLandscapeModuleClose(BOOL keepApplication);
 BOOL FLMLandscapeModuleHasVisibleCard(void);
-uint64_t FLMLandscapeModuleKeyboardSessionGeneration(void);
-
-// SpringBoard owns the landscape card, while the keyboard adapter is built as
-// a separate tweak. These bridge calls publish the exact full-screen
-// landscape Scene contract; the native keyboard host stays in UIKit's own
-// hierarchy and never becomes a child of the visual card.
-void FLMLandscapeKeyboardRouteOpen(NSString * _Nonnull identifier,
-                                   id _Nonnull scene,
-                                   uint64_t sessionGeneration);
-void FLMLandscapeKeyboardRouteClose(uint64_t sessionGeneration);
 
 #endif

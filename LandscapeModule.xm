@@ -107,8 +107,6 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, assign) NSUInteger generation;
 @property(nonatomic, assign) NSTimeInterval openedAt;
 @property(nonatomic, assign) NSTimeInterval scenePreparedAt;
-@property(nonatomic, assign) uint64_t keyboardSessionGeneration;
-@property(nonatomic, assign) BOOL keyboardRoutePublished;
 @property(nonatomic, assign) CGRect expectedHostBounds;
 @property(nonatomic, assign) uint64_t expectedHostGeneration;
 @property(nonatomic, copy) NSString *expectedHostSceneIdentifier;
@@ -708,10 +706,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-scene-disappeared app=%@ generation=%lu",
         self.identifier, (unsigned long)self.generation);
-    if (self.keyboardRoutePublished) {
-        FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
-        self.keyboardRoutePublished = NO;
-    }
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.scene = nil;
@@ -797,9 +791,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
     }
     self.openedAt = CACurrentMediaTime();
     self.scenePreparedAt = 0.0;
-    self.keyboardRoutePublished = NO;
-    self.keyboardSessionGeneration =
-        ((uint64_t)self.generation << 1) | 1ULL;
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
                                          FLMLandscapeFullScreenContentWidth,
                                          FLMLandscapeFullScreenContentHeight);
@@ -857,8 +848,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
 - (void)lockTimerFired:(NSTimer *)timer {
     (void)timer;
     if (self.hasVisibleCard) {
-        // SceneLifecycle protects this scene from normal deactivation, but a
-        // keyboard presentation can still amend its client settings. Reassert
+        // SceneLifecycle protects this scene from normal deactivation. Reassert
         // the foreground contract while the independent landscape card lives.
         [self refreshSceneForeground];
         [self validateHostGeometry];
@@ -1011,8 +1001,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.launchCoverView.hidden = YES;
     self.launchCoverView.alpha = 1.0;
     FLMEnqueueDiagnosticLine(
-        @"sb host-attach session=%llu generation=%lu contentContract=full-screen-landscape host=%@ expectedScene=%@",
-        (unsigned long long)self.keyboardSessionGeneration,
+        @"sb host-attach generation=%lu contentContract=full-screen-landscape host=%@ expectedScene=%@",
         (unsigned long)generation, NSStringFromCGRect(host.bounds),
         NSStringFromCGRect(self.expectedHostBounds));
     FLMEnqueueDiagnosticLine(
@@ -1083,10 +1072,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
             self.identifier, NSStringFromCGRect(systemSceneFrame),
             NSStringFromCGRect(visualBounds), (long)orientation,
             NSStringFromCGRect(appliedFrame), (long)appliedOrientation);
-        self.keyboardRoutePublished = YES;
-        FLMLandscapeKeyboardRouteOpen(self.identifier,
-                                      scene,
-                                      self.keyboardSessionGeneration);
         return YES;
     } @catch (__unused NSException *exception) {
         FLMClearProtectedScene(scene);
@@ -1365,10 +1350,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.rootView.hostView = nil;
     id scene = self.scene;
     id presenter = self.presenter;
-    if (self.keyboardRoutePublished) {
-        FLMLandscapeKeyboardRouteClose(self.keyboardSessionGeneration);
-        self.keyboardRoutePublished = NO;
-    }
     FLMEnqueueDiagnosticLine(
         @"sb landscape-content-exit scene={%.1f,%.1f} contract=full-screen-landscape orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
@@ -1511,11 +1492,4 @@ void FLMLandscapeModuleClose(BOOL keepApplication) {
 
 BOOL FLMLandscapeModuleHasVisibleCard(void) {
     return [[FLMLandscapeModule sharedModule] hasVisibleCard];
-}
-
-uint64_t FLMLandscapeModuleKeyboardSessionGeneration(void) {
-    FLMLandscapeModule *module = [FLMLandscapeModule sharedModule];
-    return module.hasVisibleCard && !module.closing
-               ? module.keyboardSessionGeneration
-               : 0;
 }

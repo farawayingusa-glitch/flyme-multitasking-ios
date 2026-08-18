@@ -183,26 +183,25 @@ for marker in \
 done
 
 for marker in \
-    "FLMKeyboardDisplayBoundsForScene" \
-    "FLMTargetApplicationLogicalBounds" \
-    "contentContract=full-screen-landscape"; do
-    grep -Fq -- "$marker" "$keyboard_source" || {
-        echo "missing native landscape content marker: $marker" >&2
-        exit 1
-    }
-done
-
-for marker in \
     "FLMKeyboardPairStateNativeLandscape" \
     "FLMKeyboardPairStateUnsupported" \
     "FLMKeyboardPairStatePaired" \
     "keyboard-geometry-space-mismatch" \
     "landscape-host-update native-host-preserved" \
-    "forwarding=0"; do
-    grep -Fq -- "$marker" "$source_file" || {
-        echo "missing landscape keyboard isolation marker: $marker" >&2
-        exit 1
-    }
+    "FLMLandscapeKeyboardRouteOpen" \
+    "FLMLandscapeKeyboardRouteClose" \
+    "FLMLandscapeModuleKeyboardSessionGeneration" \
+    "FLYME_KEYBOARD_ORIENTATION_NOTIFICATION"; do
+    reject_source "$marker"
+done
+
+for marker in \
+    "FLMKeyboardDisplayBoundsForScene" \
+    "FLMKeyboardEffectiveInterfaceOrientation" \
+    "FLMKeyboardSharedInterfaceOrientation" \
+    "FLMKeyboardOrientationToken" \
+    "contentContract=full-screen-landscape"; do
+    reject_source "$marker"
 done
 
 for marker in \
