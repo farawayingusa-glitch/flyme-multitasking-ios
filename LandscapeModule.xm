@@ -779,7 +779,10 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
 
 static BOOL FLMLandscapeDeviceIsLocked(void) {
     id managerClass = NSClassFromString(@"SBLockScreenManager");
-    id manager = [managerClass sharedInstance];
+    SEL selector = @selector(sharedInstance);
+    id (*getter)(id, SEL) =
+        (id (*)(id, SEL))[managerClass methodForSelector:selector];
+    id manager = getter ? getter(managerClass, selector) : nil;
     if (!manager) {
         return NO;
     }
