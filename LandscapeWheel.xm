@@ -25,20 +25,6 @@ static void FLMLandscapeWriteTouchMarkerOnce(void) {
     });
 }
 
-@interface FLMLandscapeDisplayConfiguration : NSObject
-- (id)identity;
-@end
-
-@interface UIScreen (FLMLandscapeWheelPrivate)
-- (FLMLandscapeDisplayConfiguration *)displayConfiguration;
-@end
-
-@interface FLMLandscapeSystemGestureManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)addGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-       toDisplayWithIdentity:(id)displayIdentity;
-@end
-
 @interface UIApplication (FLMLandscapeWheelPrivate)
 - (BOOL)launchApplicationWithIdentifier:(NSString *)identifier
                               suspended:(BOOL)suspended;
@@ -268,11 +254,11 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @property(nonatomic, strong) FLMLandscapeWheelWindow *overlayWindow;
 @property(nonatomic, strong) FLMLandscapeWheelHotspotWindow *hotspotWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
-@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *guardGesture;
-@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *openerGesture;
-@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *floatingGuardGesture;
-@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *floatingOpenerGesture;
-@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *modalGesture;
+@property(nonatomic, strong) UIGestureRecognizer *guardGesture;
+@property(nonatomic, strong) UIGestureRecognizer *openerGesture;
+@property(nonatomic, strong) UIGestureRecognizer *floatingGuardGesture;
+@property(nonatomic, strong) UIGestureRecognizer *floatingOpenerGesture;
+@property(nonatomic, strong) UIGestureRecognizer *modalGesture;
 @property(nonatomic, strong) UITapGestureRecognizer *overlayTap;
 @property(nonatomic, strong) NSArray<FLMLandscapeWheelItemView *> *itemViews;
 @property(nonatomic, copy) NSArray<NSString *> *itemIdentifiers;
@@ -287,11 +273,9 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @property(nonatomic, assign) FLMLandscapeTouchContext touchContext;
 @property(nonatomic, assign) BOOL touchContextValid;
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
-@property(nonatomic, strong) id systemGestureManager;
-@property(nonatomic, strong) id displayIdentity;
+@property(nonatomic, assign) BOOL sharedGesturesBound;
 @property(nonatomic, assign) BOOL started;
 @property(nonatomic, assign) BOOL starting;
-@property(nonatomic, assign) BOOL registrationRetryScheduled;
 + (instancetype)sharedController;
 - (void)start;
 - (void)reloadPreferences;
@@ -303,8 +287,8 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (void)createWindowsIfNeeded;
 - (void)attachFloatingGesturesIfNeeded;
 - (void)configureFallbackGestures;
-- (void)registerGlobalGestures;
-- (void)scheduleGlobalGestureRegistrationRetry;
+- (BOOL)bindSharedWheelController;
+- (void)detachFallbackGestures;
 - (BOOL)shouldActivateForPoint:(CGPoint)point;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
@@ -312,6 +296,47 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (void)dismissWheelLaunchingItem:(FLMLandscapeWheelItemView *)item;
 - (FLMLandscapeWheelItemView *)itemNearPoint:(CGPoint)point;
 @end
+
+static id FLMLandscapeSharedWheelController(void) {
+    Class controllerClass = NSClassFromString(@"FLMWheelController");
+    SEL selector = @selector(sharedController);
+    if (!controllerClass || ![controllerClass respondsToSelector:selector]) {
+        return nil;
+    }
+    id (*getter)(id, SEL) =
+        (id (*)(id, SEL))[controllerClass methodForSelector:selector];
+    return getter ? getter((id)controllerClass, selector) : nil;
+}
+
+static UIGestureRecognizer * _Nullable FLMLandscapeSharedGesture(
+    id _Nullable controller,
+    NSString * _Nonnull key) {
+    if (!controller) {
+        return nil;
+    }
+    @try {
+        id value = [controller valueForKey:key];
+        return [value isKindOfClass:[UIGestureRecognizer class]] ? value : nil;
+    } @catch (NSException *exception) {
+        (void)exception;
+        return nil;
+    }
+}
+
+static BOOL FLMLandscapeSharedBool(id _Nullable controller,
+                                   NSString * _Nonnull key) {
+    if (!controller) {
+        return NO;
+    }
+    @try {
+        id value = [controller valueForKey:key];
+        return [value respondsToSelector:@selector(boolValue)] &&
+               [value boolValue];
+    } @catch (NSException *exception) {
+        (void)exception;
+        return NO;
+    }
+}
 
 static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                                             void *observer,
@@ -367,18 +392,23 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         [self createWindowsIfNeeded];
         [self reloadPreferences];
         // The card window is created by the independent landscape module. It
-        // must exist before the local fallback pair is attached, otherwise a
-        // card opened later has no in-window route for the corner stream.
+        // must exist before the shared entry is bound, otherwise a card opened
+        // later has no horizontal route for the corner stream.
         FLMLandscapeModuleStart();
-        [self attachFloatingGesturesIfNeeded];
-        [self registerGlobalGestures];
+        BOOL sharedEntryBound = [self bindSharedWheelController];
+        if (!sharedEntryBound) {
+            FLMWriteLandscapeBootstrapMarker("shared-entry-fallback");
+            [self attachFloatingGesturesIfNeeded];
+            [self configureFallbackGestures];
+            self.hotspotWindow.hidden = NO;
+        }
         [self updateFrames];
         self.started = YES;
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-plugin-start globalGestures=%d items=%lu",
-            self.usesSystemGestureManager,
+            @"sb landscape-plugin-start sharedEntry=%d fallback=%d items=%lu",
+            sharedEntryBound,
+            !sharedEntryBound,
             (unsigned long)self.itemIdentifiers.count);
-        [self scheduleGlobalGestureRegistrationRetry];
     } @catch (NSException *exception) {
         self.started = NO;
         FLMWriteLandscapeBootstrapMarker("start-failed");
@@ -562,73 +592,84 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
-- (void)registerGlobalGestures {
-    if (self.usesSystemGestureManager && self.systemGestureManager &&
-        self.displayIdentity) {
-        return;
+- (void)detachFallbackGestures {
+    UIView *hotspotView = self.hotspotWindow.rootViewController.view;
+    if (self.guardGesture.view == hotspotView) {
+        [hotspotView removeGestureRecognizer:self.guardGesture];
     }
-    Class managerClass = NSClassFromString(@"_UISystemGestureManager");
-    FLMLandscapeSystemGestureManager *manager =
-        (FLMLandscapeSystemGestureManager *)[managerClass sharedInstance];
-    FLMLandscapeDisplayConfiguration *configuration =
-        [[UIScreen mainScreen] displayConfiguration];
-    id identity = [configuration identity];
-    SEL selector = @selector(addGestureRecognizer:toDisplayWithIdentity:);
-    if (manager && identity && [manager respondsToSelector:selector]) {
-        [manager addGestureRecognizer:self.guardGesture
-                toDisplayWithIdentity:identity];
-        [manager addGestureRecognizer:self.openerGesture
-                toDisplayWithIdentity:identity];
-        [manager addGestureRecognizer:self.modalGesture
-                toDisplayWithIdentity:identity];
-        self.systemGestureManager = manager;
-        self.displayIdentity = identity;
-        self.usesSystemGestureManager = YES;
-        FLMWriteLandscapeBootstrapMarker("global-register-success");
-        [self configureFallbackGestures];
-        self.hotspotWindow.hidden = YES;
-        self.hotspotWindow.hotspotsEnabled = NO;
-    } else {
-        self.systemGestureManager = nil;
-        self.displayIdentity = nil;
-        self.usesSystemGestureManager = NO;
-        FLMWriteLandscapeBootstrapMarker("global-register-fallback");
-        [self configureFallbackGestures];
-        self.hotspotWindow.hidden = NO;
-        self.hotspotWindow.hotspotsEnabled =
-            self.enabled && self.itemIdentifiers.count > 0 &&
-            !self.wheelPinned;
+    if (self.openerGesture.view == hotspotView) {
+        [hotspotView removeGestureRecognizer:self.openerGesture];
     }
-    FLMEnqueueDiagnosticLine(
-        @"sb landscape-wheel-registered systemGestureManager=%d identity=%d",
-        self.usesSystemGestureManager,
-        identity != nil);
+    UIView *overlayView = self.overlayWindow.rootViewController.view;
+    if (self.modalGesture.view == overlayView) {
+        [overlayView removeGestureRecognizer:self.modalGesture];
+    }
+    if (self.floatingGuardGesture.view) {
+        [self.floatingGuardGesture.view
+            removeGestureRecognizer:self.floatingGuardGesture];
+    }
+    if (self.floatingOpenerGesture.view) {
+        [self.floatingOpenerGesture.view
+            removeGestureRecognizer:self.floatingOpenerGesture];
+    }
+    self.floatingGuardGesture = nil;
+    self.floatingOpenerGesture = nil;
 }
 
-- (void)scheduleGlobalGestureRegistrationRetry {
-    if (!self.started || self.usesSystemGestureManager ||
-        self.registrationRetryScheduled) {
-        return;
+- (BOOL)bindSharedWheelController {
+    if (self.sharedGesturesBound) {
+        return YES;
     }
-    self.registrationRetryScheduled = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                  (int64_t)(0.75 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        self.registrationRetryScheduled = NO;
-        if (!self.started || self.usesSystemGestureManager) {
-            return;
-        }
-        @try {
-            [self registerGlobalGestures];
-            [self reloadPreferences];
-        } @catch (NSException *exception) {
-            FLMEnqueueDiagnosticLine(
-                @"sb landscape-wheel-registration-retry-failed exception=%@ reason=%@",
-                NSStringFromClass(exception.class),
-                exception.reason ?: @"<none>");
-        }
-        [self scheduleGlobalGestureRegistrationRetry];
-    });
+    id rootController = FLMLandscapeSharedWheelController();
+    if (!FLMLandscapeSharedBool(rootController,
+                                 @"usesSystemGestureManager")) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-wheel-shared-entry unavailable root=%@ manager=%d",
+            rootController,
+            rootController != nil);
+        return NO;
+    }
+
+    UIGestureRecognizer *guard =
+        FLMLandscapeSharedGesture(rootController, @"cornerGuardGesture");
+    UIGestureRecognizer *opener =
+        FLMLandscapeSharedGesture(rootController, @"cornerGesture");
+    UIGestureRecognizer *floatingGuard =
+        FLMLandscapeSharedGesture(rootController,
+                                  @"floatingCornerGuardGesture");
+    UIGestureRecognizer *floatingOpener =
+        FLMLandscapeSharedGesture(rootController, @"floatingCornerGesture");
+    UIGestureRecognizer *modal =
+        FLMLandscapeSharedGesture(rootController, @"modalGesture");
+    if (!guard || !opener || !floatingGuard || !floatingOpener || !modal) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-wheel-shared-entry incomplete guard=%d opener=%d floatingGuard=%d floatingOpener=%d modal=%d",
+            guard != nil,
+            opener != nil,
+            floatingGuard != nil,
+            floatingOpener != nil,
+            modal != nil);
+        return NO;
+    }
+
+    [self detachFallbackGestures];
+    self.guardGesture = guard;
+    self.openerGesture = opener;
+    self.floatingGuardGesture = floatingGuard;
+    self.floatingOpenerGesture = floatingOpener;
+    self.modalGesture = modal;
+    self.usesSystemGestureManager = YES;
+    self.sharedGesturesBound = YES;
+    self.hotspotWindow.hidden = YES;
+    self.hotspotWindow.hotspotsEnabled = NO;
+    FLMWriteLandscapeBootstrapMarker("shared-entry-ready");
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-wheel-shared-entry bound root=%@ guard=%@ opener=%@ modal=%@",
+        rootController,
+        guard,
+        opener,
+        modal);
+    return YES;
 }
 
 - (void)reloadPreferences {
@@ -786,6 +827,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.presentingFromRight = fromRight;
         self.touchContext = context;
         self.touchContextValid = context.valid;
+        FLMWriteLandscapeBootstrapMarker("entry-touch-accepted");
         FLMEnqueueDiagnosticLine(
             @"sb landscape-wheel-touch accepted raw={%.1f,%.1f} point={%.1f,%.1f} fromRight=%d visual=%@ fixed=%@",
             rawPoint.x, rawPoint.y, point.x, point.y, fromRight,
@@ -848,6 +890,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     if (!FLMLandscapeModuleIsLandscape() || self.itemIdentifiers.count == 0) {
         return;
     }
+    FLMWriteLandscapeBootstrapMarker("wheel-open");
     CGRect bounds = self.touchContextValid
                         ? self.touchContext.visualBounds
                         : FLMLandscapeModuleVisualBounds();
@@ -1221,6 +1264,114 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 @end
+
+static FLMLandscapeWheelController * _Nullable FLMLandscapeWheelForRoot(
+    id _Nullable rootController) {
+    id sharedController = FLMLandscapeSharedWheelController();
+    if (!sharedController || sharedController != rootController) {
+        return nil;
+    }
+    return (FLMLandscapeWheelController *)sharedController;
+}
+
+BOOL FLMLandscapeWheelOwnsSharedGesture(
+    id _Nullable rootController,
+    UIGestureRecognizer * _Nullable gestureRecognizer) {
+    FLMLandscapeWheelController *controller =
+        FLMLandscapeWheelForRoot(rootController);
+    if (!controller || !gestureRecognizer || !controller.started ||
+        !controller.sharedGesturesBound) {
+        return NO;
+    }
+    return gestureRecognizer == controller.guardGesture ||
+           gestureRecognizer == controller.openerGesture ||
+           gestureRecognizer == controller.floatingGuardGesture ||
+           gestureRecognizer == controller.floatingOpenerGesture ||
+           gestureRecognizer == controller.modalGesture;
+}
+
+BOOL FLMLandscapeWheelShouldReceiveSharedTouch(
+    id _Nullable rootController,
+    UIGestureRecognizer * _Nullable gestureRecognizer,
+    UITouch * _Nullable touch) {
+    FLMLandscapeWheelController *controller =
+        FLMLandscapeWheelForRoot(rootController);
+    if (!controller || !gestureRecognizer || !touch ||
+        !FLMLandscapeWheelOwnsSharedGesture(rootController,
+                                            gestureRecognizer)) {
+        return NO;
+    }
+    return [controller gestureRecognizer:gestureRecognizer
+                      shouldReceiveTouch:touch];
+}
+
+BOOL FLMLandscapeWheelShouldBeginSharedGesture(
+    id _Nullable rootController,
+    UIGestureRecognizer * _Nullable gestureRecognizer) {
+    FLMLandscapeWheelController *controller =
+        FLMLandscapeWheelForRoot(rootController);
+    if (!controller ||
+        !FLMLandscapeWheelOwnsSharedGesture(rootController,
+                                            gestureRecognizer) ||
+        !FLMLandscapeModuleIsLandscape() || !controller.enabled ||
+        FLMLandscapeWheelDeviceIsLocked() ||
+        controller.itemIdentifiers.count == 0) {
+        return NO;
+    }
+    if (gestureRecognizer == controller.modalGesture) {
+        return controller.wheelPinned;
+    }
+    return !controller.wheelPinned;
+}
+
+BOOL FLMLandscapeWheelShouldSuppressPortraitGesture(
+    id _Nullable rootController,
+    UIGestureRecognizer * _Nullable gestureRecognizer) {
+    FLMLandscapeWheelController *controller =
+        FLMLandscapeWheelForRoot(rootController);
+    if (!controller || !gestureRecognizer ||
+        FLMLandscapeWheelOwnsSharedGesture(rootController,
+                                           gestureRecognizer)) {
+        return NO;
+    }
+    NSArray<NSString *> *portraitGestureKeys = @[
+        @"homeDockGesture",
+        @"floatingDockInputGesture",
+        @"floatingDockTap",
+        @"floatingDockDragPress",
+        @"floatingBackdropTap",
+        @"floatingExclusiveGesture",
+        @"floatingHandlePress",
+        @"floatingHandleTap",
+        @"wheelTapGesture",
+    ];
+    for (NSString *key in portraitGestureKeys) {
+        if (gestureRecognizer == FLMLandscapeSharedGesture(controller, key)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+void FLMLandscapeWheelHandleSharedGesture(
+    id _Nullable rootController,
+    UIGestureRecognizer * _Nullable gestureRecognizer) {
+    FLMLandscapeWheelController *controller =
+        FLMLandscapeWheelForRoot(rootController);
+    if (!controller || !gestureRecognizer ||
+        !FLMLandscapeWheelOwnsSharedGesture(rootController,
+                                           gestureRecognizer)) {
+        return;
+    }
+    if (gestureRecognizer == controller.modalGesture) {
+        [controller handleModalGesture:gestureRecognizer];
+    } else if (gestureRecognizer == controller.guardGesture ||
+               gestureRecognizer == controller.floatingGuardGesture) {
+        [controller handleGuardGesture:gestureRecognizer];
+    } else {
+        [controller handleOpenerGesture:gestureRecognizer];
+    }
+}
 
 %hook SpringBoard
 

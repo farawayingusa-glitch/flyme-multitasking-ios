@@ -45,4 +45,24 @@ void FLMLandscapeModuleOpenIdentifier(NSString * _Nonnull identifier);
 void FLMLandscapeModuleClose(BOOL keepApplication);
 BOOL FLMLandscapeModuleHasVisibleCard(void);
 
+// The portrait controller owns the single system-gesture-manager registration.
+// The horizontal module only borrows those recognizers through this adapter;
+// it never installs a second global gesture family.
+BOOL FLMLandscapeWheelOwnsSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+BOOL FLMLandscapeWheelShouldReceiveSharedTouch(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer,
+    UITouch * _Nullable touch);
+BOOL FLMLandscapeWheelShouldBeginSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+BOOL FLMLandscapeWheelShouldSuppressPortraitGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+void FLMLandscapeWheelHandleSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+
 #endif
