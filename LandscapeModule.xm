@@ -150,7 +150,12 @@ static UIWindowScene *FLMLandscapeWindowScene(void) {
             UIWindowScene *scene = (UIWindowScene *)candidate;
             if (scene.activationState == UISceneActivationStateForegroundActive ||
                 scene.activationState == UISceneActivationStateForegroundInactive) {
-                if (UIInterfaceOrientationIsLandscape(scene.interfaceOrientation)) {
+                CGRect coordinateBounds = scene.coordinateSpace.bounds;
+                BOOL geometryLandscape =
+                    CGRectGetWidth(coordinateBounds) >
+                    CGRectGetHeight(coordinateBounds);
+                if (UIInterfaceOrientationIsLandscape(scene.interfaceOrientation) ||
+                    geometryLandscape) {
                     return scene;
                 }
                 if (!fallback) {
@@ -165,11 +170,15 @@ static UIWindowScene *FLMLandscapeWindowScene(void) {
 
 static UIInterfaceOrientation FLMLandscapeInterfaceOrientation(void) {
     UIWindowScene *scene = FLMLandscapeWindowScene();
+    BOOL sceneGeometryLandscape = NO;
     if (@available(iOS 13.0, *)) {
         UIInterfaceOrientation orientation = scene.interfaceOrientation;
         if (UIInterfaceOrientationIsLandscape(orientation)) {
             return orientation;
         }
+        CGRect coordinateBounds = scene.coordinateSpace.bounds;
+        sceneGeometryLandscape =
+            CGRectGetWidth(coordinateBounds) > CGRectGetHeight(coordinateBounds);
     }
     UIApplication *application = [UIApplication sharedApplication];
     SEL selector = NSSelectorFromString(@"statusBarOrientation");
@@ -187,6 +196,13 @@ static UIInterfaceOrientation FLMLandscapeInterfaceOrientation(void) {
         return UIInterfaceOrientationLandscapeRight;
     }
     if (deviceOrientation == UIDeviceOrientationLandscapeRight) {
+        return UIInterfaceOrientationLandscapeLeft;
+    }
+    if (sceneGeometryLandscape) {
+        // SpringBoard can leave UIWindowScene.interfaceOrientation at its
+        // portrait value while its scene coordinate space has already rotated.
+        // The old integrated wheel trusted that geometry and remained usable
+        // during this transition; use a stable landscape mapping here too.
         return UIInterfaceOrientationLandscapeLeft;
     }
     UIScreen *screen = scene.screen ?: [UIScreen mainScreen];
@@ -423,7 +439,30 @@ static NSString *FLMLandscapeFrontmostApplicationIdentifier(void) {
 }
 
 BOOL FLMLandscapeModuleIsLandscape(void) {
-    return UIInterfaceOrientationIsLandscape(FLMLandscapeInterfaceOrientation());
+    if (UIInterfaceOrientationIsLandscape(FLMLandscapeInterfaceOrientation())) {
+        return YES;
+    }
+    UIWindowScene *scene = FLMLandscapeWindowScene();
+    if (@available(iOS 13.0, *)) {
+        CGRect sceneBounds = scene.coordinateSpace.bounds;
+        if (CGRectGetWidth(sceneBounds) > CGRectGetHeight(sceneBounds)) {
+            return YES;
+        }
+    }
+    UIScreen *screen = scene.screen ?: [UIScreen mainScreen];
+    CGRect screenBounds = screen.bounds;
+    if (CGRectGetWidth(screenBounds) > CGRectGetHeight(screenBounds)) {
+        return YES;
+    }
+    if (@available(iOS 8.0, *)) {
+        CGRect coordinateBounds = screen.coordinateSpace.bounds;
+        if (CGRectGetWidth(coordinateBounds) > CGRectGetHeight(coordinateBounds)) {
+            return YES;
+        }
+    }
+    UIDeviceOrientation deviceOrientation = [UIDevice currentDevice].orientation;
+    return deviceOrientation == UIDeviceOrientationLandscapeLeft ||
+           deviceOrientation == UIDeviceOrientationLandscapeRight;
 }
 
 static CGRect FLMLandscapeVisualBoundsForScreen(
@@ -452,9 +491,19 @@ static CGRect FLMLandscapeVisualBoundsForScreen(
 }
 
 CGRect FLMLandscapeModuleVisualBounds(void) {
-    UIScreen *screen = FLMLandscapeWindowScene().screen;
+    UIWindowScene *scene = FLMLandscapeWindowScene();
+    UIScreen *screen = scene.screen;
     if (!screen) {
         screen = [UIScreen mainScreen];
+    }
+    if (@available(iOS 13.0, *)) {
+        CGRect coordinateBounds = scene.coordinateSpace.bounds;
+        if (CGRectGetWidth(coordinateBounds) > 1.0 &&
+            CGRectGetHeight(coordinateBounds) > 1.0 &&
+            CGRectGetWidth(coordinateBounds) > CGRectGetHeight(coordinateBounds)) {
+            coordinateBounds.origin = CGPointZero;
+            return coordinateBounds;
+        }
     }
     return FLMLandscapeVisualBoundsForScreen(
         screen, FLMLandscapeInterfaceOrientation());
@@ -535,8 +584,7 @@ FLMLandscapeTouchContext FLMLandscapeModuleCaptureTouchContext(void) {
     // callback to see 390x844 and the next one to see 844x390 in an earlier
     // rotation-based implementation.
     context.orientation = FLMLandscapeInterfaceOrientation();
-    context.visualBounds = FLMLandscapeVisualBoundsForScreen(
-        screen, context.orientation);
+    context.visualBounds = FLMLandscapeModuleVisualBounds();
     context.fixedBounds = FLMLandscapeFixedCoordinateBounds(screen);
 
     CGFloat rawWidth = CGRectGetWidth(context.fixedBounds);

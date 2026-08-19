@@ -18,6 +18,13 @@ static const CGFloat FLMLandscapeDefaultWheelIconSize = 56.0;
 static const CGFloat FLMLandscapeMinimumWheelIconSize = 44.0;
 static const CGFloat FLMLandscapeMaximumWheelIconSize = 68.0;
 
+static void FLMLandscapeWriteTouchMarkerOnce(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        FLMWriteLandscapeBootstrapMarker("touch-delegate");
+    });
+}
+
 @interface FLMLandscapeDisplayConfiguration : NSObject
 - (id)identity;
 @end
@@ -337,6 +344,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     self.starting = YES;
+    FLMWriteLandscapeBootstrapMarker("start");
     FLMEnqueueDiagnosticLine(@"sb landscape-plugin-starting");
     @try {
         static dispatch_once_t preferenceObserverToken;
@@ -373,6 +381,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         [self scheduleGlobalGestureRegistrationRetry];
     } @catch (NSException *exception) {
         self.started = NO;
+        FLMWriteLandscapeBootstrapMarker("start-failed");
         FLMEnqueueDiagnosticLine(
             @"sb landscape-plugin-start-failed exception=%@ reason=%@",
             NSStringFromClass(exception.class),
@@ -447,6 +456,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleGuardGesture:)];
     guard.delegate = self;
+    guard.numberOfTouchesRequired = 1;
     guard.minimumPressDuration = 0.0;
     guard.allowableMovement = CGFLOAT_MAX;
     guard.cancelsTouchesInView = YES;
@@ -458,6 +468,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleOpenerGesture:)];
     opener.delegate = self;
+    opener.numberOfTouchesRequired = 1;
     opener.minimumPressDuration = 0.12;
     opener.allowableMovement = CGFLOAT_MAX;
     opener.cancelsTouchesInView = YES;
@@ -469,6 +480,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleModalGesture:)];
     modal.delegate = self;
+    modal.numberOfTouchesRequired = 1;
     modal.minimumPressDuration = 0.0;
     modal.allowableMovement = CGFLOAT_MAX;
     modal.cancelsTouchesInView = YES;
@@ -498,6 +510,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleGuardGesture:)];
     guard.delegate = self;
+    guard.numberOfTouchesRequired = 1;
     guard.minimumPressDuration = 0.0;
     guard.allowableMovement = CGFLOAT_MAX;
     guard.cancelsTouchesInView = YES;
@@ -509,6 +522,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             initWithTarget:self
                     action:@selector(handleOpenerGesture:)];
     opener.delegate = self;
+    opener.numberOfTouchesRequired = 1;
     opener.minimumPressDuration = 0.12;
     opener.allowableMovement = CGFLOAT_MAX;
     opener.cancelsTouchesInView = YES;
@@ -570,6 +584,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.systemGestureManager = manager;
         self.displayIdentity = identity;
         self.usesSystemGestureManager = YES;
+        FLMWriteLandscapeBootstrapMarker("global-register-success");
         [self configureFallbackGestures];
         self.hotspotWindow.hidden = YES;
         self.hotspotWindow.hotspotsEnabled = NO;
@@ -577,6 +592,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.systemGestureManager = nil;
         self.displayIdentity = nil;
         self.usesSystemGestureManager = NO;
+        FLMWriteLandscapeBootstrapMarker("global-register-fallback");
         [self configureFallbackGestures];
         self.hotspotWindow.hidden = NO;
         self.hotspotWindow.hotspotsEnabled =
@@ -691,6 +707,13 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.floatingOpenerGesture.enabled = NO;
         self.modalGesture.enabled = NO;
         self.wheelPinned = NO;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-wheel-frame landscape=0 orientation=%ld bounds=%@ enabled=%d items=%lu system=%d",
+            (long)FLMLandscapeModuleVisualOrientation(),
+            NSStringFromCGRect(bounds),
+            self.enabled,
+            (unsigned long)self.itemIdentifiers.count,
+            self.usesSystemGestureManager);
         return;
     }
     // SpringBoard normally starts in portrait and rotates later.  The old
@@ -704,6 +727,18 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.modalGesture.enabled = active && self.wheelPinned;
     self.hotspotWindow.hotspotsEnabled =
         active && !self.usesSystemGestureManager && !self.wheelPinned;
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-wheel-frame landscape=%d orientation=%ld bounds=%@ enabled=%d items=%lu system=%d guard=%d opener=%d floatingGuard=%d floatingOpener=%d",
+        landscape,
+        (long)FLMLandscapeModuleVisualOrientation(),
+        NSStringFromCGRect(bounds),
+        self.enabled,
+        (unsigned long)self.itemIdentifiers.count,
+        self.usesSystemGestureManager,
+        self.guardGesture.enabled,
+        self.openerGesture.enabled,
+        self.floatingGuardGesture.enabled,
+        self.floatingOpenerGesture.enabled);
 }
 
 - (void)orientationDidChange:(NSNotification *)notification {
@@ -722,6 +757,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    FLMLandscapeWriteTouchMarkerOnce();
     if (!self.enabled || FLMLandscapeWheelDeviceIsLocked() ||
         !FLMLandscapeModuleIsLandscape()) {
         return NO;
@@ -1063,6 +1099,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 
 - (void)handleGuardGesture:(UIGestureRecognizer *)gesture {
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        FLMWriteLandscapeBootstrapMarker("guard-began");
         CGPoint point = [self wheelPointForRawPoint:[gesture locationInView:nil]];
         FLMEnqueueDiagnosticLine(
             @"sb landscape-wheel-priority-guard began point={%.1f,%.1f}",
@@ -1071,6 +1108,9 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleOpenerGesture:(UIGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        FLMWriteLandscapeBootstrapMarker("opener-began");
+    }
     if (!FLMLandscapeModuleIsLandscape() || self.wheelPinned) {
         return;
     }
@@ -1201,4 +1241,13 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     // marker is POSIX-only and tells us whether the dylib reached SpringBoard
     // even if a later startup step fails before the normal logger is ready.
     FLMWriteLandscapeBootstrapMarker("constructor");
+    // Keep a delayed constructor fallback for SpringBoard generations where
+    // the launch hook is installed after applicationDidFinishLaunching.  The
+    // delay keeps UIKit/private-manager work out of dyld initialization while
+    // ensuring the plugin can still start in an already-running SpringBoard.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                  (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [[FLMLandscapeWheelController sharedController] start];
+    });
 }
