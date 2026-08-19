@@ -6,11 +6,11 @@
 #import "FLMLandscapeModule.h"
 
 static NSString *const FLMLandscapePreferencesDomain =
-    @"com.codex.flymelandscape";
-static NSString *const FLMLandscapeLegacyPreferencesDomain =
     @"com.codex.flymemultitasking";
 static NSString *const FLMLandscapeLegacyWheelItem =
     @"com.codex.flymemultitasking.screensense";
+static NSString *const FLMLandscapeLockScreenItem =
+    @"com.codex.flymemultitasking.lockscreen";
 static const CGFloat FLMLandscapeDefaultWheelRadius = 202.0;
 static const CGFloat FLMLandscapeMinimumWheelRadius = 170.0;
 static const CGFloat FLMLandscapeMaximumWheelRadius = 225.0;
@@ -26,8 +26,6 @@ static void FLMLandscapeWriteTouchMarkerOnce(void) {
 }
 
 @interface UIApplication (FLMLandscapeWheelPrivate)
-- (BOOL)launchApplicationWithIdentifier:(NSString *)identifier
-                              suspended:(BOOL)suspended;
 - (void)_simulateLockButtonPress;
 @end
 
@@ -35,13 +33,6 @@ static void FLMLandscapeWriteTouchMarkerOnce(void) {
 + (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bundleIdentifier
                                                format:(NSInteger)format
                                                 scale:(CGFloat)scale;
-@end
-
-@interface NSObject (FLMLandscapeWheelWorkspacePrivate)
-+ (id)defaultWorkspace;
-- (BOOL)openApplicationWithBundleID:(NSString *)bundleIdentifier;
-- (NSString *)bundleIdentifier;
-- (NSString *)displayIdentifier;
 @end
 
 static BOOL FLMLandscapeWheelDeviceIsLocked(void) {
@@ -70,19 +61,12 @@ static BOOL FLMLandscapeWheelDeviceIsLocked(void) {
 }
 
 static id FLMLandscapeWheelPreference(NSString *key) {
-    for (NSString *domain in @[FLMLandscapePreferencesDomain,
-                               FLMLandscapeLegacyPreferencesDomain]) {
-        CFPreferencesSynchronize((__bridge CFStringRef)domain,
-                                  kCFPreferencesCurrentUser,
-                                  kCFPreferencesAnyHost);
-        id value = CFBridgingRelease(CFPreferencesCopyAppValue(
-            (__bridge CFStringRef)key,
-            (__bridge CFStringRef)domain));
-        if (value != nil) {
-            return value;
-        }
-    }
-    return nil;
+    CFPreferencesSynchronize((__bridge CFStringRef)FLMLandscapePreferencesDomain,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesAnyHost);
+    return CFBridgingRelease(CFPreferencesCopyAppValue(
+        (__bridge CFStringRef)key,
+        (__bridge CFStringRef)FLMLandscapePreferencesDomain));
 }
 
 static CGFloat FLMLandscapeWheelClamped(CGFloat value,
@@ -96,18 +80,37 @@ static CGFloat FLMLandscapeWheelClamped(CGFloat value,
 }
 
 static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
+    if ([identifier isEqualToString:FLMLandscapeLockScreenItem]) {
+        UIImage *image = [UIImage systemImageNamed:@"lock.fill"];
+        return [image imageWithTintColor:[UIColor whiteColor]
+                           renderingMode:UIImageRenderingModeAlwaysOriginal];
+    }
     if ([UIImage respondsToSelector:
                     @selector(_applicationIconImageForBundleIdentifier:
                                                   format:scale:)]) {
         UIImage *image =
             [UIImage _applicationIconImageForBundleIdentifier:identifier
-                                                       format:0
-                                                        scale:3.0];
+                                                       format:2
+                                                        scale:[UIScreen mainScreen].scale];
         if (image) {
             return image;
         }
     }
-    return nil;
+    return [UIImage systemImageNamed:@"app.fill"];
+}
+
+static void FLMLandscapeWheelPerformIdentifier(NSString *identifier) {
+    if (identifier.length == 0 || FLMLandscapeWheelDeviceIsLocked()) {
+        return;
+    }
+    if ([identifier isEqualToString:FLMLandscapeLockScreenItem]) {
+        UIApplication *application = [UIApplication sharedApplication];
+        if ([application respondsToSelector:@selector(_simulateLockButtonPress)]) {
+            [application _simulateLockButtonPress];
+        }
+        return;
+    }
+    FLMLandscapeModuleOpenIdentifier(identifier);
 }
 
 @interface FLMLandscapeWheelItemView : UIView
@@ -129,34 +132,49 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
         return nil;
     }
     _identifier = [identifier copy];
-    self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.94];
+    BOOL isLockItem = [identifier isEqualToString:FLMLandscapeLockScreenItem];
+    self.backgroundColor = isLockItem ? [UIColor systemBlueColor]
+                                      : [UIColor clearColor];
     self.layer.cornerRadius = size * 0.5;
-    self.layer.masksToBounds = YES;
-    self.layer.borderWidth = 1.0;
-    self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+    self.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.layer.shadowOpacity = 0.22;
+    self.layer.shadowRadius = 8.0;
+    self.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+    self.layer.shadowPath =
+        [UIBezierPath bezierPathWithOvalInRect:self.bounds].CGPath;
     self.userInteractionEnabled = NO;
 
-    _iconView = [[UIImageView alloc] initWithFrame:CGRectMake(6.0,
-                                                               6.0,
-                                                               size - 12.0,
-                                                               size - 12.0)];
-    _iconView.contentMode = UIViewContentModeScaleAspectFit;
-    _iconView.layer.cornerRadius = (size - 12.0) * 0.24;
-    _iconView.layer.masksToBounds = YES;
-    _iconView.image = image;
+    _iconView = [[UIImageView alloc] initWithImage:image];
+    CGFloat lockInset = size * (15.0 / FLMLandscapeDefaultWheelIconSize);
+    _iconView.frame = isLockItem ? CGRectInset(self.bounds, lockInset, lockInset)
+                                 : self.bounds;
+    _iconView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _iconView.contentMode = isLockItem ? UIViewContentModeScaleAspectFit
+                                       : UIViewContentModeScaleAspectFill;
+    _iconView.clipsToBounds = YES;
+    _iconView.layer.cornerRadius = isLockItem ? 0.0 : size * 0.5;
     [self addSubview:_iconView];
     return self;
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
+    if (_highlighted == highlighted) {
+        return;
+    }
     _highlighted = highlighted;
-    self.layer.borderWidth = highlighted ? 3.0 : 1.0;
-    self.layer.borderColor =
-        (highlighted ? [UIColor whiteColor]
-                     : [UIColor colorWithWhite:1.0 alpha:0.18]).CGColor;
-    self.transform = highlighted
-                         ? CGAffineTransformMakeScale(1.12, 1.12)
-                         : CGAffineTransformIdentity;
+    CGFloat scale = highlighted ? 1.24 : 1.0;
+    self.layer.shadowOpacity = highlighted ? 0.32 : 0.18;
+    [UIView animateWithDuration:0.28
+                          delay:0.0
+         usingSpringWithDamping:0.64
+          initialSpringVelocity:0.45
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+                         self.transform = CGAffineTransformMakeScale(scale, scale);
+                     }
+                     completion:nil];
 }
 
 @end
@@ -344,6 +362,19 @@ static BOOL FLMLandscapeSharedBool(id _Nullable controller,
     }
 }
 
+static id _Nullable FLMLandscapeSharedValue(id _Nullable controller,
+                                             NSString * _Nonnull key) {
+    if (!controller) {
+        return nil;
+    }
+    @try {
+        return [controller valueForKey:key];
+    } @catch (NSException *exception) {
+        (void)exception;
+        return nil;
+    }
+}
+
 static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                                             void *observer,
                                             CFStringRef name,
@@ -376,7 +407,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     }
     self.starting = YES;
     FLMWriteLandscapeBootstrapMarker("start");
-    FLMEnqueueDiagnosticLine(@"sb landscape-plugin-starting");
+    FLMEnqueueDiagnosticLine(@"sb landscape-wheel-starting");
     @try {
         static dispatch_once_t preferenceObserverToken;
         dispatch_once(&preferenceObserverToken, ^{
@@ -384,7 +415,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                 CFNotificationCenterGetDarwinNotifyCenter(),
                 NULL,
                 FLMLandscapePreferencesChanged,
-                CFSTR("com.codex.flymelandscape.preferences-changed"),
+                CFSTR("com.codex.flymemultitasking.preferences-changed"),
                 NULL,
                 CFNotificationSuspensionBehaviorDeliverImmediately);
         });
@@ -396,12 +427,15 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                    name:UIDeviceOrientationDidChangeNotification
                  object:nil];
         [self createWindowsIfNeeded];
-        [self reloadPreferences];
         // The card window is created by the independent landscape module. It
         // must exist before the shared entry is bound, otherwise a card opened
         // later has no horizontal route for the corner stream.
         FLMLandscapeModuleStart();
         BOOL sharedEntryBound = [self bindSharedWheelController];
+        // Pull the wheel list and appearance values from the already-running
+        // portrait controller. The main preference domain is only a startup
+        // fallback if that controller has not been created yet.
+        [self reloadPreferences];
         if (!sharedEntryBound) {
             FLMWriteLandscapeBootstrapMarker("shared-entry-fallback");
             [self attachFloatingGesturesIfNeeded];
@@ -411,7 +445,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         [self updateFrames];
         self.started = YES;
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-plugin-start sharedEntry=%d fallback=%d items=%lu",
+            @"sb landscape-wheel-start sharedEntry=%d fallback=%d items=%lu",
             sharedEntryBound,
             !sharedEntryBound,
             (unsigned long)self.itemIdentifiers.count);
@@ -419,7 +453,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.started = NO;
         FLMWriteLandscapeBootstrapMarker("start-failed");
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-plugin-start-failed exception=%@ reason=%@",
+            @"sb landscape-wheel-start-failed exception=%@ reason=%@",
             NSStringFromClass(exception.class),
             exception.reason ?: @"<none>");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -702,10 +736,23 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)reloadPreferences {
-    id enabled = FLMLandscapeWheelPreference(@"enabled");
-    self.enabled = ![enabled isKindOfClass:[NSNumber class]] ||
+    id portraitController =
+        self.rootWheelController ?: FLMLandscapeRootWheelController();
+    id enabled = FLMLandscapeSharedValue(portraitController, @"enabled");
+    id items =
+        FLMLandscapeSharedValue(portraitController, @"itemIdentifiers");
+    id radius = FLMLandscapeSharedValue(portraitController, @"wheelRadius");
+    id iconSize =
+        FLMLandscapeSharedValue(portraitController, @"wheelIconSize");
+    BOOL usesPortraitController = enabled != nil && items != nil;
+    if (!usesPortraitController) {
+        enabled = FLMLandscapeWheelPreference(@"enabled");
+        items = FLMLandscapeWheelPreference(@"wheelItems");
+        radius = FLMLandscapeWheelPreference(@"wheelRadius");
+        iconSize = FLMLandscapeWheelPreference(@"wheelIconSize");
+    }
+    self.enabled = [enabled isKindOfClass:[NSNumber class]] &&
                    [(NSNumber *)enabled boolValue];
-    id items = FLMLandscapeWheelPreference(@"wheelItems");
     NSMutableArray<NSString *> *filtered = [NSMutableArray array];
     if ([items isKindOfClass:[NSArray class]]) {
         for (id value in (NSArray *)items) {
@@ -718,8 +765,6 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         }
     }
     self.itemIdentifiers = [filtered copy] ?: @[];
-    id radius = FLMLandscapeWheelPreference(@"wheelRadius");
-    id iconSize = FLMLandscapeWheelPreference(@"wheelIconSize");
     CGFloat requestedRadius = [radius isKindOfClass:[NSNumber class]]
                                   ? [(NSNumber *)radius doubleValue]
                                   : FLMLandscapeDefaultWheelRadius;
@@ -749,10 +794,13 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         [self restoreSharedPortraitGestureState];
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-wheel-preferences enabled=%d items=%lu active=%d triggerGesture=%d openerGesture=%d",
+        @"sb landscape-wheel-preferences source=%@ enabled=%d items=%lu active=%d radius=%.1f icon=%.1f triggerGesture=%d openerGesture=%d",
+        usesPortraitController ? @"portrait-controller" : @"main-domain",
         self.enabled,
         (unsigned long)self.itemIdentifiers.count,
         active,
+        self.wheelRadius,
+        self.wheelIconSize,
         self.guardGesture.enabled,
         self.openerGesture.enabled);
     if (!active && self.wheelPinned) {
@@ -797,10 +845,9 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
             self.usesSystemGestureManager);
         return;
     }
-    // SpringBoard normally starts in portrait and rotates later.  The old
-    // integrated controller refreshed these gates on every frame update; the
-    // standalone package used to disable them in portrait and never turn them
-    // back on, leaving the horizontal wheel permanently dead until respring.
+    // SpringBoard normally starts in portrait and rotates later. Refresh these
+    // gates on every frame update so the horizontal module becomes active
+    // after rotation without requiring another respring.
     self.guardGesture.enabled = active && !self.wheelPinned;
     self.openerGesture.enabled = active && !self.wheelPinned;
     self.floatingGuardGesture.enabled = active && !self.wheelPinned;
@@ -1155,7 +1202,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         !self.usesSystemGestureManager;
     if (self.overlayWindow.hidden) {
         if (identifier.length) {
-            FLMLandscapeModuleOpenIdentifier(identifier);
+            FLMLandscapeWheelPerformIdentifier(identifier);
         }
         return;
     }
@@ -1175,7 +1222,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                                       @selector(removeFromSuperview)];
                          self.itemViews = @[];
                          if (identifier.length) {
-                             FLMLandscapeModuleOpenIdentifier(identifier);
+                             FLMLandscapeWheelPerformIdentifier(identifier);
                          }
                      }];
 }
@@ -1272,35 +1319,6 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     }
     CGPoint point = [gesture locationInView:self.wheelContainer];
     [self dismissWheelLaunchingItem:[self itemNearPoint:point]];
-}
-
-- (void)activateIdentifier:(NSString *)identifier {
-    if (!identifier.length || FLMLandscapeWheelDeviceIsLocked()) {
-        return;
-    }
-    if ([identifier isEqualToString:@"com.codex.flymemultitasking.lockscreen"]) {
-        UIApplication *application = [UIApplication sharedApplication];
-        if ([application respondsToSelector:@selector(_simulateLockButtonPress)]) {
-            [application _simulateLockButtonPress];
-        }
-        return;
-    }
-    UIApplication *application = [UIApplication sharedApplication];
-    BOOL launched = NO;
-    if ([application respondsToSelector:
-                    @selector(launchApplicationWithIdentifier:suspended:)]) {
-        launched = [application launchApplicationWithIdentifier:identifier
-                                                      suspended:NO];
-    }
-    id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
-                       ? [workspaceClass defaultWorkspace]
-                       : nil;
-    if (!launched && [workspace respondsToSelector:
-                                  @selector(openApplicationWithBundleID:)]) {
-        [workspace openApplicationWithBundleID:identifier];
-    }
-    FLMEnqueueDiagnosticLine(@"sb landscape-wheel-launch app=%@", identifier);
 }
 
 @end
@@ -1438,7 +1456,7 @@ void FLMLandscapeWheelHandleSharedGesture(
     // Keep a delayed constructor fallback for SpringBoard generations where
     // the launch hook is installed after applicationDidFinishLaunching.  The
     // delay keeps UIKit/private-manager work out of dyld initialization while
-    // ensuring the plugin can still start in an already-running SpringBoard.
+    // ensuring the module can still start in an already-running SpringBoard.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                   (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{

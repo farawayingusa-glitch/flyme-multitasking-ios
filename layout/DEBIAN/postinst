@@ -4,4 +4,19 @@
 # UIKit application. Do not kill a hard-coded app during package installation;
 # restart the selected app (or respring) after upgrading so its dylib reloads.
 
+# The former com.codex.flymelandscape experiment is now a module in this main
+# package. Remove only its exact, known runtime and Settings paths so stale
+# dylibs, wheel choices, or PreferenceLoader entries cannot coexist with the
+# integrated module after an upgrade.
+rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeLandscape.dylib
+rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeLandscape.plist
+rm -f /Library/MobileSubstrate/DynamicLibraries/FlymeLandscape.dylib
+rm -f /Library/MobileSubstrate/DynamicLibraries/FlymeLandscape.plist
+rm -f /var/jb/Library/PreferenceLoader/Preferences/com.codex.flymelandscape.plist
+rm -f /Library/PreferenceLoader/Preferences/com.codex.flymelandscape.plist
+rm -f /var/mobile/Library/Preferences/com.codex.flymelandscape.plist
+rm -f /var/jb/var/mobile/Library/Preferences/com.codex.flymelandscape.plist
+rm -rf /var/jb/Library/PreferenceBundles/FlymeLandscapePrefs.bundle
+rm -rf /Library/PreferenceBundles/FlymeLandscapePrefs.bundle
+
 exit 0

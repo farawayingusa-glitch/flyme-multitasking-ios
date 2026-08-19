@@ -10,10 +10,11 @@
 static const CGFloat FLMLandscapeDefaultTriggerSize = 58.0;
 static const CGFloat FLMLandscapeMinimumTriggerSize = 36.0;
 static const CGFloat FLMLandscapeMaximumTriggerSize = 96.0;
-// The target application Scene remains a real full-screen landscape surface.
-// The portrait-shaped card is only a SpringBoard presentation surface.
-static const CGFloat FLMLandscapeFullScreenContentWidth = 844.0;
-static const CGFloat FLMLandscapeFullScreenContentHeight = 390.0;
+// FrontBoard keeps the real Scene at 844x390 landscape. UIKit receives a
+// separate portrait client orientation, so the hosted application surface can
+// use an upright 390x844 canvas inside the portrait-shaped card.
+static const CGFloat FLMLandscapePortraitCanvasWidth = 390.0;
+static const CGFloat FLMLandscapePortraitCanvasHeight = 844.0;
 // Keep the visual card at the iPhone 13 Pro portrait aspect ratio.
 static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
     390.0 / 844.0;
@@ -29,6 +30,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 
 @interface NSObject (FLMLandscapeRuntimePrivate)
 - (id)settings;
+- (id)clientSettings;
 - (id)mutableSettings;
 - (CGRect)frame;
 - (NSInteger)interfaceOrientation;
@@ -55,6 +57,9 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)setFrame:(CGRect)frame;
 - (void)setInterfaceOrientation:(NSInteger)orientation;
 - (void)updateSettings:(id)settings withTransitionContext:(id)context;
+- (void)configureParameters:(void (^)(id parameters))parametersBlock;
+- (void)updateClientSettingsWithBlock:(void (^)(id clientSettings))settingsBlock;
+- (void)setDeviceOrientation:(NSInteger)orientation;
 - (void)_setContentState:(NSInteger)state;
 @end
 
@@ -106,7 +111,6 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, strong) UIView *launchCoverView;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
 @property(nonatomic, strong) UIPanGestureRecognizer *handlePan;
-@property(nonatomic, strong) NSTimer *resolveTimer;
 @property(nonatomic, strong) NSTimer *lockTimer;
 @property(nonatomic, strong) id sceneEntity;
 @property(nonatomic, strong) id sceneHandle;
@@ -118,6 +122,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, assign) CGRect displayBounds;
 @property(nonatomic, assign) UIInterfaceOrientation displayOrientation;
 @property(nonatomic, assign) NSUInteger generation;
+@property(nonatomic, assign) NSUInteger resolveAttempt;
 @property(nonatomic, assign) NSTimeInterval openedAt;
 @property(nonatomic, assign) NSTimeInterval scenePreparedAt;
 @property(nonatomic, assign) CGRect expectedHostBounds;
@@ -126,6 +131,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, assign) BOOL hiddenCard;
 @property(nonatomic, assign) BOOL closing;
 @property(nonatomic, assign) BOOL handleDecisionMade;
+@property(nonatomic, assign) BOOL portraitClientCanvasConfigured;
 @property(nonatomic, assign) BOOL started;
 @property(nonatomic, copy) NSString *queuedIdentifier;
 + (instancetype)sharedModule;
@@ -251,6 +257,78 @@ static UIInterfaceOrientation FLMLandscapeSceneSettingsOrientation(id scene) {
     } @catch (__unused NSException *exception) {
         return UIInterfaceOrientationUnknown;
     }
+}
+
+static UIInterfaceOrientation FLMLandscapeSceneClientOrientation(id scene) {
+    if (!scene || ![scene respondsToSelector:@selector(clientSettings)]) {
+        return UIInterfaceOrientationUnknown;
+    }
+    @try {
+        id clientSettings = [scene clientSettings];
+        if (!clientSettings ||
+            ![clientSettings respondsToSelector:@selector(interfaceOrientation)]) {
+            return UIInterfaceOrientationUnknown;
+        }
+        NSInteger (*getter)(id, SEL) =
+            (NSInteger (*)(id, SEL))[clientSettings
+                methodForSelector:@selector(interfaceOrientation)];
+        return getter ? (UIInterfaceOrientation)getter(
+                            clientSettings, @selector(interfaceOrientation))
+                      : UIInterfaceOrientationUnknown;
+    } @catch (__unused NSException *exception) {
+        return UIInterfaceOrientationUnknown;
+    }
+}
+
+static BOOL FLMLandscapeConfigureClientOrientation(
+    id scene,
+    UIInterfaceOrientation interfaceOrientation) {
+    if (!scene) {
+        return NO;
+    }
+    __block BOOL configured = NO;
+    void (^applyClientSettings)(id) = ^(id clientSettings) {
+        if (!clientSettings) {
+            return;
+        }
+        if ([clientSettings respondsToSelector:
+                                @selector(setInterfaceOrientation:)]) {
+            [clientSettings setInterfaceOrientation:interfaceOrientation];
+            configured = YES;
+        }
+        if ([clientSettings respondsToSelector:@selector(setDeviceOrientation:)]) {
+            UIDeviceOrientation deviceOrientation = UIDeviceOrientationPortrait;
+            if (interfaceOrientation == UIInterfaceOrientationLandscapeLeft) {
+                deviceOrientation = UIDeviceOrientationLandscapeRight;
+            } else if (interfaceOrientation ==
+                       UIInterfaceOrientationLandscapeRight) {
+                deviceOrientation = UIDeviceOrientationLandscapeLeft;
+            } else if (interfaceOrientation ==
+                       UIInterfaceOrientationPortraitUpsideDown) {
+                deviceOrientation = UIDeviceOrientationPortraitUpsideDown;
+            }
+            [clientSettings setDeviceOrientation:deviceOrientation];
+        }
+    };
+    if ([scene respondsToSelector:@selector(configureParameters:)]) {
+        @try {
+            [scene configureParameters:^(id parameters) {
+                if ([parameters respondsToSelector:
+                                    @selector(updateClientSettingsWithBlock:)]) {
+                    [parameters updateClientSettingsWithBlock:applyClientSettings];
+                }
+            }];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    if (!configured &&
+        [scene respondsToSelector:@selector(updateClientSettingsWithBlock:)]) {
+        @try {
+            [scene updateClientSettingsWithBlock:applyClientSettings];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return configured;
 }
 
 static BOOL FLMLandscapeReadBool(id object,
@@ -647,21 +725,12 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
 }
 
 static CGFloat FLMLandscapeTriggerSize(void) {
-    NSArray<NSString *> *domains = @[
-        @"com.codex.flymelandscape",
-        @"com.codex.flymemultitasking",
-    ];
-    id value = nil;
-    for (NSString *domain in domains) {
-        CFPreferencesSynchronize((__bridge CFStringRef)domain,
-                                 kCFPreferencesCurrentUser,
-                                 kCFPreferencesAnyHost);
-        value = CFBridgingRelease(CFPreferencesCopyAppValue(
-            CFSTR("cornerTriggerSizeV2"), (__bridge CFStringRef)domain));
-        if (value != nil) {
-            break;
-        }
-    }
+    CFPreferencesSynchronize(CFSTR("com.codex.flymemultitasking"),
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesAnyHost);
+    id value = CFBridgingRelease(CFPreferencesCopyAppValue(
+        CFSTR("cornerTriggerSizeV2"),
+        CFSTR("com.codex.flymemultitasking")));
     CGFloat size = [value isKindOfClass:[NSNumber class]]
                        ? [(NSNumber *)value doubleValue]
                        : FLMLandscapeDefaultTriggerSize;
@@ -708,9 +777,8 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
                 : hostView.transform;
             *scaleOut = hypot(visualTransform.a, visualTransform.b);
         }
-        // UIView conversion applies the inverse of the visual-only card
-        // container rotation/scale, returning coordinates in the real
-        // full-screen landscape Scene.
+        // UIView conversion applies the inverse of the visual-only scale and
+        // returns coordinates in UIKit's upright portrait client canvas.
         return [hostView convertPoint:screenPoint fromView:rootView];
     }
     UIView *cardView = rootView.cardView;
@@ -722,11 +790,11 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
     }
     CGPoint cardPoint = [cardView convertPoint:screenPoint fromView:rootView];
     CGSize cardSize = cardView.bounds.size;
-    CGFloat scale = MIN(cardSize.width / FLMLandscapeFullScreenContentHeight,
-                        cardSize.height / FLMLandscapeFullScreenContentWidth);
+    CGFloat scale = MIN(cardSize.width / FLMLandscapePortraitCanvasWidth,
+                        cardSize.height / FLMLandscapePortraitCanvasHeight);
     scale = MAX(0.05, scale);
-    CGFloat renderedWidth = FLMLandscapeFullScreenContentHeight * scale;
-    CGFloat renderedHeight = FLMLandscapeFullScreenContentWidth * scale;
+    CGFloat renderedWidth = FLMLandscapePortraitCanvasWidth * scale;
+    CGFloat renderedHeight = FLMLandscapePortraitCanvasHeight * scale;
     CGPoint renderedOrigin = CGPointMake(
         (cardSize.width - renderedWidth) * 0.5,
         (cardSize.height - renderedHeight) * 0.5);
@@ -999,6 +1067,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.presenter = nil;
     self.presenterScene = nil;
     self.scenePreparedAt = 0.0;
+    self.portraitClientCanvasConfigured = NO;
     [self scheduleResolveForGeneration:self.generation
                                   delay:FLMLandscapeResolveInterval];
 }
@@ -1084,10 +1153,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.generation = 1;
     }
     self.openedAt = CACurrentMediaTime();
+    self.resolveAttempt = 0;
     self.scenePreparedAt = 0.0;
+    self.portraitClientCanvasConfigured = NO;
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         FLMLandscapeFullScreenContentWidth,
-                                         FLMLandscapeFullScreenContentHeight);
+                                         FLMLandscapePortraitCanvasWidth,
+                                         FLMLandscapePortraitCanvasHeight);
     self.expectedHostGeneration = self.generation;
     self.expectedHostSceneIdentifier = nil;
     self.hiddenCard = NO;
@@ -1120,9 +1191,10 @@ static id FLMLandscapeSceneForHandle(id handle) {
         (long)self.displayOrientation, safeArea.top, safeArea.left,
         safeArea.bottom, safeArea.right);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-content-contract scene={%.1f,%.1f} orientation=%ld mode=full-screen-native",
+        @"sb landscape-content-contract scene={%.1f,%.1f} orientation=%ld clientCanvas={%.1f,%.1f} mode=full-screen-foreground-landscape-upright-client",
         self.displayBounds.size.width, self.displayBounds.size.height,
-        (long)self.displayOrientation);
+        (long)self.displayOrientation, FLMLandscapePortraitCanvasWidth,
+        FLMLandscapePortraitCanvasHeight);
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@ safeAreaLeft=%.1f safeAreaRight=%.1f",
         self.identifier, (unsigned long)self.generation,
@@ -1201,8 +1273,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
 }
 
 - (void)scheduleResolveForGeneration:(NSUInteger)generation delay:(NSTimeInterval)delay {
-    [self.resolveTimer invalidate];
-    self.resolveTimer = nil;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -1226,7 +1296,25 @@ static id FLMLandscapeSceneForHandle(id handle) {
         [self closeKeepingApplication:YES];
         return;
     }
-    if (!self.sceneHandle) {
+    self.resolveAttempt += 1;
+    NSTimeInterval elapsed = CACurrentMediaTime() - self.openedAt;
+    id scene = FLMLandscapeSceneForHandle(self.sceneHandle);
+    if (!scene && (self.sceneHandle || self.sceneEntity)) {
+        if (self.resolveAttempt <= 3 || self.resolveAttempt % 20 == 0) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-scene-handle-stale app=%@ generation=%lu attempt=%lu elapsed=%.2f handle=%@ action=reacquire",
+                self.identifier, (unsigned long)generation,
+                (unsigned long)self.resolveAttempt, elapsed,
+                self.sceneHandle ? NSStringFromClass([self.sceneHandle class])
+                                 : @"<none>");
+        }
+        self.scene = nil;
+        self.sceneHandle = nil;
+        self.sceneEntity = nil;
+        self.scenePreparedAt = 0.0;
+        self.portraitClientCanvasConfigured = NO;
+    }
+    if (!scene) {
         Class controllerClass = NSClassFromString(@"SBApplicationController");
         FLMLandscapeApplicationController *controller =
             [controllerClass respondsToSelector:@selector(sharedInstance)]
@@ -1241,31 +1329,51 @@ static id FLMLandscapeSceneForHandle(id handle) {
             @selector(initWithApplicationForMainDisplay:
                       generatingNewPrimarySceneIfRequired:);
         id allocatedEntity = entityClass ? [entityClass alloc] : nil;
+        BOOL generate = elapsed >= 0.75;
+        id entity = nil;
+        id handle = nil;
         if (application && allocatedEntity &&
             [allocatedEntity respondsToSelector:initializer]) {
-            BOOL generate = CACurrentMediaTime() - self.openedAt >= 0.75;
-            id entity = [(FLMLandscapeSceneEntity *)allocatedEntity
+            entity = [(FLMLandscapeSceneEntity *)allocatedEntity
                 initWithApplicationForMainDisplay:application
                 generatingNewPrimarySceneIfRequired:generate];
-            id handle = [entity respondsToSelector:@selector(sceneHandle)]
-                            ? [entity sceneHandle]
-                            : nil;
-            id scene = FLMLandscapeSceneForHandle(handle);
-            if (entity && handle) {
+            handle = [entity respondsToSelector:@selector(sceneHandle)]
+                         ? [entity sceneHandle]
+                         : nil;
+            scene = FLMLandscapeSceneForHandle(handle);
+            // A normal foreground launch can replace its primary Scene after
+            // this entity is created. Keep only a handle that already resolves,
+            // or a generated-primary handle for the next bounded retry.
+            if (entity && handle && (scene || generate)) {
                 self.sceneEntity = entity;
                 self.sceneHandle = handle;
             }
-            if (scene) {
-                self.scene = scene;
-            }
+        }
+        if (self.resolveAttempt == 1 || self.resolveAttempt == 5 ||
+            self.resolveAttempt % 20 == 0 || scene) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-scene-resolve app=%@ generation=%lu attempt=%lu elapsed=%.2f generate=%d application=%@ entity=%@ handle=%@ scene=%@",
+                self.identifier, (unsigned long)generation,
+                (unsigned long)self.resolveAttempt, elapsed, generate,
+                application ? NSStringFromClass([application class]) : @"<none>",
+                entity ? NSStringFromClass([entity class]) : @"<none>",
+                handle ? NSStringFromClass([handle class]) : @"<none>",
+                scene ? FLMLandscapeSceneIdentifier(scene) : @"<none>");
         }
     }
-    id scene = self.scene ?: FLMLandscapeSceneForHandle(self.sceneHandle);
     if (!scene) {
         [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
         return;
     }
-    if (!self.scenePreparedAt || self.scene != scene) {
+    BOOL sceneChanged = self.scene && self.scene != scene;
+    if (sceneChanged) {
+        self.scenePreparedAt = 0.0;
+        self.portraitClientCanvasConfigured = NO;
+        self.presenter = nil;
+        self.presentationManager = nil;
+        self.presenterScene = nil;
+    }
+    if (!self.scenePreparedAt || sceneChanged) {
         self.scene = scene;
         if (![self prepareScene:scene handle:self.sceneHandle]) {
             [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
@@ -1330,20 +1438,17 @@ static id FLMLandscapeSceneForHandle(id handle) {
     }
     CGRect initialHostBounds = host.bounds;
     BOOL initialHostHasGeometry = CGRectGetWidth(initialHostBounds) > 1.0 &&
-                                  CGRectGetHeight(initialHostBounds) > 1.0;
+                                   CGRectGetHeight(initialHostBounds) > 1.0;
     if (initialHostHasGeometry &&
-        (CGRectGetWidth(initialHostBounds) <= CGRectGetHeight(initialHostBounds) ||
-         !FLMLandscapeTransformIsIdentity(host.transform))) {
+        !FLMLandscapeTransformIsIdentity(host.transform)) {
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-host-rejected reason=non-native-host hostBounds=%@ hostTransform=%@ sceneFrame=%@ sceneOrientation=%ld runtime={%@}",
+            @"sb landscape-host-normalize hostBounds=%@ hostTransform=%@ sceneFrame=%@ sceneOrientation=%ld clientOrientation=%ld runtime={%@}",
             NSStringFromCGRect(initialHostBounds),
             NSStringFromCGAffineTransform(host.transform),
             NSStringFromCGRect(FLMLandscapeSceneSettingsFrame(scene)),
             (long)FLMLandscapeSceneSettingsOrientation(scene),
+            (long)FLMLandscapeSceneClientOrientation(scene),
             FLMLandscapeSceneRuntimeSummary(scene));
-        [self scheduleResolveForGeneration:generation
-                                      delay:FLMLandscapeResolveInterval];
-        return;
     }
     if (self.hostView != host) {
         [self.hostView removeFromSuperview];
@@ -1357,13 +1462,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
         [self.hostPresentationView addSubview:host];
     }
     self.presenterScene = scene;
-    CGRect sceneFrame = FLMLandscapeSceneSettingsFrame(scene);
-    if (CGRectGetWidth(sceneFrame) <= 1.0 || CGRectGetHeight(sceneFrame) <= 1.0) {
-        sceneFrame = self.displayBounds;
-    }
     self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         CGRectGetWidth(sceneFrame),
-                                         CGRectGetHeight(sceneFrame));
+                                         FLMLandscapePortraitCanvasWidth,
+                                         FLMLandscapePortraitCanvasHeight);
     self.expectedHostGeneration = generation;
     self.expectedHostSceneIdentifier = FLMLandscapeSceneIdentifier(scene);
     host.hidden = NO;
@@ -1372,9 +1473,12 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.launchCoverView.hidden = YES;
     self.launchCoverView.alpha = 1.0;
     FLMEnqueueDiagnosticLine(
-        @"sb host-attach generation=%lu contentContract=full-screen-landscape host=%@ expectedScene=%@",
+        @"sb host-attach generation=%lu serverContract=full-screen-foreground-landscape clientContract=upright-portrait host=%@ expectedClient=%@ serverScene=%@ serverOrientation=%ld clientOrientation=%ld",
         (unsigned long)generation, NSStringFromCGRect(host.bounds),
-        NSStringFromCGRect(self.expectedHostBounds));
+        NSStringFromCGRect(self.expectedHostBounds),
+        NSStringFromCGRect(FLMLandscapeSceneSettingsFrame(scene)),
+        (long)FLMLandscapeSceneSettingsOrientation(scene),
+        (long)FLMLandscapeSceneClientOrientation(scene));
     FLMEnqueueDiagnosticLine(
         @"sb landscape-module-attached app=%@ generation=%lu scene=%@ host=%p card=%@ display=%@ sceneRuntime={%@} frontmost=%@ cardWindowKey=%d windowLevel=%.1f",
         self.identifier, (unsigned long)generation,
@@ -1486,9 +1590,19 @@ static id FLMLandscapeSceneForHandle(id handle) {
             [scene activate];
         }
 
+        // Keep the server-owned Scene full-screen, foreground and landscape,
+        // while giving UIKit an independent portrait client orientation. This
+        // is the split used by FrontBoard scene hosts: server settings own the
+        // real display contract; client settings own the application canvas.
+        self.portraitClientCanvasConfigured =
+            FLMLandscapeConfigureClientOrientation(
+                scene, UIInterfaceOrientationPortrait);
+
         CGRect appliedFrame = FLMLandscapeSceneSettingsFrame(scene);
         UIInterfaceOrientation appliedOrientation =
             FLMLandscapeSceneSettingsOrientation(scene);
+        UIInterfaceOrientation clientOrientation =
+            FLMLandscapeSceneClientOrientation(scene);
         BOOL nativeLandscape =
             CGRectGetWidth(appliedFrame) > CGRectGetHeight(appliedFrame) &&
             CGRectGetWidth(appliedFrame) > 1.0 &&
@@ -1499,12 +1613,15 @@ static id FLMLandscapeSceneForHandle(id handle) {
         BOOL runtimeForeground = FLMLandscapeSceneRuntimeIsForeground(
             scene, &runtimeStateKnown, &activationState);
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-scene-contract app=%@ systemFrame=%@ requestedOrientation=%ld appliedFrame=%@ appliedOrientation=%ld nativeLandscape=%d runtimeForeground=%d/%d activationState=%ld contract=full-screen-scene-card-visual-only",
+            @"sb landscape-scene-contract app=%@ systemFrame=%@ requestedOrientation=%ld appliedFrame=%@ appliedOrientation=%ld nativeLandscape=%d clientCanvasConfigured=%d clientOrientation=%ld clientCanvas={%.1f,%.1f} runtimeForeground=%d/%d activationState=%ld contract=full-screen-foreground-landscape-upright-client",
             self.identifier, NSStringFromCGRect(systemBounds),
             (long)orientation, NSStringFromCGRect(appliedFrame),
             (long)appliedOrientation, nativeLandscape,
+            self.portraitClientCanvasConfigured, (long)clientOrientation,
+            FLMLandscapePortraitCanvasWidth,
+            FLMLandscapePortraitCanvasHeight,
             runtimeForeground, runtimeStateKnown, (long)activationState);
-        if (!nativeLandscape ||
+        if (!nativeLandscape || !self.portraitClientCanvasConfigured ||
             (runtimeStateKnown && !runtimeForeground)) {
             return NO;
         }
@@ -1625,6 +1742,19 @@ static id FLMLandscapeSceneForHandle(id handle) {
         if ([scene respondsToSelector:@selector(setBackgrounded:)]) {
             [scene setBackgrounded:NO];
         }
+        UIInterfaceOrientation clientOrientation =
+            FLMLandscapeSceneClientOrientation(scene);
+        if (!self.portraitClientCanvasConfigured ||
+            (clientOrientation != UIInterfaceOrientationUnknown &&
+             clientOrientation != UIInterfaceOrientationPortrait)) {
+            self.portraitClientCanvasConfigured =
+                FLMLandscapeConfigureClientOrientation(
+                    scene, UIInterfaceOrientationPortrait);
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-client-canvas reassert configured=%d observedOrientation=%ld targetOrientation=%ld",
+                self.portraitClientCanvasConfigured, (long)clientOrientation,
+                (long)UIInterfaceOrientationPortrait);
+        }
         BOOL runtimeStateKnown = NO;
         NSInteger activationState = -1;
         BOOL runtimeForeground = FLMLandscapeSceneRuntimeIsForeground(
@@ -1672,45 +1802,43 @@ static id FLMLandscapeSceneForHandle(id handle) {
         return;
     }
 
-    self.expectedHostBounds = CGRectMake(0.0, 0.0,
-                                         CGRectGetWidth(sceneFrame),
-                                         CGRectGetHeight(sceneFrame));
+    CGRect clientCanvas = CGRectMake(0.0, 0.0,
+                                     FLMLandscapePortraitCanvasWidth,
+                                     FLMLandscapePortraitCanvasHeight);
+    self.expectedHostBounds = clientCanvas;
     CGSize cardSize = self.cardView.bounds.size;
     CGFloat uniformScale =
-        MIN(cardSize.width / CGRectGetHeight(sceneFrame),
-            cardSize.height / CGRectGetWidth(sceneFrame));
+        MIN(cardSize.width / CGRectGetWidth(clientCanvas),
+            cardSize.height / CGRectGetHeight(clientCanvas));
     uniformScale = MAX(0.01, uniformScale);
-    CGFloat visualWidth = CGRectGetHeight(sceneFrame) * uniformScale;
-    CGFloat visualHeight = CGRectGetWidth(sceneFrame) * uniformScale;
+    CGFloat visualWidth = CGRectGetWidth(clientCanvas) * uniformScale;
+    CGFloat visualHeight = CGRectGetHeight(clientCanvas) * uniformScale;
     CGFloat visualLetterboxX = MAX(0.0, (cardSize.width - visualWidth) * 0.5);
     CGFloat visualLetterboxY = MAX(0.0, (cardSize.height - visualHeight) * 0.5);
 
-    // Only this SpringBoard-owned wrapper is transformed. The hosted Scene
-    // remains an identity 844x390 landscape surface; UIKit, first-responder
-    // routing, and the native keyboard never see the card's portrait frame.
+    // FrontBoard's server Scene remains identity 844x390 landscape. UIKit's
+    // client settings provide an upright 390x844 canvas, so the SpringBoard
+    // wrapper only scales; it must never rotate the application's text/UI.
     presentationView.transform = CGAffineTransformIdentity;
-    presentationView.bounds = sceneFrame;
+    presentationView.bounds = clientCanvas;
     presentationView.center = CGPointMake(cardSize.width * 0.5,
                                            cardSize.height * 0.5);
     self.hostView.transform = CGAffineTransformIdentity;
-    self.hostView.bounds = sceneFrame;
+    self.hostView.bounds = clientCanvas;
     self.hostView.center = CGPointMake(CGRectGetMidX(presentationView.bounds),
                                        CGRectGetMidY(presentationView.bounds));
-    CGFloat visualRotation = sceneOrientation == UIInterfaceOrientationLandscapeRight
-                                 ? -M_PI_2
-                                 : M_PI_2;
     presentationView.transform =
-        CGAffineTransformRotate(CGAffineTransformMakeScale(uniformScale,
-                                                            uniformScale),
-                                visualRotation);
+        CGAffineTransformMakeScale(uniformScale, uniformScale);
     presentationView.hidden = NO;
     self.rootView.hostView = self.hostView;
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-visual-card systemScene=%@ host=%@ hostTransform=identity card=%@ visualSurface={%.1f,%.1f} scale=%.6f letterbox={%.1f,%.1f} visualRotation=%.0f keyboardContract=native-scene",
-        NSStringFromCGRect(sceneFrame), NSStringFromCGRect(self.hostView.bounds),
+        @"sb landscape-visual-card systemScene=%@ serverOrientation=%ld clientOrientation=%ld clientCanvas=%@ host=%@ hostTransform=identity card=%@ visualSurface={%.1f,%.1f} scale=%.6f letterbox={%.1f,%.1f} visualRotation=0",
+        NSStringFromCGRect(sceneFrame), (long)sceneOrientation,
+        (long)FLMLandscapeSceneClientOrientation(self.scene),
+        NSStringFromCGRect(clientCanvas),
+        NSStringFromCGRect(self.hostView.bounds),
         NSStringFromCGRect(self.cardView.bounds), visualWidth, visualHeight,
-        uniformScale, visualLetterboxX, visualLetterboxY,
-        visualRotation * 180.0 / M_PI);
+        uniformScale, visualLetterboxX, visualLetterboxY);
 }
 - (void)outsideTap:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateEnded || !self.hasVisibleCard ||
@@ -1808,8 +1936,6 @@ static id FLMLandscapeSceneForHandle(id handle) {
     [self.lockTimer invalidate];
     self.lockTimer = nil;
     NSUInteger closingGeneration = self.generation;
-    [self.resolveTimer invalidate];
-    self.resolveTimer = nil;
     [self.hostView removeFromSuperview];
     self.hostView = nil;
     self.hostPresentationView.transform = CGAffineTransformIdentity;
@@ -1827,6 +1953,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.presentationManager = nil;
     self.presenter = nil;
     self.presenterScene = nil;
+    self.portraitClientCanvasConfigured = NO;
     if (keepApplication) {
         [self backgroundScene:scene];
     } else {
@@ -1887,10 +2014,18 @@ static id FLMLandscapeSceneForHandle(id handle) {
             [mutableSettings setFrame:bounds];
         }
         UIInterfaceOrientation orientation = FLMLandscapeInterfaceOrientation();
+        if (!UIInterfaceOrientationIsLandscape(orientation)) {
+            orientation = self.displayOrientation;
+        }
+        if (!UIInterfaceOrientationIsLandscape(orientation)) {
+            orientation = UIInterfaceOrientationLandscapeLeft;
+        }
         if (UIInterfaceOrientationIsLandscape(orientation) &&
             [mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
         }
+        BOOL restoredClientOrientation =
+            FLMLandscapeConfigureClientOrientation(scene, orientation);
         if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
             [mutableSettings setForeground:NO];
         }
@@ -1900,6 +2035,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
         if ([scene respondsToSelector:@selector(updateSettings:withTransitionContext:)]) {
             [scene updateSettings:mutableSettings withTransitionContext:nil];
         }
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-client-canvas restore configured=%d orientation=%ld",
+            restoredClientOrientation, (long)orientation);
     } @catch (__unused NSException *exception) {
     }
     FLMClearProtectedScene(scene);

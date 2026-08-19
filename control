@@ -5,5 +5,7 @@ Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
+Conflicts: com.codex.flymelandscape
+Replaces: com.codex.flymelandscape
 Architecture: iphoneos-arm64
-Version: 0.9.44
+Version: 0.9.45
