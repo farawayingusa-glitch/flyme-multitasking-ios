@@ -45,7 +45,8 @@ static void FLMLandscapeWriteTouchMarkerOnce(void) {
 @end
 
 static BOOL FLMLandscapeWheelDeviceIsLocked(void) {
-    id manager = [NSClassFromString(@"SBLockScreenManager") sharedInstance];
+    id managerClass = NSClassFromString(@"SBLockScreenManager");
+    id manager = [managerClass sharedInstance];
     if (!manager) {
         return NO;
     }
