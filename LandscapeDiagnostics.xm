@@ -66,7 +66,7 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...) {
                 }
                 return;
             }
-            const uint8_t *bytes = data.bytes;
+            const uint8_t *bytes = (const uint8_t *)data.bytes;
             size_t remaining = data.length;
             while (remaining > 0) {
                 ssize_t written = write(descriptor, bytes, remaining);
