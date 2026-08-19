@@ -22,7 +22,7 @@ jobs:
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-          command -v dpkg-deb >/dev/null || brew install dpkg
+          command -v dpkg-deb >/dev/null || HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew install dpkg
           command -v dpkg-deb
 
       - name: Verify frozen gesture foundation
