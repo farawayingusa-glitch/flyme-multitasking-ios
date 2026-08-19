@@ -264,7 +264,11 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @property(nonatomic, assign) FLMLandscapeTouchContext touchContext;
 @property(nonatomic, assign) BOOL touchContextValid;
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
+@property(nonatomic, strong) id systemGestureManager;
+@property(nonatomic, strong) id displayIdentity;
 @property(nonatomic, assign) BOOL started;
+@property(nonatomic, assign) BOOL starting;
+@property(nonatomic, assign) BOOL registrationRetryScheduled;
 + (instancetype)sharedController;
 - (void)start;
 - (void)reloadPreferences;
@@ -275,6 +279,7 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (void)handleOverlayTap:(UITapGestureRecognizer *)gesture;
 - (void)createWindowsIfNeeded;
 - (void)registerGlobalGestures;
+- (void)scheduleGlobalGestureRegistrationRetry;
 - (BOOL)shouldActivateForPoint:(CGPoint)point;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
@@ -310,35 +315,53 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)start {
-    if (self.started) {
+    if (self.started || self.starting) {
         return;
     }
-    self.started = YES;
-    static dispatch_once_t preferenceObserverToken;
-    dispatch_once(&preferenceObserverToken, ^{
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            NULL,
-            FLMLandscapePreferencesChanged,
-            CFSTR("com.codex.flymelandscape.preferences-changed"),
-            NULL,
-            CFNotificationSuspensionBehaviorDeliverImmediately);
-    });
-    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(orientationDidChange:)
-               name:UIDeviceOrientationDidChangeNotification
-             object:nil];
-    [self createWindowsIfNeeded];
-    [self reloadPreferences];
-    [self registerGlobalGestures];
-    [self updateFrames];
-    FLMLandscapeModuleStart();
-    FLMEnqueueDiagnosticLine(
-        @"sb landscape-plugin-start globalGestures=%d items=%lu",
-        self.usesSystemGestureManager,
-        (unsigned long)self.itemIdentifiers.count);
+    self.starting = YES;
+    FLMEnqueueDiagnosticLine(@"sb landscape-plugin-starting");
+    @try {
+        static dispatch_once_t preferenceObserverToken;
+        dispatch_once(&preferenceObserverToken, ^{
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                FLMLandscapePreferencesChanged,
+                CFSTR("com.codex.flymelandscape.preferences-changed"),
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately);
+        });
+        [[UIDevice currentDevice]
+            beginGeneratingDeviceOrientationNotifications];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(orientationDidChange:)
+                   name:UIDeviceOrientationDidChangeNotification
+                 object:nil];
+        [self createWindowsIfNeeded];
+        [self reloadPreferences];
+        [self registerGlobalGestures];
+        [self updateFrames];
+        FLMLandscapeModuleStart();
+        self.started = YES;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-plugin-start globalGestures=%d items=%lu",
+            self.usesSystemGestureManager,
+            (unsigned long)self.itemIdentifiers.count);
+        [self scheduleGlobalGestureRegistrationRetry];
+    } @catch (NSException *exception) {
+        self.started = NO;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-plugin-start-failed exception=%@ reason=%@",
+            NSStringFromClass(exception.class),
+            exception.reason ?: @"<none>");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                      (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [[FLMLandscapeWheelController sharedController] start];
+        });
+    }
+    self.starting = NO;
 }
 
 - (void)createWindowsIfNeeded {
@@ -348,8 +371,29 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     CGRect bounds = FLMLandscapeModuleVisualBounds();
     FLMLandscapeWheelViewController *controller =
         [[FLMLandscapeWheelViewController alloc] init];
-    FLMLandscapeWheelWindow *window =
-        [[FLMLandscapeWheelWindow alloc] initWithFrame:bounds];
+    UIWindowScene *scene = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *candidate in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![candidate isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            UIWindowScene *windowScene = (UIWindowScene *)candidate;
+            if (windowScene.activationState ==
+                    UISceneActivationStateForegroundActive ||
+                windowScene.activationState ==
+                    UISceneActivationStateForegroundInactive) {
+                scene = windowScene;
+                if (UIInterfaceOrientationIsLandscape(
+                        windowScene.interfaceOrientation)) {
+                    break;
+                }
+            }
+        }
+    }
+    FLMLandscapeWheelWindow *window = scene
+        ? [[FLMLandscapeWheelWindow alloc] initWithWindowScene:scene]
+        : [[FLMLandscapeWheelWindow alloc] initWithFrame:bounds];
     window.windowLevel = UIWindowLevelAlert + 96.0;
     window.backgroundColor = UIColor.clearColor;
     window.rootViewController = controller;
@@ -367,8 +411,9 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     tap.cancelsTouchesInView = YES;
     [root addGestureRecognizer:tap];
 
-    FLMLandscapeWheelHotspotWindow *hotspot =
-        [[FLMLandscapeWheelHotspotWindow alloc] initWithFrame:bounds];
+    FLMLandscapeWheelHotspotWindow *hotspot = scene
+        ? [[FLMLandscapeWheelHotspotWindow alloc] initWithWindowScene:scene]
+        : [[FLMLandscapeWheelHotspotWindow alloc] initWithFrame:bounds];
     hotspot.windowLevel = UIWindowLevelAlert + 120.0;
     hotspot.backgroundColor = UIColor.clearColor;
     hotspot.rootViewController =
@@ -421,6 +466,10 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)registerGlobalGestures {
+    if (self.usesSystemGestureManager && self.systemGestureManager &&
+        self.displayIdentity) {
+        return;
+    }
     Class managerClass = NSClassFromString(@"_UISystemGestureManager");
     FLMLandscapeSystemGestureManager *manager =
         (FLMLandscapeSystemGestureManager *)[managerClass sharedInstance];
@@ -435,16 +484,50 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                 toDisplayWithIdentity:identity];
         [manager addGestureRecognizer:self.modalGesture
                 toDisplayWithIdentity:identity];
+        self.systemGestureManager = manager;
+        self.displayIdentity = identity;
         self.usesSystemGestureManager = YES;
+        self.hotspotWindow.hidden = YES;
+        self.hotspotWindow.hotspotsEnabled = NO;
     } else {
+        self.systemGestureManager = nil;
+        self.displayIdentity = nil;
         self.usesSystemGestureManager = NO;
         self.hotspotWindow.hidden = NO;
-        self.hotspotWindow.hotspotsEnabled = YES;
+        self.hotspotWindow.hotspotsEnabled =
+            self.enabled && self.itemIdentifiers.count > 0 &&
+            !self.wheelPinned;
     }
     FLMEnqueueDiagnosticLine(
         @"sb landscape-wheel-registered systemGestureManager=%d identity=%d",
         self.usesSystemGestureManager,
         identity != nil);
+}
+
+- (void)scheduleGlobalGestureRegistrationRetry {
+    if (!self.started || self.usesSystemGestureManager ||
+        self.registrationRetryScheduled) {
+        return;
+    }
+    self.registrationRetryScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                  (int64_t)(0.75 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        self.registrationRetryScheduled = NO;
+        if (!self.started || self.usesSystemGestureManager) {
+            return;
+        }
+        @try {
+            [self registerGlobalGestures];
+            [self reloadPreferences];
+        } @catch (NSException *exception) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-wheel-registration-retry-failed exception=%@ reason=%@",
+                NSStringFromClass(exception.class),
+                exception.reason ?: @"<none>");
+        }
+        [self scheduleGlobalGestureRegistrationRetry];
+    });
 }
 
 - (void)reloadPreferences {
@@ -988,7 +1071,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     %orig;
     (void)application;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                  (int64_t)(0.9 * NSEC_PER_SEC)),
+                                  (int64_t)(1.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [[FLMLandscapeWheelController sharedController] start];
     });
@@ -997,9 +1080,8 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 %end
 
 %ctor {
-    // The module is a SpringBoard-only package. No UIKit application or
-    // keyboard dylib is installed by this target.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[FLMLandscapeWheelController sharedController] start];
-    });
+    // Keep the constructor free of UIKit/window/private-manager work. This
+    // marker is POSIX-only and tells us whether the dylib reached SpringBoard
+    // even if a later startup step fails before the normal logger is ready.
+    FLMWriteLandscapeBootstrapMarker("constructor");
 }

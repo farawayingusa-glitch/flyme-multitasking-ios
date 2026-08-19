@@ -26,7 +26,7 @@ grep -q "com.apple.springboard" "$filter"
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboard.dylib"
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeMultitasking.dylib"
 grep -q "Package: com.codex.flymelandscape" "$workspace/control/control"
-grep -q "Version: 0.1.2" "$workspace/control/control"
+grep -q "Version: 0.1.3" "$workspace/control/control"
 grep -q "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 settings_entry="$workspace/root/var/jb/Library/PreferenceLoader/Preferences/com.codex.flymelandscape.plist"
@@ -42,6 +42,7 @@ python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtim
 strings "$runtime" | grep -q "landscape-scene-contract"
 strings "$runtime" | grep -q "landscape-visual-card"
 strings "$runtime" | grep -q "landscape-wheel-geometry"
+strings "$runtime" | grep -q "landscape-plugin bootstrap reason=%s"
 strings "$runtime" | grep -q "keyboardContract=native-scene"
 if strings "$runtime" | grep -Eq "FlymeKeyboard|keyboardScreenReferenceSize|updateClientSettingsWithBlock"; then
     echo "landscape package unexpectedly contains the portrait keyboard adapter" >&2

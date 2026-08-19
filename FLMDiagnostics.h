@@ -10,6 +10,11 @@
 // enqueue lines through this function without creating another file writer.
 void FLMEnqueueDiagnosticLine(NSString *format, ...);
 
+// A constructor-safe marker used to distinguish injection failure from a
+// failure that occurs while UIKit/private SpringBoard services are starting.
+// This function intentionally uses only POSIX I/O and does not require UIKit.
+void FLMWriteLandscapeBootstrapMarker(const char *reason);
+
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-event-v2"
 #define FLYME_DIAGNOSTIC_SPRINGBOARD_NOTIFICATION \
