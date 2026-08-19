@@ -1,0 +1,63 @@
+name: Build flyme-landscape
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "landscape/**"
+      - "scripts/verify-landscape-package.sh"
+      - ".github/workflows/build-landscape.yml"
+  push:
+    branches:
+      - "codex/**"
+    paths:
+      - "landscape/**"
+      - "scripts/verify-landscape-package.sh"
+      - ".github/workflows/build-landscape.yml"
+
+jobs:
+  build-landscape:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check macOS build tools
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          command -v dpkg-deb >/dev/null || HOMEBREW_NO_REQUIRE_TAP_TRUST=1 brew install dpkg
+          command -v dpkg-deb
+
+      - name: Install Theos
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          command -v ldid
+
+      - name: Build landscape package
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          chmod 755 landscape/layout/DEBIAN/postinst
+          make -C landscape clean package FINALPACKAGE=1 messages=yes
+
+      - name: Verify landscape package
+        run: |
+          landscape_package="$(find landscape/packages -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$landscape_package"
+          chmod +x scripts/verify-landscape-package.sh
+          scripts/verify-landscape-package.sh "$landscape_package"
+          mkdir -p artifacts
+          cp "$landscape_package" artifacts/flyme-landscape_0.1.0_iphoneos-arm64.deb
+
+      - name: Upload landscape package
+        uses: actions/upload-artifact@v4
+        with:
+          name: flyme-landscape-0.1.0-${{ github.run_number }}
+          path: artifacts/flyme-landscape_0.1.0_iphoneos-arm64.deb
+          if-no-files-found: error
