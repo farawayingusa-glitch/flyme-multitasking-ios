@@ -283,6 +283,21 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (FLMLandscapeWheelItemView *)itemNearPoint:(CGPoint)point;
 @end
 
+static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
+                                            void *observer,
+                                            CFStringRef name,
+                                            const void *object,
+                                            CFDictionaryRef userInfo) {
+    (void)center;
+    (void)observer;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[FLMLandscapeWheelController sharedController] reloadPreferences];
+    });
+}
+
 @implementation FLMLandscapeWheelController
 
 + (instancetype)sharedController {
@@ -299,6 +314,16 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
         return;
     }
     self.started = YES;
+    static dispatch_once_t preferenceObserverToken;
+    dispatch_once(&preferenceObserverToken, ^{
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            NULL,
+            FLMLandscapePreferencesChanged,
+            CFSTR("com.codex.flymelandscape.preferences-changed"),
+            NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+    });
     [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     [[NSNotificationCenter defaultCenter]
         addObserver:self
@@ -416,6 +441,10 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
         self.hotspotWindow.hidden = NO;
         self.hotspotWindow.hotspotsEnabled = YES;
     }
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-wheel-registered systemGestureManager=%d identity=%d",
+        self.usesSystemGestureManager,
+        identity != nil);
 }
 
 - (void)reloadPreferences {
@@ -459,6 +488,13 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
     self.modalGesture.enabled = active && self.wheelPinned;
     self.hotspotWindow.hotspotsEnabled =
         active && !self.usesSystemGestureManager && !self.wheelPinned;
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-wheel-preferences enabled=%d items=%lu active=%d triggerGesture=%d openerGesture=%d",
+        self.enabled,
+        (unsigned long)self.itemIdentifiers.count,
+        active,
+        self.guardGesture.enabled,
+        self.openerGesture.enabled);
     if (!active && self.wheelPinned) {
         [self dismissWheelLaunchingItem:nil];
     }
