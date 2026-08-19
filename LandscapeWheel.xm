@@ -481,7 +481,7 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!FLMLandscapeModuleIsLandscape()) {
             [self dismissWheelLaunchingItem:nil];
-            FLMLandscapeModuleClose:YES;
+            FLMLandscapeModuleClose(YES);
             [self updateFrames];
             return;
         }
