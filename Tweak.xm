@@ -430,6 +430,17 @@ static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
     return rawPoint;
 }
 
+// The portrait build has no wheel entry path outside the portrait display
+// coordinate space.  Keep this check at the shared boundary instead of
+// relying on a one-time window-frame update: UIKit's system gesture manager
+// can deliver a touch after the display has rotated, before any layout pass.
+static BOOL FLMPortraitWheelDisplayIsValid(void) {
+    CGRect bounds = FLMVisualScreenBounds();
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    return width > 0.0 && height > 0.0 && width <= height;
+}
+
 static NSString *FLMIdentifierForApplication(id application) {
     if ([application respondsToSelector:@selector(bundleIdentifier)]) {
         NSString *identifier = [application bundleIdentifier];
@@ -571,7 +582,7 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
     if (!self.dockTouchGateEnabled || FLMDeviceIsLocked()) {
         return nil;
     }
-    if (self.wheelPriorityActive &&
+    if (self.wheelPriorityActive && FLMPortraitWheelDisplayIsValid() &&
         FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
         UITouch *touch = [event.allTouches anyObject];
         if (touch && touch.phase == UITouchPhaseBegan) {
@@ -722,7 +733,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
             // or hidden: keep the touch inside the window so the in-window
             // corner recognizers can summon the wheel instead of letting the
             // touch pass through to the app below.
-            if (FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
+            if (FLMPortraitWheelDisplayIsValid() &&
+                FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
                 FLMLogFloatingHitTest(self, point, event, nil, @"wheel-corner");
                 UIView *hitView = [super hitTest:point withEvent:event];
                 return hitView ?: self.rootViewController.view;
@@ -758,6 +770,9 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
     // active lock-screen service even while the device is unlocked, which
     // would make the entire wheel entry disappear before UIKit arbitration.
     if (!self.hotspotsEnabled) {
+        return nil;
+    }
+    if (!FLMPortraitWheelDisplayIsValid()) {
         return nil;
     }
     if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
@@ -2543,7 +2558,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // application. It is therefore only an emergency fallback; the global
     // system-manager pair remains enabled regardless of this window state.
     self.hotspotWindow.hotspotsEnabled = canReceive &&
-                                         !self.usesSystemGestureManager;
+                                         !self.usesSystemGestureManager &&
+                                         FLMPortraitWheelDisplayIsValid();
     self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
 }
@@ -2609,6 +2625,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gestureRecognizer == self.floatingExclusiveGesture) {
         if (self.enabled && !self.wheelPinned &&
             self.itemIdentifiers.count > 0 &&
+            FLMPortraitWheelDisplayIsValid() &&
             FLMPointInsideCornerTrigger(
                 FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]),
                 FLMVisualScreenBounds(),
@@ -2627,14 +2644,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     if (gestureRecognizer == self.cornerGuardGesture ||
         gestureRecognizer == self.floatingCornerGuardGesture) {
-        return self.enabled && !self.wheelPinned &&
+        return FLMPortraitWheelDisplayIsValid() &&
+               self.enabled && !self.wheelPinned &&
                self.itemIdentifiers.count > 0 && !FLMDeviceIsLocked();
     }
     if (gestureRecognizer != self.cornerGesture &&
         gestureRecognizer != self.floatingCornerGesture) {
         return NO;
     }
-    if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
+    if (!FLMPortraitWheelDisplayIsValid() ||
+        !self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
     if (FLMDeviceIsLocked()) {
@@ -2773,6 +2792,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // the wheel over a centered card.
         if (self.enabled && !self.wheelPinned &&
             self.itemIdentifiers.count > 0 &&
+            FLMPortraitWheelDisplayIsValid() &&
             FLMPointInsideCornerTrigger(point,
                                         FLMVisualScreenBounds(),
                                         NULL)) {
@@ -2807,7 +2827,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     if (gestureRecognizer == self.cornerGuardGesture ||
         gestureRecognizer == self.floatingCornerGuardGesture) {
-        if (!self.enabled || self.wheelPinned ||
+        if (!FLMPortraitWheelDisplayIsValid() ||
+            !self.enabled || self.wheelPinned ||
             self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
             return NO;
         }
@@ -2828,7 +2849,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         gestureRecognizer != self.floatingCornerGesture) {
         return NO;
     }
-    if (!self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
+    if (!FLMPortraitWheelDisplayIsValid() ||
+        !self.enabled || self.wheelPinned || self.itemIdentifiers.count == 0) {
         return NO;
     }
     if (FLMDeviceIsLocked()) {
@@ -2928,7 +2950,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // Recognizing immediately reserves the corner zone so home/back/card
     // gestures cannot consume the same touch stream. Keep a breadcrumb for
     // the priority boundary because this guard runs before the wheel opener.
-    if (gesture.state == UIGestureRecognizerStateBegan) {
+    if (gesture.state == UIGestureRecognizerStateBegan &&
+        FLMPortraitWheelDisplayIsValid()) {
         CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
         FLMEnqueueDiagnosticLine(
             @"sb wheel-priority-guard began point={%.1f,%.1f}",
@@ -2993,6 +3016,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
+    if (!FLMPortraitWheelDisplayIsValid()) {
+        if (self.wheelGestureActive) {
+            [self dismissWheelLaunchingItem:nil];
+            self.wheelGestureActive = NO;
+        }
+        return;
+    }
     CGPoint rawPoint = [gesture locationInView:nil];
     CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
 
@@ -3047,6 +3077,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point {
+    if (!FLMPortraitWheelDisplayIsValid()) {
+        return NO;
+    }
     CGFloat horizontalMovement = point.x - self.cornerGestureStartPoint.x;
     CGFloat verticalMovement = point.y - self.cornerGestureStartPoint.y;
     CGFloat totalMovement = hypot(horizontalMovement, verticalMovement);
@@ -3071,6 +3104,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)presentWheelFromRight:(BOOL)fromRight {
+    if (!FLMPortraitWheelDisplayIsValid()) {
+        return;
+    }
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
     // The opening touch belongs to this wheel stream. Do not let the
@@ -3425,7 +3461,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gateRootView && !CGRectEqualToRect(gateRootView.frame, bounds)) {
         gateRootView.frame = bounds;
     }
-    gate.wheelPriorityActive = self.enabled && !self.wheelPinned &&
+    gate.wheelPriorityActive = FLMPortraitWheelDisplayIsValid() &&
+                               self.enabled && !self.wheelPinned &&
                                self.itemIdentifiers.count > 0 &&
                                !FLMDeviceIsLocked();
 
@@ -3472,7 +3509,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [CADisplayLink displayLinkWithTarget:self
                                     selector:@selector(flushFloatingDockInputFrame:)];
     if ([displayLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
-        displayLink.preferredFramesPerSecond = 60;
+        // Use the display's native cadence.  The previous hard 60fps cap made
+        // dock dragging visibly undersampled on ProMotion devices.
+        displayLink.preferredFramesPerSecond = 0;
     }
     self.floatingDockInputDisplayLink = displayLink;
     [displayLink addToRunLoop:[NSRunLoop mainRunLoop]
@@ -3608,11 +3647,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        center.y));
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    [UIView performWithoutAnimation:^{
-        self.floatingContainer.center = center;
-        self.floatingDockVerticalCenter = center.y;
-        [self updateFloatingDockAccessoryPositions];
-    }];
+    // The dock card has no Auto Layout constraints. Move its backing layer
+    // directly so each display-link sample only changes the composited
+    // position; wrapping the same update in UIView's animation machinery was
+    // needlessly entering view/layout bookkeeping on every sample.
+    self.floatingContainer.layer.position = center;
+    self.floatingDockVerticalCenter = center.y;
     [CATransaction commit];
 }
 
