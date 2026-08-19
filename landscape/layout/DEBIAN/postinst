@@ -1,0 +1,7 @@
+#!/bin/sh
+
+# Horizontal mode is a SpringBoard-only package. The target application's
+# Scene and keyboard remain native; no process-side keyboard adapter is
+# installed or restarted here.
+
+exit 0

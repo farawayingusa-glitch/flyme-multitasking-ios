@@ -1,0 +1,9 @@
+Package: com.codex.flymelandscape
+Name: flyme-landscape
+Description: Independent Flyme horizontal Scene card plugin with native system keyboard ownership.
+Maintainer: Codex build for local testing
+Author: Codex build for local testing
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)
+Architecture: iphoneos-arm64
+Version: 0.1.0

@@ -41,6 +41,8 @@ jobs:
         run: |
           chmod 755 layout/DEBIAN/postinst
           make clean package FINALPACKAGE=1 messages=yes
+          chmod 755 landscape/layout/DEBIAN/postinst
+          make -C landscape clean package FINALPACKAGE=1 messages=yes
 
       - name: Verify package
         run: |
@@ -48,12 +50,19 @@ jobs:
           test -n "$package"
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
+          landscape_package="$(find landscape/packages -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -n "$landscape_package"
+          chmod +x scripts/verify-landscape-package.sh
+          scripts/verify-landscape-package.sh "$landscape_package"
           mkdir -p artifacts
           cp "$package" artifacts/flyme-multitasking_0.9.41_iphoneos-arm64.deb
+          cp "$landscape_package" artifacts/flyme-landscape_0.1.0_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: flyme-multitasking-0.9.41-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_0.9.41_iphoneos-arm64.deb
+          path: |
+            artifacts/flyme-multitasking_0.9.41_iphoneos-arm64.deb
+            artifacts/flyme-landscape_0.1.0_iphoneos-arm64.deb
           if-no-files-found: error
