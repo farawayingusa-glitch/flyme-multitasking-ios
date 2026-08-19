@@ -278,6 +278,7 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @property(nonatomic, assign) BOOL touchContextValid;
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL sharedGesturesBound;
+@property(nonatomic, weak) id rootWheelController;
 @property(nonatomic, assign) BOOL started;
 @property(nonatomic, assign) BOOL starting;
 + (instancetype)sharedController;
@@ -293,6 +294,7 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (void)configureFallbackGestures;
 - (BOOL)bindSharedWheelController;
 - (void)detachFallbackGestures;
+- (void)restoreSharedPortraitGestureState;
 - (BOOL)shouldActivateForPoint:(CGPoint)point;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
@@ -301,7 +303,7 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (FLMLandscapeWheelItemView *)itemNearPoint:(CGPoint)point;
 @end
 
-static id FLMLandscapeSharedWheelController(void) {
+static id FLMLandscapeRootWheelController(void) {
     Class controllerClass = NSClassFromString(@"FLMWheelController");
     SEL selector = @selector(sharedController);
     if (!controllerClass || ![controllerClass respondsToSelector:selector]) {
@@ -621,10 +623,10 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)bindSharedWheelController {
-    if (self.sharedGesturesBound) {
+    if (self.sharedGesturesBound && self.rootWheelController) {
         return YES;
     }
-    id rootController = FLMLandscapeSharedWheelController();
+    id rootController = FLMLandscapeRootWheelController();
     if (!FLMLandscapeSharedBool(rootController,
                                  @"usesSystemGestureManager")) {
         FLMEnqueueDiagnosticLine(
@@ -663,6 +665,7 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.floatingOpenerGesture = floatingOpener;
     self.modalGesture = modal;
     self.usesSystemGestureManager = YES;
+    self.rootWheelController = rootController;
     self.sharedGesturesBound = YES;
     self.hotspotWindow.hidden = YES;
     self.hotspotWindow.hotspotsEnabled = NO;
@@ -674,6 +677,28 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         opener,
         modal);
     return YES;
+}
+
+- (void)restoreSharedPortraitGestureState {
+    if (!self.sharedGesturesBound || !self.rootWheelController) {
+        return;
+    }
+    BOOL rootEnabled =
+        FLMLandscapeSharedBool(self.rootWheelController, @"enabled");
+    BOOL rootPinned =
+        FLMLandscapeSharedBool(self.rootWheelController, @"wheelPinned");
+    // Match the frozen root controller's own preference state.  Its delegate
+    // decides whether a recognizer may begin while the portrait wheel is
+    // pinned; the recognizers themselves remain enabled whenever the tweak is.
+    self.guardGesture.enabled = rootEnabled;
+    self.openerGesture.enabled = rootEnabled;
+    self.floatingGuardGesture.enabled = rootEnabled;
+    self.floatingOpenerGesture.enabled = rootEnabled;
+    self.modalGesture.enabled = rootEnabled && rootPinned;
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-wheel-portrait-owner-restored enabled=%d pinned=%d",
+        rootEnabled,
+        rootPinned);
 }
 
 - (void)reloadPreferences {
@@ -719,6 +744,10 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.modalGesture.enabled = active && self.wheelPinned;
     self.hotspotWindow.hotspotsEnabled =
         active && !self.usesSystemGestureManager && !self.wheelPinned;
+    if (self.sharedGesturesBound &&
+        !FLMLandscapeModuleIsLandscape()) {
+        [self restoreSharedPortraitGestureState];
+    }
     FLMEnqueueDiagnosticLine(
         @"sb landscape-wheel-preferences enabled=%d items=%lu active=%d triggerGesture=%d openerGesture=%d",
         self.enabled,
@@ -746,11 +775,18 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     if (!landscape) {
         self.overlayWindow.hidden = YES;
         self.hotspotWindow.hotspotsEnabled = NO;
-        self.guardGesture.enabled = NO;
-        self.openerGesture.enabled = NO;
-        self.floatingGuardGesture.enabled = NO;
-        self.floatingOpenerGesture.enabled = NO;
-        self.modalGesture.enabled = NO;
+        // Shared recognizers still belong to the frozen portrait controller.
+        // Restore its state when ownership returns; only the horizontal
+        // module's private fallback recognizers are disabled here.
+        if (self.sharedGesturesBound) {
+            [self restoreSharedPortraitGestureState];
+        } else {
+            self.guardGesture.enabled = NO;
+            self.openerGesture.enabled = NO;
+            self.floatingGuardGesture.enabled = NO;
+            self.floatingOpenerGesture.enabled = NO;
+            self.modalGesture.enabled = NO;
+        }
         self.wheelPinned = NO;
         FLMEnqueueDiagnosticLine(
             @"sb landscape-wheel-frame landscape=0 orientation=%ld bounds=%@ enabled=%d items=%lu system=%d",
@@ -1271,11 +1307,14 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
 
 static FLMLandscapeWheelController * _Nullable FLMLandscapeWheelForRoot(
     id _Nullable rootController) {
-    id sharedController = FLMLandscapeSharedWheelController();
-    if (!sharedController || sharedController != rootController) {
+    FLMLandscapeWheelController *controller =
+        [FLMLandscapeWheelController sharedController];
+    if (!rootController || !controller.started ||
+        !controller.sharedGesturesBound ||
+        controller.rootWheelController != rootController) {
         return nil;
     }
-    return (FLMLandscapeWheelController *)sharedController;
+    return controller;
 }
 
 BOOL FLMLandscapeWheelOwnsSharedGesture(
@@ -1350,7 +1389,8 @@ BOOL FLMLandscapeWheelShouldSuppressPortraitGesture(
         @"wheelTapGesture",
     ];
     for (NSString *key in portraitGestureKeys) {
-        if (gestureRecognizer == FLMLandscapeSharedGesture(controller, key)) {
+        if (gestureRecognizer ==
+            FLMLandscapeSharedGesture(rootController, key)) {
             return YES;
         }
     }
