@@ -6,7 +6,7 @@
 // Constructor-safe POSIX marker owned by the horizontal module.  It is kept
 // out of the frozen portrait diagnostics header so this module can be added
 // without changing the portrait implementation.
-void FLMWriteLandscapeBootstrapMarker(const char *reason);
+void FLMWriteLandscapeBootstrapMarker(const char * _Nullable reason);
 
 // The horizontal module owns this coordinate space.  The portrait module is
 // intentionally not imported here and has no horizontal entry point.
