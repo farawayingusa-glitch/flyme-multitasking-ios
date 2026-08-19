@@ -4,6 +4,6 @@ Description: Independent Flyme horizontal Scene card plugin with native system k
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000)
+Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.1.0
+Version: 0.1.1

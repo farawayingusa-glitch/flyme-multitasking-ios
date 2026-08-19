@@ -6,6 +6,8 @@
 #import "FLMLandscapeModule.h"
 
 static NSString *const FLMLandscapePreferencesDomain =
+    @"com.codex.flymelandscape";
+static NSString *const FLMLandscapeLegacyPreferencesDomain =
     @"com.codex.flymemultitasking";
 static NSString *const FLMLandscapeLegacyWheelItem =
     @"com.codex.flymemultitasking.screensense";
@@ -71,13 +73,19 @@ static BOOL FLMLandscapeWheelDeviceIsLocked(void) {
 }
 
 static id FLMLandscapeWheelPreference(NSString *key) {
-    CFPreferencesSynchronize((__bridge CFStringRef)
-                              FLMLandscapePreferencesDomain,
-                              kCFPreferencesCurrentUser,
-                              kCFPreferencesAnyHost);
-    return CFBridgingRelease(CFPreferencesCopyAppValue(
-        (__bridge CFStringRef)key,
-        (__bridge CFStringRef)FLMLandscapePreferencesDomain));
+    for (NSString *domain in @[FLMLandscapePreferencesDomain,
+                               FLMLandscapeLegacyPreferencesDomain]) {
+        CFPreferencesSynchronize((__bridge CFStringRef)domain,
+                                  kCFPreferencesCurrentUser,
+                                  kCFPreferencesAnyHost);
+        id value = CFBridgingRelease(CFPreferencesCopyAppValue(
+            (__bridge CFStringRef)key,
+            (__bridge CFStringRef)domain));
+        if (value != nil) {
+            return value;
+        }
+    }
+    return nil;
 }
 
 static CGFloat FLMLandscapeWheelClamped(CGFloat value,

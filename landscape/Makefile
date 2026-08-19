@@ -14,3 +14,6 @@ FlymeLandscape_FRAMEWORKS = UIKit QuartzCore CoreGraphics
 FlymeLandscape_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+SUBPROJECTS += prefs
+include $(THEOS_MAKE_PATH)/aggregate.mk

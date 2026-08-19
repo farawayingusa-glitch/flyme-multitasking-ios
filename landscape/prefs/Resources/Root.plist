@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>横屏版独立运行。系统始终把目标应用视为全屏横屏 Scene，卡片只负责视觉缩小。</string>
+            <key>label</key>
+            <string>横屏轮盘</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>get</key>
+            <string>landscapeEnabled:</string>
+            <key>label</key>
+            <string>启用横屏轮盘</string>
+            <key>set</key>
+            <string>setLandscapeEnabled:specifier:</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSLinkCell</string>
+            <key>detail</key>
+            <string>FLMLandscapeAppListController</string>
+            <key>isController</key>
+            <true/>
+            <key>label</key>
+            <string>应用管理</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>勾选的应用会出现在横屏轮盘中。旧版竖屏配置会在首次读取时兼容，不会写回竖屏配置。</string>
+        </dict>
+    </array>
+    <key>title</key>
+    <string>flyme-landscape</string>
+</dict>
+</plist>

@@ -599,11 +599,21 @@ CGPoint FLMLandscapeModuleVisualPointFromRawPoint(CGPoint rawPoint) {
 }
 
 static CGFloat FLMLandscapeTriggerSize(void) {
-    CFPreferencesSynchronize(CFSTR("com.codex.flymemultitasking"),
-                             kCFPreferencesCurrentUser,
-                             kCFPreferencesAnyHost);
-    id value = CFBridgingRelease(CFPreferencesCopyAppValue(
-        CFSTR("cornerTriggerSizeV2"), CFSTR("com.codex.flymemultitasking")));
+    NSArray<NSString *> *domains = @[
+        @"com.codex.flymelandscape",
+        @"com.codex.flymemultitasking",
+    ];
+    id value = nil;
+    for (NSString *domain in domains) {
+        CFPreferencesSynchronize((__bridge CFStringRef)domain,
+                                 kCFPreferencesCurrentUser,
+                                 kCFPreferencesAnyHost);
+        value = CFBridgingRelease(CFPreferencesCopyAppValue(
+            CFSTR("cornerTriggerSizeV2"), (__bridge CFStringRef)domain));
+        if (value != nil) {
+            break;
+        }
+    }
     CGFloat size = [value isKindOfClass:[NSNumber class]]
                        ? [(NSNumber *)value doubleValue]
                        : FLMLandscapeDefaultTriggerSize;

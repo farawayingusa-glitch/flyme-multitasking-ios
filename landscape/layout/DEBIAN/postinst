@@ -4,4 +4,11 @@
 # Scene and keyboard remain native; no process-side keyboard adapter is
 # installed or restarted here.
 
+# PreferenceLoader reads this package's entry when Preferences starts. Close
+# an already-open Settings process so the new entry is visible immediately;
+# SpringBoard still follows the user's normal respring policy.
+if command -v killall >/dev/null 2>&1; then
+    killall -9 Preferences >/dev/null 2>&1 || true
+fi
+
 exit 0
