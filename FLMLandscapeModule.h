@@ -29,6 +29,11 @@ BOOL FLMLandscapeModulePointInsideCornerTrigger(CGPoint point,
                                                 BOOL * _Nullable fromRight);
 
 void FLMLandscapeModuleStart(void);
+// The independent wheel keeps a second, in-window recognizer pair on the
+// landscape card.  This mirrors the original portrait controller's floating
+// window fallback and is deliberately exposed as a view, not as the private
+// module object itself.
+UIView * _Nullable FLMLandscapeModuleWheelGestureView(void);
 void FLMLandscapeModuleUpdateFrames(void);
 void FLMLandscapeModuleOrientationDidChange(void);
 void FLMLandscapeModuleOpenIdentifier(NSString * _Nonnull identifier);

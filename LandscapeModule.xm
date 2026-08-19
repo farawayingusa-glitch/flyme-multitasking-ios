@@ -1878,6 +1878,10 @@ void FLMLandscapeModuleStart(void) {
     }
 }
 
+UIView *FLMLandscapeModuleWheelGestureView(void) {
+    return [FLMLandscapeModule sharedModule].rootView;
+}
+
 void FLMLandscapeModuleUpdateFrames(void) {
     void (^updateBlock)(void) = ^{
         [[FLMLandscapeModule sharedModule] updateFrames];

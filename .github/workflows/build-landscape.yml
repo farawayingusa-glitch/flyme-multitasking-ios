@@ -53,11 +53,11 @@ jobs:
           chmod +x scripts/verify-landscape-package.sh
           scripts/verify-landscape-package.sh "$landscape_package"
           mkdir -p artifacts
-          cp "$landscape_package" artifacts/flyme-landscape_0.1.3_iphoneos-arm64.deb
+          cp "$landscape_package" artifacts/flyme-landscape_0.1.4_iphoneos-arm64.deb
 
       - name: Upload landscape package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-landscape-0.1.3-${{ github.run_number }}
-          path: artifacts/flyme-landscape_0.1.3_iphoneos-arm64.deb
+          name: flyme-landscape-0.1.4-${{ github.run_number }}
+          path: artifacts/flyme-landscape_0.1.4_iphoneos-arm64.deb
           if-no-files-found: error

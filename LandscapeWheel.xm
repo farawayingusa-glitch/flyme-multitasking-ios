@@ -165,9 +165,23 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @end
 
 @interface FLMLandscapeCornerGestureRecognizer : UILongPressGestureRecognizer
+@property(nonatomic, assign) NSTimeInterval flmFirstTouchTimestamp;
 @end
 
 @implementation FLMLandscapeCornerGestureRecognizer
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    UITouch *firstTouch = [touches anyObject];
+    if (firstTouch && self.flmFirstTouchTimestamp <= 0.0) {
+        self.flmFirstTouchTimestamp = firstTouch.timestamp;
+    }
+    [super touchesBegan:touches withEvent:event];
+}
+
+- (void)reset {
+    [super reset];
+    self.flmFirstTouchTimestamp = 0.0;
+}
 
 - (BOOL)canBePreventedByGestureRecognizer:
     (UIGestureRecognizer *)preventingGestureRecognizer {
@@ -249,6 +263,8 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 @property(nonatomic, strong) UIView *wheelContainer;
 @property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *guardGesture;
 @property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *openerGesture;
+@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *floatingGuardGesture;
+@property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *floatingOpenerGesture;
 @property(nonatomic, strong) FLMLandscapeCornerGestureRecognizer *modalGesture;
 @property(nonatomic, strong) UITapGestureRecognizer *overlayTap;
 @property(nonatomic, strong) NSArray<FLMLandscapeWheelItemView *> *itemViews;
@@ -278,6 +294,8 @@ static UIImage *FLMLandscapeWheelIcon(NSString *identifier) {
 - (void)handleModalGesture:(UIGestureRecognizer *)gesture;
 - (void)handleOverlayTap:(UITapGestureRecognizer *)gesture;
 - (void)createWindowsIfNeeded;
+- (void)attachFloatingGesturesIfNeeded;
+- (void)configureFallbackGestures;
 - (void)registerGlobalGestures;
 - (void)scheduleGlobalGestureRegistrationRetry;
 - (BOOL)shouldActivateForPoint:(CGPoint)point;
@@ -340,9 +358,13 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
                  object:nil];
         [self createWindowsIfNeeded];
         [self reloadPreferences];
+        // The card window is created by the independent landscape module. It
+        // must exist before the local fallback pair is attached, otherwise a
+        // card opened later has no in-window route for the corner stream.
+        FLMLandscapeModuleStart();
+        [self attachFloatingGesturesIfNeeded];
         [self registerGlobalGestures];
         [self updateFrames];
-        FLMLandscapeModuleStart();
         self.started = YES;
         FLMEnqueueDiagnosticLine(
             @"sb landscape-plugin-start globalGestures=%d items=%lu",
@@ -452,9 +474,6 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     modal.cancelsTouchesInView = YES;
     modal.enabled = NO;
 
-    [root addGestureRecognizer:modal];
-    [hotspot.rootViewController.view addGestureRecognizer:guard];
-    [hotspot.rootViewController.view addGestureRecognizer:opener];
     self.overlayWindow = window;
     self.hotspotWindow = hotspot;
     self.wheelContainer = container;
@@ -463,6 +482,70 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.modalGesture = modal;
     self.overlayTap = tap;
     self.itemViews = @[];
+}
+
+- (void)attachFloatingGesturesIfNeeded {
+    if (self.floatingGuardGesture && self.floatingOpenerGesture) {
+        return;
+    }
+    UIView *gestureView = FLMLandscapeModuleWheelGestureView();
+    if (!gestureView) {
+        return;
+    }
+
+    FLMLandscapeCornerGestureRecognizer *guard =
+        [[FLMLandscapeCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleGuardGesture:)];
+    guard.delegate = self;
+    guard.minimumPressDuration = 0.0;
+    guard.allowableMovement = CGFLOAT_MAX;
+    guard.cancelsTouchesInView = YES;
+    guard.delaysTouchesBegan = NO;
+    guard.delaysTouchesEnded = NO;
+
+    FLMLandscapeCornerGestureRecognizer *opener =
+        [[FLMLandscapeCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:@selector(handleOpenerGesture:)];
+    opener.delegate = self;
+    opener.minimumPressDuration = 0.12;
+    opener.allowableMovement = CGFLOAT_MAX;
+    opener.cancelsTouchesInView = YES;
+    opener.delaysTouchesBegan = NO;
+    opener.delaysTouchesEnded = NO;
+
+    [gestureView addGestureRecognizer:guard];
+    [gestureView addGestureRecognizer:opener];
+    self.floatingGuardGesture = guard;
+    self.floatingOpenerGesture = opener;
+}
+
+- (void)configureFallbackGestures {
+    UIView *hotspotView = self.hotspotWindow.rootViewController.view;
+    if (self.usesSystemGestureManager) {
+        if (self.guardGesture.view == hotspotView) {
+            [hotspotView removeGestureRecognizer:self.guardGesture];
+        }
+        if (self.openerGesture.view == hotspotView) {
+            [hotspotView removeGestureRecognizer:self.openerGesture];
+        }
+        if (self.modalGesture.view == self.overlayWindow.rootViewController.view) {
+            [self.overlayWindow.rootViewController.view
+                removeGestureRecognizer:self.modalGesture];
+        }
+        return;
+    }
+    if (self.guardGesture.view != hotspotView) {
+        [hotspotView addGestureRecognizer:self.guardGesture];
+    }
+    if (self.openerGesture.view != hotspotView) {
+        [hotspotView addGestureRecognizer:self.openerGesture];
+    }
+    UIView *overlayView = self.overlayWindow.rootViewController.view;
+    if (self.modalGesture.view != overlayView) {
+        [overlayView addGestureRecognizer:self.modalGesture];
+    }
 }
 
 - (void)registerGlobalGestures {
@@ -487,12 +570,14 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         self.systemGestureManager = manager;
         self.displayIdentity = identity;
         self.usesSystemGestureManager = YES;
+        [self configureFallbackGestures];
         self.hotspotWindow.hidden = YES;
         self.hotspotWindow.hotspotsEnabled = NO;
     } else {
         self.systemGestureManager = nil;
         self.displayIdentity = nil;
         self.usesSystemGestureManager = NO;
+        [self configureFallbackGestures];
         self.hotspotWindow.hidden = NO;
         self.hotspotWindow.hotspotsEnabled =
             self.enabled && self.itemIdentifiers.count > 0 &&
@@ -568,6 +653,8 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     BOOL active = self.enabled && self.itemIdentifiers.count > 0;
     self.guardGesture.enabled = active && !self.wheelPinned;
     self.openerGesture.enabled = active && !self.wheelPinned;
+    self.floatingGuardGesture.enabled = active && !self.wheelPinned;
+    self.floatingOpenerGesture.enabled = active && !self.wheelPinned;
     self.modalGesture.enabled = active && self.wheelPinned;
     self.hotspotWindow.hotspotsEnabled =
         active && !self.usesSystemGestureManager && !self.wheelPinned;
@@ -593,14 +680,30 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.hotspotWindow.frame = bounds;
     self.hotspotWindow.rootViewController.view.frame =
         CGRectMake(0.0, 0.0, bounds.size.width, bounds.size.height);
-    if (!FLMLandscapeModuleIsLandscape()) {
+    BOOL landscape = FLMLandscapeModuleIsLandscape();
+    BOOL active = self.enabled && self.itemIdentifiers.count > 0;
+    if (!landscape) {
         self.overlayWindow.hidden = YES;
         self.hotspotWindow.hotspotsEnabled = NO;
         self.guardGesture.enabled = NO;
         self.openerGesture.enabled = NO;
+        self.floatingGuardGesture.enabled = NO;
+        self.floatingOpenerGesture.enabled = NO;
         self.modalGesture.enabled = NO;
         self.wheelPinned = NO;
+        return;
     }
+    // SpringBoard normally starts in portrait and rotates later.  The old
+    // integrated controller refreshed these gates on every frame update; the
+    // standalone package used to disable them in portrait and never turn them
+    // back on, leaving the horizontal wheel permanently dead until respring.
+    self.guardGesture.enabled = active && !self.wheelPinned;
+    self.openerGesture.enabled = active && !self.wheelPinned;
+    self.floatingGuardGesture.enabled = active && !self.wheelPinned;
+    self.floatingOpenerGesture.enabled = active && !self.wheelPinned;
+    self.modalGesture.enabled = active && self.wheelPinned;
+    self.hotspotWindow.hotspotsEnabled =
+        active && !self.usesSystemGestureManager && !self.wheelPinned;
 }
 
 - (void)orientationDidChange:(NSNotification *)notification {
@@ -634,10 +737,12 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     BOOL fromRight = NO;
     BOOL inside = FLMLandscapeModulePointInsideCornerTrigger(
         point, context.visualBounds, &fromRight);
-    if (gestureRecognizer == self.guardGesture) {
+    if (gestureRecognizer == self.guardGesture ||
+        gestureRecognizer == self.floatingGuardGesture) {
         return !self.wheelPinned && inside;
     }
-    if (gestureRecognizer == self.openerGesture) {
+    if (gestureRecognizer == self.openerGesture ||
+        gestureRecognizer == self.floatingOpenerGesture) {
         if (self.wheelPinned || !inside || self.itemIdentifiers.count == 0) {
             return NO;
         }
@@ -660,9 +765,13 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
         (UIGestureRecognizer *)otherGestureRecognizer {
     BOOL isWheelGesture = gestureRecognizer == self.guardGesture ||
                           gestureRecognizer == self.openerGesture ||
+                          gestureRecognizer == self.floatingGuardGesture ||
+                          gestureRecognizer == self.floatingOpenerGesture ||
                           gestureRecognizer == self.modalGesture;
     BOOL isOtherWheelGesture = otherGestureRecognizer == self.guardGesture ||
                                otherGestureRecognizer == self.openerGesture ||
+                               otherGestureRecognizer == self.floatingGuardGesture ||
+                               otherGestureRecognizer == self.floatingOpenerGesture ||
                                otherGestureRecognizer == self.modalGesture;
     return isWheelGesture && isOtherWheelGesture;
 }
@@ -719,6 +828,8 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.wheelPinned = NO;
     self.guardGesture.enabled = NO;
     self.openerGesture.enabled = YES;
+    self.floatingGuardGesture.enabled = NO;
+    self.floatingOpenerGesture.enabled = YES;
     self.modalGesture.enabled = NO;
     self.hotspotWindow.hotspotsEnabled = NO;
 
@@ -890,6 +1001,8 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.wheelPinned = YES;
     self.guardGesture.enabled = NO;
     self.openerGesture.enabled = NO;
+    self.floatingGuardGesture.enabled = NO;
+    self.floatingOpenerGesture.enabled = NO;
     self.modalGesture.enabled = YES;
     self.overlayTap.enabled = !self.usesSystemGestureManager;
     self.overlayWindow.userInteractionEnabled = !self.usesSystemGestureManager;
@@ -911,6 +1024,10 @@ static void FLMLandscapePreferencesChanged(CFNotificationCenterRef center,
     self.wheelGestureActive = NO;
     self.guardGesture.enabled = self.enabled && self.itemIdentifiers.count > 0;
     self.openerGesture.enabled = self.enabled && self.itemIdentifiers.count > 0;
+    self.floatingGuardGesture.enabled = self.enabled &&
+                                        self.itemIdentifiers.count > 0;
+    self.floatingOpenerGesture.enabled = self.enabled &&
+                                         self.itemIdentifiers.count > 0;
     self.modalGesture.enabled = NO;
     self.overlayTap.enabled = NO;
     self.overlayWindow.userInteractionEnabled = NO;
