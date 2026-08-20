@@ -216,6 +216,7 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
         FLMLandscapeKeyboardRootViewController *rootController =
             [[FLMLandscapeKeyboardRootViewController alloc] init];
         rootController.view.backgroundColor = [UIColor clearColor];
+        rootController.view.userInteractionEnabled = YES;
         window.rootViewController = rootController;
         SEL autorotationSelector =
             NSSelectorFromString(@"setAutorotates:forceUpdateInterfaceOrientation:");
@@ -227,7 +228,12 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
         self.forwardingWindow = window;
     }
     window.frame = bounds;
-    window.rootViewController.view.frame = window.bounds;
+    window.bounds = CGRectMake(0.0, 0.0,
+                               CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+    window.rootViewController.view.transform = CGAffineTransformIdentity;
+    window.rootViewController.view.bounds = window.bounds;
+    window.rootViewController.view.center = CGPointMake(
+        CGRectGetMidX(window.bounds), CGRectGetMidY(window.bounds));
     window.windowLevel = self.cardWindow.windowLevel + 1.0;
 }
 
@@ -399,15 +405,18 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
     self.cardInteractive = YES;
+    if (!cardWindow.isKeyWindow) {
+        [cardWindow makeKeyWindow];
+    }
     [self prepareForwardingWindowIfNeeded];
     [self writeSharedStateAndPublishTokens];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard route-begin app=%@ scene=%@ session=%llu outer=%@ cardKey=%d",
+        @"sb landscape-keyboard route-begin app=%@ scene=%@ session=%llu outer=%@ cardKey=%d cardLevel=%.1f policy=external-host-only",
         identifier,
         FLMLandscapeKeyboardSceneIdentifier(scene) ?: @"<none>",
         (unsigned long long)session,
         NSStringFromCGRect(FLMLandscapeModuleVisualBounds()),
-        cardWindow.isKeyWindow);
+        cardWindow.isKeyWindow, cardWindow.windowLevel);
 }
 
 - (void)updateCardFrame:(CGRect)cardFrame
@@ -728,12 +737,13 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     [hostView layoutIfNeeded];
     if (self.keyboardVisible) {
         self.forwardingWindow.keyboardInteractionFrame = self.keyboardFrame;
+        self.forwardingWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
         [self.forwardingWindow makeKeyAndVisible];
     } else {
         self.forwardingWindow.hidden = YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d forwardingKey=%d level=%.1f pairingPropagated=%d",
+        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d forwardingKey=%d level=%.1f pairingPropagated=%d route=external-full-display cardHost=0",
         (__bridge void *)hostView, NSStringFromCGRect(hostView.frame),
         (unsigned long long)self.sessionGeneration, self.keyboardVisible,
         self.forwardingWindow.isKeyWindow, self.forwardingWindow.windowLevel,
@@ -765,7 +775,13 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     self.forwardingWindow.keyboardInteractionFrame = self.keyboardFrame;
     if (self.keyboardHostView &&
         self.keyboardHostSessionGeneration == self.sessionGeneration) {
+        self.forwardingWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
         [self.forwardingWindow makeKeyAndVisible];
+    } else {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard frame-visible waiting-host session=%llu forwardingLevel=%.1f",
+            (unsigned long long)self.sessionGeneration,
+            self.forwardingWindow.windowLevel);
     }
     [self writeSharedStateAndPublishTokens];
     FLMEnqueueDiagnosticLine(

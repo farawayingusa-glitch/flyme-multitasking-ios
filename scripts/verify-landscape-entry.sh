@@ -58,26 +58,27 @@ if grep -Fq -- '- (void)activateIdentifier:' "$wheel"; then
     echo "landscape wheel must not own application launch" >&2
     exit 1
 fi
-grep -Fq -- '- (BOOL)prewarmIdentifier:' "$module"
+grep -Fq -- '- (BOOL)activateIdentifierInForeground:' "$module"
 
-# Opening a card follows the frozen portrait ownership model: SpringBoard's
-# card window is key, the target is prewarmed suspended, and only its hosted
-# Scene is activated. The real Workspace must remain with the current app.
+# Opening a card is a real foreground activation. The full-display SpringBoard
+# card remains the key/highest interaction boundary while the target Scene is
+# brought to the foreground behind it.
 window_body="$(sed -n '/^@implementation FLMLandscapeWindow/,/^@end/p' "$module")"
 grep -Fq -- '- (BOOL)canBecomeKeyWindow' <<<"$window_body"
 grep -Fq 'return YES;' <<<"$window_body"
+grep -Fq -- '- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event' <<<"$window_body"
 open_body="$(sed -n '/^- (void)openIdentifier:(NSString \*)identifier {/,/^- (void)lockTimerFired:/p' "$module")"
 grep -Fq '[self.window makeKeyAndVisible];' <<<"$open_body"
-prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:(NSString \*)identifier {/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
-grep -Fq 'suspended:YES' <<<"$prewarm_body"
-grep -Fq 'workspaceTransition=0' <<<"$prewarm_body"
-if grep -Fq 'suspended:NO' <<<"$prewarm_body" ||
-   grep -Fq 'SBMainWorkspace' <<<"$prewarm_body" ||
-   grep -Fq 'openApplicationWithBundleID:' <<<"$prewarm_body"; then
-    echo "card-open path still promotes the target into Workspace" >&2
+foreground_body="$(sed -n '/^- (BOOL)activateIdentifierInForeground:(NSString \*)identifier {/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
+grep -Fq 'suspended:NO' <<<"$foreground_body"
+grep -Fq 'openApplicationWithBundleID:' <<<"$foreground_body"
+grep -Fq 'workspaceTransition=1' <<<"$foreground_body"
+if grep -Fq 'suspended:YES' <<<"$foreground_body"; then
+    echo "card-open path regressed to suspended-only target activation" >&2
     exit 1
 fi
-grep -Fq 'mode=suspended-prewarm-hosted-portrait' "$module"
+grep -Fq 'mode=foreground-exclusive-hosted-portrait' "$module"
+grep -Fq 'workspaceOwner=target' "$module"
 grep -Fq 'keyboardOwner=system-bridge' "$module"
 grep -Fq 'gated=orientation' "$module"
 grep -Fq 'action=retry' "$module"
@@ -125,14 +126,19 @@ grep -Fq '[hostView convertPoint:screenPoint fromView:rootView]' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
 grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
 
-# Landscape borrows the two already-registered portrait system gestures. This
-# gives backdrop taps and collapsed-card drags ownership above the foreground
-# application Scene without installing a duplicate private-system recognizer.
+# Landscape retains the two already-registered portrait recognizers only as a
+# compatibility lease. The full-display window uses local UIKit recognizers so
+# backdrop taps, the white-bar swipe, and dock dragging cannot lose ownership.
 grep -Fq 'floatingExclusiveGesture' "$module"
 grep -Fq 'floatingDockInputGesture' "$module"
 grep -Fq 'landscape-card-global-route active' "$module"
-grep -Fq 'policy=borrow-existing-system-gestures' "$module"
-grep -Fq 'policy=portrait-state-parity' "$module"
+grep -Fq 'policy=window-exclusive-local-gestures' "$module"
+grep -Fq 'exclusiveBackdropView' "$module"
+grep -Fq 'dockInteractionShield' "$module"
+grep -Fq 'handleDockPan:' "$module"
+grep -Fq 'handleDockTap:' "$module"
+grep -Fq 'self.dockPan.enabled = docked;' "$module"
+grep -Fq 'self.outsideTap.enabled = interactive' "$module"
 grep -Fq 'FLMLandscapeCardOwnsSharedGesture' "$adapter"
 grep -Fq 'FLMLandscapeCardShouldReceiveSharedTouch' "$adapter"
 grep -Fq 'FLMLandscapeCardShouldBeginSharedGesture' "$adapter"
@@ -157,8 +163,10 @@ grep -Fq 'self.dockedOnRight = cardMidX > displayMidX;' "$module"
 grep -Fq 'tiePolicy=left verticalPolicy=fixed-top' "$module"
 grep -Fq 'if (self.dockedCard)' "$module"
 grep -Fq '[self promoteToFullscreen];' "$module"
-grep -Fq 'FLMLandscapeHandleBarLength = 42.0;' "$module"
+grep -Fq 'FLMLandscapeHandleBarLength = 44.0;' "$module"
 grep -Fq 'FLMLandscapeHandleGap = 10.0;' "$module"
+grep -Fq 'safeArea.top + FLMLandscapeDockTopMargin' "$module"
+grep -Fq 'safeArea.left' "$module"
 grep -Fq 'usingSpringWithDamping:FLMLandscapeSpringDamping' "$module"
 grep -Fq 'self.handlePanInteractive = YES;' "$module"
 if [[ "$(grep -Fc 'UIView *bar = [[UIView alloc] initWithFrame:CGRectZero];' "$module")" -ne 1 ]] ||
@@ -203,6 +211,8 @@ grep -Fq 'UIInterfaceOrientationMaskLandscape' "$keyboard_bridge"
 grep -Fq 'method_setImplementation' "$keyboard_bridge"
 grep -Fq 'policy=continue-native-host' "$keyboard_bridge"
 grep -Fq 'pairingPropagated' "$keyboard_bridge"
+grep -Fq 'route=external-full-display cardHost=0' "$keyboard_bridge"
+grep -Fq 'policy=external-host-only' "$keyboard_bridge"
 grep -Fq 'FLMLandscapeKeyboardBridgeContainsVisualPoint' "$keyboard_bridge"
 if grep -Fq 'if (![self applyKeyboardScenePairing' "$keyboard_bridge"; then
     echo "keyboard pairing propagation must not hard-gate native host attachment" >&2

@@ -22,8 +22,14 @@ static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
 static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;
 static const CGFloat FLMLandscapeHandleWidth = 44.0;
 static const CGFloat FLMLandscapeHandleBarWidth = 5.0;
-static const CGFloat FLMLandscapeHandleBarLength = 42.0;
+// Portrait's hidden handle is 44 x 5 pt. Keep the same physical affordance
+// after rotating the display; only its axis changes in landscape.
+static const CGFloat FLMLandscapeHandleBarLength = 44.0;
 static const CGFloat FLMLandscapeHandleGap = 10.0;
+// Tweak.xm reserves Alert+120 for the wheel hotspot. The landscape ownership
+// surface must sit above that arbitration window, while the native keyboard
+// bridge is placed one level above this surface.
+static const CGFloat FLMLandscapeExclusiveWindowLevelOffset = 121.0;
 static const CGFloat FLMLandscapeSwipeThreshold = 32.0;
 static const CGFloat FLMLandscapeTapMovementThreshold = 8.0;
 static const CGFloat FLMLandscapeFastSwipeVelocity = 320.0;
@@ -118,6 +124,7 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
 @interface FLMLandscapeModule : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, strong) FLMLandscapeWindow *window;
 @property(nonatomic, strong) FLMLandscapeRootView *rootView;
+@property(nonatomic, strong) UIView *exclusiveBackdropView;
 @property(nonatomic, strong) UIView *cardView;
 // The application presentation host stays a native full-screen landscape
 // surface. This wrapper is the only layer allowed to carry the card's visual
@@ -127,8 +134,11 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
 @property(nonatomic, strong) UIView *handleView;
 @property(nonatomic, strong) UIView *handleBar;
 @property(nonatomic, strong) UIView *launchCoverView;
+@property(nonatomic, strong) UIView *dockInteractionShield;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
 @property(nonatomic, strong) UIPanGestureRecognizer *handlePan;
+@property(nonatomic, strong) UIPanGestureRecognizer *dockPan;
+@property(nonatomic, strong) UITapGestureRecognizer *dockTap;
 @property(nonatomic, weak) id sharedGestureController;
 @property(nonatomic, strong) UIGestureRecognizer *sharedBackdropGesture;
 @property(nonatomic, strong) UIGestureRecognizer *sharedDockGesture;
@@ -164,6 +174,9 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
 @property(nonatomic, assign) CGRect handlePanStartCardFrame;
 @property(nonatomic, assign) CGRect handlePanStartHandleFrame;
 @property(nonatomic, assign) BOOL handlePanInteractive;
+@property(nonatomic, assign) CGRect dockPanStartCardFrame;
+@property(nonatomic, assign) CGRect dockPanStartHandleFrame;
+@property(nonatomic, assign) BOOL dockPanInteractive;
 @property(nonatomic, assign) FLMLandscapeInteractionDomain interactionDomain;
 @property(nonatomic, assign) FLMLandscapeTouchContext interactionTouchContext;
 @property(nonatomic, assign) CGPoint interactionStartPoint;
@@ -171,13 +184,15 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
 @property(nonatomic, assign) CGRect interactionStartHandleFrame;
 @property(nonatomic, assign) CFTimeInterval interactionStartedAt;
 @property(nonatomic, assign) BOOL started;
+@property(nonatomic, assign) BOOL foregroundActivationRequested;
+@property(nonatomic, assign) NSTimeInterval foregroundActivationLastAttemptAt;
 @property(nonatomic, copy) NSString *queuedIdentifier;
 + (instancetype)sharedModule;
 - (void)start;
 - (void)updateFrames;
 - (void)orientationDidChange;
 - (void)openIdentifier:(NSString *)identifier;
-- (BOOL)prewarmIdentifier:(NSString *)identifier;
+- (BOOL)activateIdentifierInForeground:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
 - (void)refreshSceneForeground;
 - (BOOL)validateHostGeometry;
@@ -200,7 +215,10 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
                            context:(FLMLandscapeTouchContext)context;
 - (void)updateInteractionForPoint:(CGPoint)point;
 - (void)finishInteractionForGesture:(UIGestureRecognizer *)gesture
-                               point:(CGPoint)point;
+                                point:(CGPoint)point;
+- (void)configureLocalInteractionState;
+- (void)handleDockPan:(UIPanGestureRecognizer *)gesture;
+- (void)handleDockTap:(UITapGestureRecognizer *)gesture;
 - (CGRect)expandedCardFrame;
 - (CGRect)dockedCardFrameOnRight:(BOOL)onRight;
 - (void)dockCardAnimated:(BOOL)animated;
@@ -617,40 +635,78 @@ UIInterfaceOrientation FLMLandscapeModuleVisualOrientation(void) {
 }
 
 UIEdgeInsets FLMLandscapeModuleVisualSafeAreaInsets(void) {
-    UIEdgeInsets result = UIEdgeInsetsZero;
     UIWindowScene *scene = FLMLandscapeWindowScene();
-    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
-    if (scene) {
-        [windows addObjectsFromArray:scene.windows];
-    }
     UIWindow *moduleWindow = [FLMLandscapeModule sharedModule].window;
-    if (moduleWindow && ![windows containsObject:moduleWindow]) {
-        [windows addObject:moduleWindow];
-    }
-
-    // The module window is sometimes the only window whose safe-area has
-    // already settled when the first landscape touch arrives. Include it
-    // explicitly, then use the largest edge reported by the scene windows so
-    // the notch inset is still available while SpringBoard is transitioning.
-    for (UIWindow *window in windows) {
-        if (![window isKindOfClass:[UIWindow class]]) {
+    // Do not union portrait and landscape windows. The old max-per-edge merge
+    // turned a portrait {top=47,bottom=34} inset into a bogus landscape
+    // {top=47,left=47,bottom=34,right=47} inset, which put the dock/handle in
+    // the wrong coordinate space around the notch.
+    UIWindow *(^landscapeWindow)(UIWindow *) = ^UIWindow *(UIWindow *window) {
+        if (!window || window.hidden || CGRectGetWidth(window.bounds) <=
+                            CGRectGetHeight(window.bounds)) {
+            return nil;
+        }
+        return window;
+    };
+    UIEdgeInsets result = UIEdgeInsetsZero;
+    BOOL foundLandscapeWindow = NO;
+    UIWindow *preferred = landscapeWindow(moduleWindow);
+    NSArray<UIWindow *> *sceneWindows = scene ? scene.windows : @[];
+    NSArray<UIWindow *> *candidates = preferred
+        ? [@[preferred] arrayByAddingObjectsFromArray:sceneWindows]
+        : sceneWindows;
+    for (UIWindow *window in candidates) {
+        if (window == preferred && foundLandscapeWindow) {
             continue;
         }
-        UIEdgeInsets candidate = window.safeAreaInsets;
-        result.left = MAX(result.left, candidate.left);
-        result.right = MAX(result.right, candidate.right);
-        result.top = MAX(result.top, candidate.top);
-        result.bottom = MAX(result.bottom, candidate.bottom);
-        UIView *rootView = window.rootViewController.view;
+        UIWindow *landscapeCandidate = landscapeWindow(window);
+        if (!landscapeCandidate ||
+            (foundLandscapeWindow && landscapeCandidate == preferred)) {
+            continue;
+        }
+        UIEdgeInsets candidate = landscapeCandidate.safeAreaInsets;
+        UIView *rootView = landscapeCandidate.rootViewController.view;
         if (rootView) {
-            candidate = rootView.safeAreaInsets;
+            UIEdgeInsets rootInsets = rootView.safeAreaInsets;
+            candidate.left = MAX(candidate.left, rootInsets.left);
+            candidate.right = MAX(candidate.right, rootInsets.right);
+            candidate.top = MAX(candidate.top, rootInsets.top);
+            candidate.bottom = MAX(candidate.bottom, rootInsets.bottom);
+        }
+        if (!foundLandscapeWindow) {
+            result = candidate;
+            foundLandscapeWindow = YES;
+        } else {
+            // Combining only landscape windows preserves the physical notch
+            // inset without reintroducing portrait top/bottom values.
             result.left = MAX(result.left, candidate.left);
             result.right = MAX(result.right, candidate.right);
             result.top = MAX(result.top, candidate.top);
             result.bottom = MAX(result.bottom, candidate.bottom);
         }
     }
-    return result;
+    if (foundLandscapeWindow) {
+        return result;
+    }
+
+    // During the first rotation transaction only a portrait window may have a
+    // settled inset. Convert it conservatively: portrait top/bottom become the
+    // two landscape side insets, while portrait left/right become vertical.
+    UIEdgeInsets portraitInsets = UIEdgeInsetsZero;
+    if (moduleWindow) {
+        portraitInsets = moduleWindow.safeAreaInsets;
+        UIView *rootView = moduleWindow.rootViewController.view;
+        if (rootView) {
+            UIEdgeInsets rootInsets = rootView.safeAreaInsets;
+            portraitInsets.top = MAX(portraitInsets.top, rootInsets.top);
+            portraitInsets.left = MAX(portraitInsets.left, rootInsets.left);
+            portraitInsets.bottom = MAX(portraitInsets.bottom, rootInsets.bottom);
+            portraitInsets.right = MAX(portraitInsets.right, rootInsets.right);
+        }
+    }
+    CGFloat horizontal = MAX(portraitInsets.top, portraitInsets.bottom);
+    CGFloat vertical = MAX(portraitInsets.left, portraitInsets.right);
+    return UIEdgeInsetsMake(vertical, horizontal, vertical, horizontal);
 }
 
 static CGRect FLMLandscapeFixedCoordinateBounds(UIScreen *screen) {
@@ -860,7 +916,12 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
                                                        NULL)) {
             return self;
         }
-        return nil;
+        // The landscape card is a modal, full-display surface. The old
+        // pass-through branch returned nil here, which handed every backdrop
+        // touch to the application underneath and made the card non-exclusive.
+        // Keep the property for compatibility with older callers, but return
+        // the root view so the local outside-tap recognizer owns the stream.
+        return self;
     }
     if (hit) {
         return hit;
@@ -873,10 +934,20 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
 @implementation FLMLandscapeWindow
 
 - (BOOL)canBecomeKeyWindow {
-    // Match the proven portrait Presenter path. SpringBoard owns the physical
-    // card and its gesture routing while the remote application keeps the
-    // responder chain of its active hosted Scene.
+    // The card is the only interactive surface while it is visible. The
+    // application Scene is hosted inside it, but the full-display SpringBoard
+    // window remains the key owner of backdrop, handle and dock touches.
     return YES;
+}
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (!hit && !self.hidden && self.rootViewController.view.userInteractionEnabled) {
+        // A transparent root must still be an ownership boundary. Never let a
+        // miss in the custom view tree fall through to the app window below.
+        return self.rootViewController.view;
+    }
+    return hit;
 }
 
 @end
@@ -1022,10 +1093,13 @@ static NSString *FLMLandscapeInteractionDomainName(
         ? [[FLMLandscapeWindow alloc] initWithWindowScene:scene]
         : [[FLMLandscapeWindow alloc] initWithFrame:bounds];
     window.frame = bounds;
-    // Keep the visual card below the native keyboard surface. The keyboard
-    // bridge uses a dedicated full-display window one level above this card.
-    window.windowLevel = UIWindowLevelAlert + 92.0;
+    // This is a full-display modal ownership window, not a small floating
+    // window. Keep it at the same high SpringBoard level used by the portrait
+    // dock gate; the native keyboard bridge is placed one level above it.
+    window.windowLevel = UIWindowLevelAlert +
+                         FLMLandscapeExclusiveWindowLevelOffset;
     window.backgroundColor = [UIColor clearColor];
+    window.userInteractionEnabled = YES;
     FLMLandscapeRootViewController *controller =
         [[FLMLandscapeRootViewController alloc] init];
     FLMLandscapeRootView *root =
@@ -1034,6 +1108,15 @@ static NSString *FLMLandscapeInteractionDomainName(
     controller.view = root;
     window.rootViewController = controller;
     window.hidden = YES;
+
+    // A transparent full-screen view is intentional: it consumes backdrop
+    // touches so another application cannot receive input through the card.
+    // The outside-tap recognizer is attached to the root and excludes the
+    // card/handle descendants, so a single tap here closes the expanded card.
+    UIView *exclusiveBackdrop = [[UIView alloc] initWithFrame:bounds];
+    exclusiveBackdrop.backgroundColor = [UIColor clearColor];
+    exclusiveBackdrop.userInteractionEnabled = YES;
+    [root addSubview:exclusiveBackdrop];
 
     UIView *card = [[UIView alloc] initWithFrame:CGRectZero];
     card.backgroundColor = [UIColor blackColor];
@@ -1051,8 +1134,17 @@ static NSString *FLMLandscapeInteractionDomainName(
     UIView *cover = [[UIView alloc] initWithFrame:CGRectZero];
     cover.backgroundColor = [UIColor secondarySystemBackgroundColor];
     cover.hidden = YES;
-    cover.userInteractionEnabled = NO;
+    cover.userInteractionEnabled = YES;
     [card addSubview:cover];
+
+    // Docked mode must have an in-window drag owner. The private global
+    // recognizer remains disabled while this full-screen window is active;
+    // relying on it alone loses the touch stream as the card crosses Scenes.
+    UIView *dockShield = [[UIView alloc] initWithFrame:CGRectZero];
+    dockShield.backgroundColor = [UIColor clearColor];
+    dockShield.hidden = YES;
+    dockShield.userInteractionEnabled = NO;
+    [card addSubview:dockShield];
 
     UIView *handle = [[UIView alloc] initWithFrame:CGRectZero];
     handle.backgroundColor = [UIColor clearColor];
@@ -1078,16 +1170,36 @@ static NSString *FLMLandscapeInteractionDomainName(
     pan.maximumNumberOfTouches = 1;
     [handle addGestureRecognizer:pan];
 
+    UIPanGestureRecognizer *dockPan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleDockPan:)];
+    dockPan.cancelsTouchesInView = YES;
+    dockPan.maximumNumberOfTouches = 1;
+    dockPan.enabled = NO;
+    [dockShield addGestureRecognizer:dockPan];
+
+    UITapGestureRecognizer *dockTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleDockTap:)];
+    dockTap.cancelsTouchesInView = YES;
+    dockTap.enabled = NO;
+    [dockTap requireGestureRecognizerToFail:dockPan];
+    [dockShield addGestureRecognizer:dockTap];
+
     self.window = window;
     self.rootView = root;
+    self.exclusiveBackdropView = exclusiveBackdrop;
     self.cardView = card;
     self.hostPresentationView = hostPresentation;
     self.hostView = nil;
     self.handleView = handle;
     self.handleBar = bar;
     self.launchCoverView = cover;
+    self.dockInteractionShield = dockShield;
     self.outsideTap = outsideTap;
     self.handlePan = pan;
+    self.dockPan = dockPan;
+    self.dockTap = dockTap;
     root.cardView = card;
     root.handleView = handle;
 }
@@ -1104,10 +1216,10 @@ static NSString *FLMLandscapeInteractionDomainName(
         FLMLandscapeSharedGestureValue(controller,
                                        @"floatingDockInputGesture");
     if (!controller || !backdrop || !dock) {
-        self.outsideTap.enabled = YES;
-        self.handlePan.enabled = YES;
+        self.rootView.passesTouchesOutsideControls = NO;
+        [self configureLocalInteractionState];
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-card-global-route unavailable controller=%d backdrop=%d dock=%d fallback=window",
+            @"sb landscape-card-global-route unavailable controller=%d backdrop=%d dock=%d policy=window-exclusive-local-fallback",
             controller != nil, backdrop != nil, dock != nil);
         return;
     }
@@ -1122,11 +1234,13 @@ static NSString *FLMLandscapeInteractionDomainName(
     dock.enabled = NO;
     self.sharedInteractionActive = YES;
     [self refreshSharedInteractionGestureState];
-    self.rootView.passesTouchesOutsideControls = YES;
-    self.outsideTap.enabled = NO;
-    self.handlePan.enabled = NO;
+    // The full-display card window owns the touch stream now. Keep the
+    // already-registered portrait recognizers disabled so they cannot race the
+    // local handle/dock recognizers or reopen the wheel underneath the card.
+    self.rootView.passesTouchesOutsideControls = NO;
+    [self configureLocalInteractionState];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-card-global-route active controller=%@ backdrop=%p dock=%p previous=%d/%d policy=borrow-existing-system-gestures",
+        @"sb landscape-card-global-route active controller=%@ backdrop=%p dock=%p previous=%d/%d policy=window-exclusive-local-gestures",
         NSStringFromClass([controller class]), (__bridge void *)backdrop,
         (__bridge void *)dock, self.sharedBackdropPreviouslyEnabled,
         self.sharedDockPreviouslyEnabled);
@@ -1136,15 +1250,13 @@ static NSString *FLMLandscapeInteractionDomainName(
     if (!self.sharedInteractionActive) {
         return;
     }
-    // Match the frozen portrait arbitration: the expanded card lends only the
-    // exclusive recognizer (backdrop + handle), while docked/hidden states lend
-    // only the dock-input recognizer. Keeping both live can let the private
-    // system manager arbitrate an application-content touch twice.
-    BOOL collapsed = self.dockedCard || self.hiddenCard;
-    self.sharedBackdropGesture.enabled = !collapsed;
-    self.sharedDockGesture.enabled = collapsed;
+    // The private recognizers are retained only as a compatibility lease for
+    // the portrait controller. A full-screen landscape window now owns every
+    // touch locally, so neither recognizer may arbitrate a second stream.
+    self.sharedBackdropGesture.enabled = NO;
+    self.sharedDockGesture.enabled = NO;
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-card-global-route state=%@ backdrop=%d dock=%d policy=portrait-state-parity",
+        @"sb landscape-card-global-route state=%@ backdrop=%d dock=%d policy=window-exclusive-local-gestures",
         self.hiddenCard ? @"hidden" : (self.dockedCard ? @"docked" : @"expanded"),
         self.sharedBackdropGesture.enabled,
         self.sharedDockGesture.enabled);
@@ -1172,10 +1284,29 @@ static NSString *FLMLandscapeInteractionDomainName(
     self.interactionDomain = FLMLandscapeInteractionDomainNone;
     self.interactionTouchContext = (FLMLandscapeTouchContext){
         NO, UIInterfaceOrientationUnknown, CGRectZero, CGRectZero};
-    self.rootView.passesTouchesOutsideControls =
-        self.dockedCard || self.hiddenCard;
-    self.outsideTap.enabled = self.hasVisibleCard && !self.closing;
-    self.handlePan.enabled = self.hasVisibleCard && !self.closing;
+    self.rootView.passesTouchesOutsideControls = NO;
+    [self configureLocalInteractionState];
+}
+
+- (void)configureLocalInteractionState {
+    BOOL visible = self.window && !self.window.hidden &&
+                   self.identifier.length > 0;
+    BOOL interactive = visible && !self.closing &&
+                       !self.fullscreenPromotionInProgress;
+    BOOL docked = interactive && self.dockedCard && !self.hiddenCard;
+
+    // Keep the transparent backdrop interactive for the entire visible
+    // lifetime, including the close animation. This is the actual modal
+    // barrier that prevents the previous application from receiving touches.
+    self.exclusiveBackdropView.userInteractionEnabled = visible;
+    self.rootView.userInteractionEnabled = visible;
+    self.dockInteractionShield.hidden = !docked;
+    self.dockInteractionShield.userInteractionEnabled = docked;
+    self.dockPan.enabled = docked;
+    self.dockTap.enabled = docked;
+    self.handlePan.enabled = interactive;
+    self.outsideTap.enabled = interactive && !self.dockedCard &&
+                              !self.hiddenCard;
 }
 
 - (BOOL)ownsSharedGesture:(UIGestureRecognizer *)gesture
@@ -1602,6 +1733,8 @@ static NSString *FLMLandscapeInteractionDomainName(
     self.expectedHostBounds = FLMLandscapePortraitSceneBounds();
     self.expectedHostGeneration = self.generation;
     self.expectedHostSceneIdentifier = nil;
+    self.foregroundActivationRequested = NO;
+    self.foregroundActivationLastAttemptAt = 0.0;
     self.dockedCard = NO;
     self.hiddenCard = NO;
     self.dockedOnRight = NO;
@@ -1641,15 +1774,15 @@ static NSString *FLMLandscapeInteractionDomainName(
         NSStringFromCGRect(self.displayBounds),
         (long)self.displayOrientation);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-module-open app=%@ generation=%lu bounds=%@ orientation=%ld card=%@ safeAreaLeft=%.1f safeAreaRight=%.1f",
+        @"sb landscape-module-open app=%@ generation=%lu authoritySurface=%@ visualCard=%@ orientation=%ld policy=visual-small-window-system-full-display safeAreaLeft=%.1f safeAreaRight=%.1f",
         self.identifier, (unsigned long)self.generation,
-        NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
-        NSStringFromCGRect(target), safeArea.left, safeArea.right);
-    [self prewarmIdentifier:self.identifier];
+        NSStringFromCGRect(self.displayBounds), NSStringFromCGRect(target),
+        (long)self.displayOrientation, safeArea.left, safeArea.right);
+    [self activateIdentifierInForeground:self.identifier];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-bootstrap app=%@ generation=%lu mode=suspended-prewarm-hosted-portrait cardWindowKey=%d workspaceOwner=unchanged keyboardOwner=system-bridge",
+        @"sb landscape-scene-bootstrap app=%@ generation=%lu mode=foreground-exclusive-hosted-portrait cardWindowKey=%d workspaceOwner=target keyboardOwner=system-bridge windowLevel=%.1f",
         self.identifier, (unsigned long)self.generation,
-        self.window.isKeyWindow);
+        self.window.isKeyWindow, self.window.windowLevel);
     [self.lockTimer invalidate];
     self.lockTimer = [NSTimer timerWithTimeInterval:0.25
                                              target:self
@@ -1680,6 +1813,11 @@ static NSString *FLMLandscapeInteractionDomainName(
                 foregroundDrifted, (long)activationState,
                 FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
             [self refreshSceneForeground];
+            if (foregroundDrifted &&
+                CACurrentMediaTime() - self.foregroundActivationLastAttemptAt >=
+                    1.0) {
+                [self activateIdentifierInForeground:self.identifier];
+            }
         }
         [self validateHostGeometry];
     }
@@ -1697,27 +1835,64 @@ static NSString *FLMLandscapeInteractionDomainName(
     }
 }
 
-- (BOOL)prewarmIdentifier:(NSString *)identifier {
+- (BOOL)activateIdentifierInForeground:(NSString *)identifier {
     if (identifier.length == 0) {
         return NO;
     }
-    UIApplication *application = [UIApplication sharedApplication];
-    BOOL prewarmRequested = NO;
-    if ([application respondsToSelector:
-                         @selector(launchApplicationWithIdentifier:suspended:)]) {
-        // Create the normal primary Scene without committing a Workspace
-        // transition. prepareScene: activates that exact Scene for Presenter
-        // rendering while the current landscape app remains frontmost.
-        prewarmRequested =
-            [application launchApplicationWithIdentifier:identifier
-                                                suspended:YES];
+    if (self.foregroundActivationRequested &&
+        CACurrentMediaTime() - self.foregroundActivationLastAttemptAt < 1.0) {
+        return YES;
     }
+    NSString *frontmostBefore =
+        [FLMLandscapeFrontmostApplicationIdentifier() copy];
+    UIApplication *application = [UIApplication sharedApplication];
+    BOOL foregroundRequested = NO;
+    if ([application respondsToSelector:
+                          @selector(launchApplicationWithIdentifier:suspended:)]) {
+        // This must be a real foreground activation. A suspended primary Scene
+        // can render into the card, but it leaves the previous application
+        // frontmost and lets its touch stream remain reachable underneath.
+        foregroundRequested =
+            [application launchApplicationWithIdentifier:identifier
+                                                suspended:NO];
+    }
+    if (!foregroundRequested) {
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = nil;
+        if (workspaceClass &&
+            [workspaceClass respondsToSelector:@selector(defaultWorkspace)]) {
+            id (*getWorkspace)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            workspace = getWorkspace((id)workspaceClass,
+                                     @selector(defaultWorkspace));
+        }
+        if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)]) {
+            BOOL (*openApplication)(id, SEL, NSString *) =
+                (BOOL (*)(id, SEL, NSString *))objc_msgSend;
+            foregroundRequested =
+                openApplication(workspace,
+                                @selector(openApplicationWithBundleID:),
+                                identifier);
+        }
+    }
+    self.foregroundActivationRequested = YES;
+    self.foregroundActivationLastAttemptAt = CACurrentMediaTime();
+    // The Workspace transition belongs to the target application, but the
+    // SpringBoard card must remain the key, highest-level interaction surface.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                  (int64_t)(0.08 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (self.hasVisibleCard && !self.closing &&
+            self.identifier.length > 0 &&
+            [self.identifier isEqualToString:identifier]) {
+            [self.window makeKeyWindow];
+        }
+    });
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-prewarm app=%@ suspended=1 requested=%d frontmost=%@ cardWindowKey=%d workspaceTransition=0",
-        identifier, prewarmRequested,
-        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>",
+        @"sb landscape-scene-foreground app=%@ suspended=0 requested=%d frontmostBefore=%@ cardWindowKey=%d workspaceTransition=1 exclusive=1",
+        identifier, foregroundRequested,
+        frontmostBefore ?: @"<none>",
         self.window.isKeyWindow);
-    return prewarmRequested;
+    return foregroundRequested;
 }
 
 - (void)scheduleResolveForGeneration:(NSUInteger)generation delay:(NSTimeInterval)delay {
@@ -1826,7 +2001,7 @@ static NSString *FLMLandscapeInteractionDomainName(
     }
     if (!scene) {
         if (self.resolveAttempt == 8) {
-            [self prewarmIdentifier:self.identifier];
+            [self activateIdentifierInForeground:self.identifier];
         }
         [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
         return;
@@ -2252,9 +2427,15 @@ static NSString *FLMLandscapeInteractionDomainName(
     CGFloat rightX = CGRectGetWidth(bounds) - safeArea.right - dockWidth;
     rightX = MAX(0.0,
                  MIN(CGRectGetWidth(bounds) - dockWidth, rightX));
-    CGFloat topY = MAX(0.0,
+    CGFloat topLimit = MAX(0.0, safeArea.top + FLMLandscapeDockTopMargin);
+    CGFloat bottomLimit = CGRectGetHeight(bounds) - safeArea.bottom - dockHeight;
+    if (bottomLimit < topLimit) {
+        topLimit = MAX(0.0,
                        MIN(CGRectGetHeight(bounds) - dockHeight,
                            FLMLandscapeDockTopMargin));
+        bottomLimit = topLimit;
+    }
+    CGFloat topY = topLimit;
     return CGRectMake(floor(onRight ? rightX : leftX), floor(topY),
                       dockWidth, dockHeight);
 }
@@ -2282,12 +2463,15 @@ static NSString *FLMLandscapeInteractionDomainName(
     void (^layoutBlock)(void) = ^{
         self.cardView.frame = target;
         self.cardView.layer.cornerRadius = cornerRadius;
-        self.rootView.passesTouchesOutsideControls =
-            self.sharedInteractionActive || self.dockedCard || self.hiddenCard;
+        // Never pass backdrop touches to the application below. The root
+        // window is the modal ownership boundary in every card state.
+        self.rootView.passesTouchesOutsideControls = NO;
         self.hostView.userInteractionEnabled =
             !self.dockedCard && !self.hiddenCard;
+        self.dockInteractionShield.frame = self.cardView.bounds;
         [self layoutHandleForCardFrame:target visibleFrame:visibleFrame];
         self.launchCoverView.frame = self.cardView.bounds;
+        [self configureLocalInteractionState];
         [self layoutHost];
     };
     if (animated) {
@@ -2313,7 +2497,9 @@ static NSString *FLMLandscapeInteractionDomainName(
     BOOL barOnRightEdge = self.dockedCard && self.dockedOnRight && !hidden;
     CGFloat x = 0.0;
     if (hidden) {
-        x = 0.0;
+        // A landscape notch occupies the physical edge. Keep the hidden bar
+        // just inside the left safe inset so it remains visible and draggable.
+        x = MAX(0.0, FLMLandscapeModuleVisualSafeAreaInsets().left);
     } else if (barOnRightEdge) {
         x = CGRectGetMinX(cardFrame) - FLMLandscapeHandleGap -
             FLMLandscapeHandleWidth;
@@ -2324,10 +2510,18 @@ static NSString *FLMLandscapeInteractionDomainName(
             MIN(CGRectGetWidth(self.displayBounds) - FLMLandscapeHandleWidth,
                 x));
     CGFloat height = MAX(72.0, CGRectGetHeight(visibleFrame) * 0.32);
-    CGFloat y = CGRectGetMidY(visibleFrame) - height * 0.5;
+    UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
+    CGFloat minimumY = MAX(0.0, safeArea.top);
+    CGFloat maximumY = CGRectGetHeight(self.displayBounds) - safeArea.bottom - height;
+    if (maximumY < minimumY) {
+        minimumY = 0.0;
+        maximumY = MAX(0.0, CGRectGetHeight(self.displayBounds) - height);
+    }
+    CGFloat y = MAX(minimumY,
+                    MIN(maximumY,
+                        CGRectGetMidY(visibleFrame) - height * 0.5));
     self.handleView.frame = CGRectMake(x, floor(y), FLMLandscapeHandleWidth, height);
-    CGFloat barLength = MIN(FLMLandscapeHandleBarLength,
-                            MAX(24.0, height * 0.36));
+    CGFloat barLength = MIN(FLMLandscapeHandleBarLength, height);
     CGFloat barX = barOnRightEdge
         ? FLMLandscapeHandleWidth - FLMLandscapeHandleBarWidth
         : (hidden ? 3.0 : 0.0);
@@ -2564,6 +2758,81 @@ static NSString *FLMLandscapeInteractionDomainName(
     }
 }
 
+- (void)handleDockPan:(UIPanGestureRecognizer *)gesture {
+    if (!self.hasVisibleCard || self.closing || !self.dockedCard ||
+        self.hiddenCard || FLMLandscapeDeviceIsLocked()) {
+        return;
+    }
+    CGPoint translation = [gesture translationInView:self.rootView];
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        self.dockPanInteractive = YES;
+        self.dockPanStartCardFrame = self.cardView.frame;
+        self.dockPanStartHandleFrame = self.handleView.frame;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-card-dock-drag began card=%@ safeArea=%@",
+            NSStringFromCGRect(self.dockPanStartCardFrame),
+            NSStringFromUIEdgeInsets(FLMLandscapeModuleVisualSafeAreaInsets()));
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateChanged &&
+        self.dockPanInteractive) {
+        CGRect bounds = self.displayBounds;
+        UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
+        CGRect frame = self.dockPanStartCardFrame;
+        CGFloat minimumX = MAX(0.0, safeArea.left);
+        CGFloat maximumX = CGRectGetWidth(bounds) - safeArea.right -
+                           CGRectGetWidth(frame);
+        CGFloat minimumY = MAX(0.0, safeArea.top);
+        CGFloat maximumY = CGRectGetHeight(bounds) - safeArea.bottom -
+                           CGRectGetHeight(frame);
+        if (maximumX < minimumX) {
+            minimumX = 0.0;
+            maximumX = MAX(0.0, CGRectGetWidth(bounds) - CGRectGetWidth(frame));
+        }
+        if (maximumY < minimumY) {
+            minimumY = 0.0;
+            maximumY = MAX(0.0, CGRectGetHeight(bounds) - CGRectGetHeight(frame));
+        }
+        frame.origin.x = MAX(minimumX,
+                             MIN(maximumX,
+                                 self.dockPanStartCardFrame.origin.x +
+                                     translation.x));
+        frame.origin.y = MAX(minimumY,
+                             MIN(maximumY,
+                                 self.dockPanStartCardFrame.origin.y +
+                                     translation.y));
+        self.dockedOnRight = CGRectGetMidX(frame) > CGRectGetMidX(bounds);
+        [UIView performWithoutAnimation:^{
+            self.cardView.frame = frame;
+            self.dockInteractionShield.frame = self.cardView.bounds;
+            [self layoutHandleForCardFrame:frame visibleFrame:frame];
+            self.launchCoverView.frame = self.cardView.bounds;
+        }];
+        return;
+    }
+    if (gesture.state == UIGestureRecognizerStateEnded ||
+        gesture.state == UIGestureRecognizerStateCancelled ||
+        gesture.state == UIGestureRecognizerStateFailed) {
+        self.dockPanInteractive = NO;
+        if (gesture.state == UIGestureRecognizerStateEnded) {
+            // Release always snaps back to the deterministic safe top margin;
+            // the drag's vertical position is never persisted.
+            [self snapDockedCardAnimated:YES];
+        } else {
+            [self layoutCardAnimated:YES];
+        }
+    }
+}
+
+- (void)handleDockTap:(UITapGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateEnded ||
+        !self.hasVisibleCard || self.closing || !self.dockedCard ||
+        self.hiddenCard) {
+        return;
+    }
+    [self restoreExpandedCardAnimated:YES reason:@"dock-tap"];
+}
+
 - (void)beginExpandedKeyboardSessionIfPossible {
     if (self.keyboardSessionGeneration != 0 || !self.scene || !self.hostView ||
         self.dockedCard || self.hiddenCard || self.closing) {
@@ -2798,15 +3067,20 @@ static NSString *FLMLandscapeInteractionDomainName(
                             self.handleView.frame = CGRectZero;
                             self.handleView.alpha = 1.0;
                             self.handleView.transform = CGAffineTransformIdentity;
-                            self.handlePan.enabled = YES;
-                            self.outsideTap.enabled = YES;
+                            self.dockInteractionShield.hidden = YES;
+                            self.dockInteractionShield.userInteractionEnabled = NO;
+                            self.dockPan.enabled = NO;
+                            self.dockTap.enabled = NO;
                             self.identifier = nil;
                            self.dockedCard = NO;
                            self.hiddenCard = NO;
                            self.dockedOnRight = NO;
                            self.expectedHostSceneIdentifier = nil;
+                           self.foregroundActivationRequested = NO;
+                           self.foregroundActivationLastAttemptAt = 0.0;
                            self.fullscreenPromotionInProgress = NO;
                            self.closing = NO;
+                           [self configureLocalInteractionState];
                          FLMEnqueueDiagnosticLine(
                              @"sb landscape-module-close-complete generation=%lu",
                              (unsigned long)closingGeneration);
