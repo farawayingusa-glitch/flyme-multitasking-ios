@@ -13,6 +13,7 @@ TWEAK_NAME = FlymeMultitasking FlymeKeyboard FlymeRadius
 
 FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm \
     LandscapeWheel.xm LandscapeEntryAdapter.xm LandscapeModule.xm \
+    LandscapeKeyboardBridge.xm \
     LandscapeBootstrap.xm
 FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
 FlymeMultitasking_FRAMEWORKS = UIKit QuartzCore CoreGraphics

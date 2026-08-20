@@ -58,50 +58,43 @@ if grep -Fq -- '- (void)activateIdentifier:' "$wheel"; then
     echo "landscape wheel must not own application launch" >&2
     exit 1
 fi
-grep -Fq -- '- (void)activateIdentifier:' "$module"
+grep -Fq -- '- (BOOL)prewarmIdentifier:' "$module"
 
-# The card window is presentation-only and never becomes key. The target app,
-# however, must use a real foreground launch so UIKit routes the native system
-# keyboard to its full-screen landscape Scene instead of into the card.
+# Opening a card follows the frozen portrait ownership model: SpringBoard's
+# card window is key, the target is prewarmed suspended, and only its hosted
+# Scene is activated. The real Workspace must remain with the current app.
 window_body="$(sed -n '/^@implementation FLMLandscapeWindow/,/^@end/p' "$module")"
 grep -Fq -- '- (BOOL)canBecomeKeyWindow' <<<"$window_body"
-grep -Fq 'return NO;' <<<"$window_body"
-open_body="$(sed -n '/^- (void)openIdentifier:/,/^- (void)lockTimerFired:/p' "$module")"
-grep -Fq 'self.window.hidden = NO;' <<<"$open_body"
-if grep -Fq '[self.window makeKey' <<<"$open_body" ||
-   grep -Fq 'landscape-card-window key-reasserted' "$module"; then
-    echo "landscape visual card still takes key-window ownership" >&2
+grep -Fq 'return YES;' <<<"$window_body"
+open_body="$(sed -n '/^- (void)openIdentifier:(NSString \*)identifier {/,/^- (void)lockTimerFired:/p' "$module")"
+grep -Fq '[self.window makeKeyAndVisible];' <<<"$open_body"
+prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:(NSString \*)identifier {/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
+grep -Fq 'suspended:YES' <<<"$prewarm_body"
+grep -Fq 'workspaceTransition=0' <<<"$prewarm_body"
+if grep -Fq 'suspended:NO' <<<"$prewarm_body" ||
+   grep -Fq 'SBMainWorkspace' <<<"$prewarm_body" ||
+   grep -Fq 'openApplicationWithBundleID:' <<<"$prewarm_body"; then
+    echo "card-open path still promotes the target into Workspace" >&2
     exit 1
 fi
-grep -Fq 'inputOwner=application-scene' "$module"
-grep -Fq 'keyboardOwner=system' "$module"
-activate_body="$(sed -n '/^- (void)activateIdentifier:/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
-grep -Fq 'suspended:NO' <<<"$activate_body"
-grep -Fq 'SBMainWorkspace' <<<"$activate_body"
-grep -Fq 'openApplicationWithBundleID:' <<<"$activate_body"
-grep -Fq 'landscape-scene-activate' <<<"$activate_body"
-if grep -Fq 'suspended:YES' "$module"; then
-    echo "landscape startup regressed to an inactive suspended application" >&2
-    exit 1
-fi
+grep -Fq 'mode=suspended-prewarm-hosted-portrait' "$module"
+grep -Fq 'keyboardOwner=system-bridge' "$module"
 grep -Fq 'gated=orientation' "$module"
 grep -Fq 'action=retry' "$module"
 
-# A foreground launch may replace the app's primary Scene. Reacquire stale
-# handles, but never mutate a portrait client canvas. Scene, Presenter host,
-# app layout, touch input, and system keyboard share one native 844x390 space.
+# The application Scene remains a complete portrait 390x844-style canvas.
+# Only the Presenter wrapper is uniformly scaled into the landscape card.
 grep -Fq 'landscape-scene-handle-stale' "$module"
 grep -Fq 'action=reacquire' "$module"
 for retired_client_marker in \
-    'FLMLandscapePortraitCanvasWidth' \
+    'FLMLandscapeFullScreenContentWidth' \
+    'FLMLandscapeFullScreenContentHeight' \
     'FLMLandscapeSceneClientOrientation' \
     'FLMLandscapeConfigureClientOrientation' \
-    'updateClientSettingsWithBlock:' \
-    'configureParameters:' \
-    'setInterfaceOrientationChangesDisabled:' \
-    'upright-client'; do
+    'full-screen-native-landscape' \
+    'CGAffineTransformRotate(presentationTransform, rotation)'; do
     if grep -Fq "$retired_client_marker" "$module"; then
-        echo "retired mixed portrait/landscape client contract returned: $retired_client_marker" >&2
+        echo "retired native-landscape content contract returned: $retired_client_marker" >&2
         exit 1
     fi
 done
@@ -109,8 +102,8 @@ grep -Fq 'FLMLandscapeSceneSettleDelay = 0.04;' "$module"
 grep -Fq 'landscape-presenter phase=create-begin' "$module"
 grep -Fq 'landscape-presenter recovery' "$module"
 grep -Fq 'landscape-host-reveal' "$module"
-grep -Fq 'reason=non-native-host' "$module"
-grep -Fq 'action=wait-native-identity' "$module"
+grep -Fq 'reason=non-portrait-host' "$module"
+grep -Fq 'action=wait-portrait-bounds' "$module"
 prepare_body="$(sed -n '/^- (BOOL)prepareScene:/,/^- (void)layoutCardAnimated:/p' "$module")"
 if [[ "$(grep -Fc '[scene updateSettings:mutableSettings withTransitionContext:nil];' <<<"$prepare_body")" -ne 1 ]]; then
     echo "landscape Scene preparation must use one server-settings transaction" >&2
@@ -121,11 +114,13 @@ if grep -Fq 'committedSettings' <<<"$prepare_body"; then
     exit 1
 fi
 grep -Fq 'phase=post-settings-focus-complete' "$module"
-grep -Fq 'FLMLandscapeFullScreenContentWidth = 844.0;' "$module"
-grep -Fq 'FLMLandscapeFullScreenContentHeight = 390.0;' "$module"
-grep -Fq 'mode=full-screen-native visual=wrapper-only' "$module"
+grep -Fq 'FLMLandscapePortraitContentWidth = 390.0;' "$module"
+grep -Fq 'FLMLandscapePortraitContentHeight = 844.0;' "$module"
+grep -Fq 'mode=hosted-portrait-scene visual=uniform-scale' "$module"
+grep -Fq 'UIInterfaceOrientation orientation = UIInterfaceOrientationPortrait;' <<<"$prepare_body"
+grep -Fq '[mutableSettings setFrame:portraitBounds];' <<<"$prepare_body"
 grep -Fq 'hostTransform=identity' "$module"
-grep -Fq 'CGAffineTransformRotate(presentationTransform, rotation)' "$module"
+grep -Fq 'CGAffineTransformMakeScale(uniformScale, uniformScale)' "$module"
 grep -Fq '[hostView convertPoint:screenPoint fromView:rootView]' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
 grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
@@ -139,6 +134,9 @@ grep -Fq 'transition=hidden-to-docked side=physical-left' "$module"
 grep -Fq 'if (self.dockedCard)' "$module"
 grep -Fq '[self promoteToFullscreen];' "$module"
 grep -Fq 'FLMLandscapeHandleBarLength = 42.0;' "$module"
+grep -Fq 'FLMLandscapeHandleGap = 10.0;' "$module"
+grep -Fq 'usingSpringWithDamping:FLMLandscapeSpringDamping' "$module"
+grep -Fq 'self.handlePanInteractive = YES;' "$module"
 
 # Closing must first release the shared protection lease and then genuinely
 # deactivate the landscape Scene. Otherwise the next open reuses an active
@@ -150,18 +148,23 @@ grep -Fq '[scene setBackgrounded:YES];' <<<"$background_body"
 grep -Fq '[scene deactivate];' <<<"$background_body"
 grep -Fq 'landscape-scene-background' <<<"$background_body"
 
-# Landscape uses the system keyboard owned by the target Scene. A custom
-# forwarding session or standalone keyboard host must never return.
-for retired_keyboard_marker in \
-    'FLMLandscapeKeyboardRoute' \
-    'FLMLandscapeKeyboardHost' \
-    'keyboardSessionGeneration' \
-    'LandscapeKeyboard.xm'; do
-    if grep -Fq "$retired_keyboard_marker" "$wheel" "$adapter" "$module" "$makefile"; then
-        echo "retired landscape keyboard route returned: $retired_keyboard_marker" >&2
-        exit 1
-    fi
-done
+# The bridge reuses iOS' native remote Keyboard Scene; it never draws keyboard
+# keys. It must publish the existing FlymeKeyboard route and host the system
+# surface in a full-display landscape window.
+keyboard_bridge="$workspace/LandscapeKeyboardBridge.xm"
+test -f "$keyboard_bridge"
+grep -Fq 'FLMLandscapeKeyboardBridgeBegin' "$module"
+grep -Fq 'FLMLandscapeKeyboardBridgeEnd' "$module"
+grep -Fq 'FLMLandscapeKeyboardBridgeUpdateCard' "$module"
+grep -Fq 'com.codex.flymemultitasking.keyboard-state-changed' "$keyboard_bridge"
+grep -Fq 'preferredSceneHostIdentity' "$keyboard_bridge"
+grep -Fq 'FLMLandscapeKeyboardForwardingWindow' "$keyboard_bridge"
+grep -Fq 'UIInterfaceOrientationMaskLandscape' "$keyboard_bridge"
+grep -Fq 'method_setImplementation' "$keyboard_bridge"
+if grep -Eiq 'UIKeyboardLayout|UIKBTree|drawRect:|insertText:' "$keyboard_bridge"; then
+    echo "landscape bridge contains a custom keyboard implementation" >&2
+    exit 1
+fi
 
 # Horizontal sources are part of FlymeMultitasking.dylib in the same deb; a
 # separate FlymeLandscape tweak target must never return.
