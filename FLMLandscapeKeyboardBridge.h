@@ -17,6 +17,7 @@ void FLMLandscapeKeyboardBridgeUpdateCard(CGRect cardFrame,
                                           CGFloat visualScale,
                                           BOOL interactive);
 void FLMLandscapeKeyboardBridgeEnd(uint64_t sessionGeneration);
+BOOL FLMLandscapeKeyboardBridgeContainsVisualPoint(CGPoint point);
 
 NS_ASSUME_NONNULL_END
 

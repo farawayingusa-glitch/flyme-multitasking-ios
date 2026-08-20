@@ -65,4 +65,22 @@ void FLMLandscapeWheelHandleSharedGesture(
     id _Nullable wheelController,
     UIGestureRecognizer * _Nullable gestureRecognizer);
 
+// The portrait controller has already registered these two recognizers with
+// _UISystemGestureManager.  While a landscape card is visible, the additive
+// adapter lends them to the landscape card so backdrop, handle and dock
+// touches keep ownership even when another application Scene is frontmost.
+BOOL FLMLandscapeCardOwnsSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+BOOL FLMLandscapeCardShouldReceiveSharedTouch(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer,
+    UITouch * _Nullable touch);
+BOOL FLMLandscapeCardShouldBeginSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+void FLMLandscapeCardHandleSharedGesture(
+    id _Nullable wheelController,
+    UIGestureRecognizer * _Nullable gestureRecognizer);
+
 #endif

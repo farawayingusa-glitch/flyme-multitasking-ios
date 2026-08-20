@@ -11,6 +11,11 @@
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (FLMLandscapeModuleIsLandscape() &&
+        FLMLandscapeCardOwnsSharedGesture(self, gestureRecognizer)) {
+        return FLMLandscapeCardShouldBeginSharedGesture(
+            self, gestureRecognizer);
+    }
+    if (FLMLandscapeModuleIsLandscape() &&
         FLMLandscapeWheelOwnsSharedGesture(self, gestureRecognizer)) {
         return FLMLandscapeWheelShouldBeginSharedGesture(
             self, gestureRecognizer);
@@ -25,6 +30,11 @@
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (FLMLandscapeModuleIsLandscape() &&
+        FLMLandscapeCardOwnsSharedGesture(self, gestureRecognizer)) {
+        return FLMLandscapeCardShouldReceiveSharedTouch(
+            self, gestureRecognizer, touch);
+    }
     if (FLMLandscapeModuleIsLandscape() &&
         FLMLandscapeWheelOwnsSharedGesture(self, gestureRecognizer)) {
         return FLMLandscapeWheelShouldReceiveSharedTouch(
@@ -60,6 +70,24 @@
     if (FLMLandscapeModuleIsLandscape() &&
         FLMLandscapeWheelOwnsSharedGesture(self, gesture)) {
         FLMLandscapeWheelHandleSharedGesture(self, gesture);
+        return;
+    }
+    %orig;
+}
+
+- (void)handleFloatingExclusiveGesture:(UIGestureRecognizer *)gesture {
+    if (FLMLandscapeModuleIsLandscape() &&
+        FLMLandscapeCardOwnsSharedGesture(self, gesture)) {
+        FLMLandscapeCardHandleSharedGesture(self, gesture);
+        return;
+    }
+    %orig;
+}
+
+- (void)handleFloatingDockInputGesture:(UIGestureRecognizer *)gesture {
+    if (FLMLandscapeModuleIsLandscape() &&
+        FLMLandscapeCardOwnsSharedGesture(self, gesture)) {
+        FLMLandscapeCardHandleSharedGesture(self, gesture);
         return;
     }
     %orig;

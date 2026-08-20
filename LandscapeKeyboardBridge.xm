@@ -146,6 +146,7 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
                   scale:(CGFloat)scale
             interactive:(BOOL)interactive;
 - (void)endSession:(uint64_t)session;
+- (BOOL)routeIsActive;
 - (void)keyboardHostView:(UIView *)hostView didUpdateForScene:(id)scene;
 @end
 
@@ -426,6 +427,11 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     }
     SEL updateSelector = NSSelectorFromString(@"updateClientSettingsWithBlock:");
     if (![keyboardScene respondsToSelector:updateSelector]) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard scene-pair apply=unsupported session=%llu keyboardScene=%@ class=%@ policy=continue-native-host",
+            (unsigned long long)self.sessionGeneration,
+            FLMLandscapeKeyboardSceneIdentifier(keyboardScene) ?: @"<none>",
+            NSStringFromClass([keyboardScene class]));
         return NO;
     }
     __block BOOL applied = NO;
@@ -677,10 +683,14 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
             (unsigned long long)self.sessionGeneration);
         return;
     }
-    if (![self applyKeyboardScenePairing:keyboardScene
-                    preferredHostIdentity:preferredHostIdentity]) {
-        return;
-    }
+    // The host is already paired by UIKit.  Match the proven portrait route:
+    // propagating preferredSceneHostIdentity is auxiliary bookkeeping, not a
+    // prerequisite for moving the native host to the full-display forwarding
+    // window.  Treating it as a hard gate left the keyboard inside the card on
+    // builds where the remote keyboard Scene does not expose the update API.
+    BOOL pairingPropagated =
+        [self applyKeyboardScenePairing:keyboardScene
+                  preferredHostIdentity:preferredHostIdentity];
     [self prepareForwardingWindowIfNeeded];
     UIView *forwardingRoot = self.forwardingWindow.rootViewController.view;
     if (!forwardingRoot) {
@@ -701,13 +711,19 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     }
     if (hostView.superview != forwardingRoot) {
         [hostView removeFromSuperview];
+        hostView.translatesAutoresizingMaskIntoConstraints = YES;
+        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight;
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
         [forwardingRoot addSubview:hostView];
+    } else {
+        hostView.translatesAutoresizingMaskIntoConstraints = YES;
+        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight;
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
     }
-    hostView.translatesAutoresizingMaskIntoConstraints = YES;
-    hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
-                                UIViewAutoresizingFlexibleHeight;
-    hostView.transform = CGAffineTransformIdentity;
-    hostView.frame = forwardingRoot.bounds;
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
     if (self.keyboardVisible) {
@@ -717,10 +733,11 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
         self.forwardingWindow.hidden = YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d forwardingKey=%d level=%.1f",
+        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d forwardingKey=%d level=%.1f pairingPropagated=%d",
         (__bridge void *)hostView, NSStringFromCGRect(hostView.frame),
         (unsigned long long)self.sessionGeneration, self.keyboardVisible,
-        self.forwardingWindow.isKeyWindow, self.forwardingWindow.windowLevel);
+        self.forwardingWindow.isKeyWindow, self.forwardingWindow.windowLevel,
+        pairingPropagated);
 }
 
 - (void)keyboardFrameWillChange:(NSNotification *)notification {
@@ -909,4 +926,15 @@ void FLMLandscapeKeyboardBridgeUpdateCard(CGRect cardFrame,
 void FLMLandscapeKeyboardBridgeEnd(uint64_t sessionGeneration) {
     [[FLMLandscapeKeyboardCoordinator sharedCoordinator]
         endSession:sessionGeneration];
+}
+
+BOOL FLMLandscapeKeyboardBridgeContainsVisualPoint(CGPoint point) {
+    FLMLandscapeKeyboardCoordinator *coordinator =
+        [FLMLandscapeKeyboardCoordinator sharedCoordinator];
+    if (![coordinator routeIsActive] || !coordinator.keyboardVisible ||
+        CGRectIsNull(coordinator.keyboardFrame) ||
+        CGRectIsEmpty(coordinator.keyboardFrame)) {
+        return NO;
+    }
+    return CGRectContainsPoint(coordinator.keyboardFrame, point);
 }

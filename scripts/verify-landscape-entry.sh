@@ -125,18 +125,58 @@ grep -Fq '[hostView convertPoint:screenPoint fromView:rootView]' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
 grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
 
-# The landscape interaction copies the frozen portrait state progression while
-# staying on the physical left in both landscape orientations.
+# Landscape borrows the two already-registered portrait system gestures. This
+# gives backdrop taps and collapsed-card drags ownership above the foreground
+# application Scene without installing a duplicate private-system recognizer.
+grep -Fq 'floatingExclusiveGesture' "$module"
+grep -Fq 'floatingDockInputGesture' "$module"
+grep -Fq 'landscape-card-global-route active' "$module"
+grep -Fq 'policy=borrow-existing-system-gestures' "$module"
+grep -Fq 'policy=portrait-state-parity' "$module"
+grep -Fq 'FLMLandscapeCardOwnsSharedGesture' "$adapter"
+grep -Fq 'FLMLandscapeCardShouldReceiveSharedTouch' "$adapter"
+grep -Fq 'FLMLandscapeCardShouldBeginSharedGesture' "$adapter"
+grep -Fq 'FLMLandscapeCardHandleSharedGesture' "$adapter"
+grep -Fq 'handleFloatingExclusiveGesture:' "$adapter"
+grep -Fq 'handleFloatingDockInputGesture:' "$adapter"
+grep -Fq 'reason=global-outside-tap' "$module"
+grep -Fq 'FLMLandscapeInteractionDomainDockCard' "$module"
+grep -Fq 'passesTouchesOutsideControls' "$module"
+
+# The state progression mirrors portrait, while landscape adds deterministic
+# left/right docking. A released dock card always returns to the fixed top
+# margin; an exact horizontal tie resolves to the left. Hidden mode reuses the
+# same single white handle and leaves no application sliver.
 grep -Fq 'FLMLandscapeDockWidthRatio = 156.0 / 315.0;' "$module"
-grep -Fq 'transition=expanded-to-docked side=physical-left' "$module"
-grep -Fq 'transition=docked-to-hidden side=physical-left appSliver=0' "$module"
-grep -Fq 'transition=hidden-to-docked side=physical-left' "$module"
+grep -Fq 'FLMLandscapeDockTopMargin = 15.0;' "$module"
+grep -Fq 'transition=expanded-to-docked side=left verticalPolicy=fixed-top' "$module"
+grep -Fq 'transition=docked-to-hidden side=left appSliver=0 handle=reused' "$module"
+grep -Fq 'transition=collapsed-to-expanded' "$module"
+grep -Fq 'hidden-bar-right-swipe' "$module"
+grep -Fq 'self.dockedOnRight = cardMidX > displayMidX;' "$module"
+grep -Fq 'tiePolicy=left verticalPolicy=fixed-top' "$module"
 grep -Fq 'if (self.dockedCard)' "$module"
 grep -Fq '[self promoteToFullscreen];' "$module"
 grep -Fq 'FLMLandscapeHandleBarLength = 42.0;' "$module"
 grep -Fq 'FLMLandscapeHandleGap = 10.0;' "$module"
 grep -Fq 'usingSpringWithDamping:FLMLandscapeSpringDamping' "$module"
 grep -Fq 'self.handlePanInteractive = YES;' "$module"
+if [[ "$(grep -Fc 'UIView *bar = [[UIView alloc] initWithFrame:CGRectZero];' "$module")" -ne 1 ]] ||
+   [[ "$(grep -Fc '[handle addSubview:bar];' "$module")" -ne 1 ]]; then
+    echo "landscape must create exactly one reusable white handle bar" >&2
+    exit 1
+fi
+for retired_interaction_marker in \
+    'transition=expanded-to-docked side=physical-left' \
+    'transition=docked-to-hidden side=physical-left' \
+    'transition=hidden-to-docked' \
+    'preservingVerticalCenter' \
+    'revealDockedCardAnimated'; do
+    if grep -Fq "$retired_interaction_marker" "$module"; then
+        echo "retired landscape interaction returned: $retired_interaction_marker" >&2
+        exit 1
+    fi
+done
 
 # Closing must first release the shared protection lease and then genuinely
 # deactivate the landscape Scene. Otherwise the next open reuses an active
@@ -161,6 +201,13 @@ grep -Fq 'preferredSceneHostIdentity' "$keyboard_bridge"
 grep -Fq 'FLMLandscapeKeyboardForwardingWindow' "$keyboard_bridge"
 grep -Fq 'UIInterfaceOrientationMaskLandscape' "$keyboard_bridge"
 grep -Fq 'method_setImplementation' "$keyboard_bridge"
+grep -Fq 'policy=continue-native-host' "$keyboard_bridge"
+grep -Fq 'pairingPropagated' "$keyboard_bridge"
+grep -Fq 'FLMLandscapeKeyboardBridgeContainsVisualPoint' "$keyboard_bridge"
+if grep -Fq 'if (![self applyKeyboardScenePairing' "$keyboard_bridge"; then
+    echo "keyboard pairing propagation must not hard-gate native host attachment" >&2
+    exit 1
+fi
 if grep -Eiq 'UIKeyboardLayout|UIKBTree|drawRect:|insertText:' "$keyboard_bridge"; then
     echo "landscape bridge contains a custom keyboard implementation" >&2
     exit 1
