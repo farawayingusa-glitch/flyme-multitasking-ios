@@ -31,11 +31,15 @@ static const CGFloat FLMLandscapeCardAspectRatio = 390.0 / 844.0;
 - (void)updateClientSettingsWithBlock:(void (^)(id clientSettings))block;
 @end
 
+@interface FLMHotspotWindow : UIWindow
+@property(nonatomic, assign) BOOL hotspotsEnabled;
+@end
+
 @interface FLMWheelController : NSObject
 + (instancetype)sharedController;
 @property(nonatomic, strong) UIWindow *overlayWindow;
 @property(nonatomic, strong) UIView *wheelContainer;
-@property(nonatomic, strong) UIWindow *hotspotWindow;
+@property(nonatomic, strong) FLMHotspotWindow *hotspotWindow;
 @property(nonatomic, strong) UIWindow *homeDockWindow;
 @property(nonatomic, strong) UIWindow *floatingWindow;
 @property(nonatomic, strong) UIWindow *floatingDockTouchGateWindow;
@@ -43,6 +47,15 @@ static const CGFloat FLMLandscapeCardAspectRatio = 390.0 / 844.0;
 @property(nonatomic, strong) UIView *floatingContainer;
 @property(nonatomic, strong) id floatingScene;
 @property(nonatomic, strong) id floatingSceneHandle;
+@property(nonatomic, copy) NSArray<NSString *> *itemIdentifiers;
+@property(nonatomic, assign) BOOL enabled;
+@property(nonatomic, assign) BOOL wheelPinned;
+@property(nonatomic, assign) BOOL usesSystemGestureManager;
+@property(nonatomic, strong) UIGestureRecognizer *cornerGuardGesture;
+@property(nonatomic, strong) UIGestureRecognizer *cornerGesture;
+@property(nonatomic, strong) UIGestureRecognizer *floatingCornerGuardGesture;
+@property(nonatomic, strong) UIGestureRecognizer *floatingCornerGesture;
+@property(nonatomic, strong) UIGestureRecognizer *modalGesture;
 - (void)updateWindowFrames;
 - (void)layoutFloatingWindow;
 - (void)updateFloatingDockTouchGate;
@@ -372,6 +385,55 @@ static void FLMLandscapeApplyFrame(UIWindow *window, CGRect bounds) {
     }
 }
 
+static void FLMLandscapeRearmRootInput(FLMWheelController *root) {
+    if (!root || !FLMLandscapeModuleIsLandscape()) {
+        return;
+    }
+    BOOL configured = root.enabled && root.itemIdentifiers.count > 0;
+    BOOL cornerActive = configured && !root.wheelPinned;
+    BOOL modalActive = configured && root.wheelPinned;
+
+    // Portrait preferences can initialize these recognizers while SpringBoard
+    // is still vertical. Re-arming on every stable landscape frame preserves
+    // the successful route without introducing another gesture owner.
+    root.cornerGuardGesture.enabled = cornerActive;
+    root.cornerGesture.enabled = cornerActive;
+    root.floatingCornerGuardGesture.enabled = cornerActive;
+    root.floatingCornerGesture.enabled = cornerActive;
+    root.modalGesture.enabled = modalActive;
+
+    // The frozen hotspot deliberately rejects landscape. It remains only the
+    // root controller's emergency route when the private system manager is not
+    // available; the adapter's hit-test hook supplies landscape geometry.
+    BOOL fallbackActive = cornerActive && !root.usesSystemGestureManager;
+    root.hotspotWindow.hotspotsEnabled = fallbackActive;
+    root.hotspotWindow.hidden = !configured || root.usesSystemGestureManager;
+    root.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
+
+    static __weak FLMWheelController *lastRoot = nil;
+    static BOOL stateInitialized = NO;
+    static BOOL lastCornerActive = NO;
+    static BOOL lastModalActive = NO;
+    static BOOL lastFallbackActive = NO;
+    if (!stateInitialized || lastRoot != root ||
+        lastCornerActive != cornerActive ||
+        lastModalActive != modalActive ||
+        lastFallbackActive != fallbackActive) {
+        stateInitialized = YES;
+        lastRoot = root;
+        lastCornerActive = cornerActive;
+        lastModalActive = modalActive;
+        lastFallbackActive = fallbackActive;
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-input-rearm root=%p configured=%d pinned=%d guard=%d opener=%d floatingGuard=%d floatingOpener=%d modal=%d system=%d fallback=%d",
+            (__bridge void *)root, configured, root.wheelPinned,
+            root.cornerGuardGesture.enabled, root.cornerGesture.enabled,
+            root.floatingCornerGuardGesture.enabled,
+            root.floatingCornerGesture.enabled, root.modalGesture.enabled,
+            root.usesSystemGestureManager, fallbackActive);
+    }
+}
+
 static void FLMLandscapeSynchronizeRootNow(FLMWheelController *root) {
     if (!root || !FLMLandscapeModuleIsLandscape()) {
         return;
@@ -395,6 +457,7 @@ static void FLMLandscapeSynchronizeRootNow(FLMWheelController *root) {
     [root layoutFloatingWindow];
     [root updateFloatingDockTouchGate];
     [root refreshWheelPriorityWindow];
+    FLMLandscapeRearmRootInput(root);
 }
 
 void FLMLandscapeModuleSynchronizeRootController(id rootController) {

@@ -8,4 +8,4 @@ Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Conflicts: com.codex.flymelandscape
 Replaces: com.codex.flymelandscape
 Architecture: iphoneos-arm64
-Version: 0.9.47
+Version: 0.9.48

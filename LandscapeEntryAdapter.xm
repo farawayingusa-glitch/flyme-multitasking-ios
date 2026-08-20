@@ -3,6 +3,10 @@
 #import "FLMDiagnostics.h"
 #import "FLMLandscapeModule.h"
 
+@interface FLMHotspotWindow : UIWindow
+@property(nonatomic, assign) BOOL hotspotsEnabled;
+@end
+
 @interface FLMWheelController : NSObject
 @property(nonatomic, strong) UIWindow *floatingWindow;
 @property(nonatomic, strong) id floatingScene;
@@ -12,6 +16,30 @@
 // Only this scoped call needs the portrait client reference. Everywhere else
 // the frozen controller sees the real full-display landscape Scene size.
 static NSUInteger FLMLandscapeHostLayoutDepth = 0;
+
+%hook FLMHotspotWindow
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *portraitResult = %orig;
+    if (portraitResult || !FLMLandscapeModuleIsLandscape() ||
+        !self.hotspotsEnabled ||
+        !FLMLandscapeModulePointInsideCornerTrigger(point,
+                                                    self.bounds,
+                                                    NULL)) {
+        return portraitResult;
+    }
+
+    // This is an input-only fallback. The window, recognizers, controller and
+    // wheel UI all remain the frozen root controller's existing objects.
+    UIView *rootView = self.rootViewController.view;
+    if (!rootView) {
+        return nil;
+    }
+    CGPoint rootPoint = [rootView convertPoint:point fromView:self];
+    return [rootView hitTest:rootPoint withEvent:event] ?: rootView;
+}
+
+%end
 
 %hook FLMOverlayViewController
 

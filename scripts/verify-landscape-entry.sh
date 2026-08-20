@@ -21,6 +21,17 @@ grep -Fq 'NSClassFromString(@"FLMWheelItemView")' "$wheel"
 grep -Fq 'itemClass=FLMWheelItemView' "$wheel"
 grep -Fq '[root dismissWheelLaunchingItem:selectedItem];' "$wheel"
 grep -Fq '[root pinWheel];' "$wheel"
+grep -Fq 'FLMLandscapeResolveCornerTouch' "$wheel"
+grep -Fq 'shared-touch-delegate' "$wheel"
+grep -Fq 'entry-touch-accepted' "$wheel"
+if grep -Fq 'BOOL accepted = context.valid &&' "$wheel"; then
+    echo "transient interface orientation returned as a touch gate" >&2
+    exit 1
+fi
+grep -Fq 'FLMLandscapeRearmRootInput(root);' "$module"
+grep -Fq 'landscape-input-rearm' "$module"
+grep -Fq '%hook FLMHotspotWindow' "$adapter"
+grep -Fq 'input-only fallback' "$adapter"
 
 if grep -Eq '@implementation[[:space:]]+FLMLandscape(WheelController|WheelItemView|Module)' \
     "$wheel" "$module"; then

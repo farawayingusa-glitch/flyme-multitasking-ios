@@ -67,6 +67,15 @@ static __weak FLMWheelController *FLMLandscapeActiveRoot = nil;
 static FLMLandscapeTouchContext FLMLandscapeActiveTouchContext;
 static BOOL FLMLandscapeTouchContextValid = NO;
 
+static void FLMLandscapeWriteTouchDelegateMarkerOnce(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Keep this marker before every UIKit/state gate. A missing normal
+        // diagnostic line must not be mistaken for a missing system touch.
+        FLMWriteLandscapeBootstrapMarker("shared-touch-delegate");
+    });
+}
+
 static BOOL FLMLandscapeWheelDeviceIsLocked(void) {
     Class managerClass = NSClassFromString(@"SBLockScreenManager");
     id manager = [managerClass respondsToSelector:@selector(sharedInstance)]
@@ -141,18 +150,106 @@ static CGPoint FLMLandscapeWheelPoint(CGPoint rawPoint) {
     return FLMLandscapeEnvironmentConvertPoint(rawPoint);
 }
 
-static void FLMLandscapeCaptureRootTouch(FLMWheelController *root,
-                                         UITouch *touch) {
+// SpringBoard can expose a landscape-sized display while its Scene/interface
+// orientation still reports portrait or unknown for a few transactions. The
+// successful input route never made that transient value an acceptance gate.
+// Resolve the actual corner stream against visual, left-rotated and
+// right-rotated coordinates and freeze the winning mapping for the gesture.
+static BOOL FLMLandscapeResolveCornerTouch(
+    FLMLandscapeTouchContext context,
+    CGPoint rawPoint,
+    FLMLandscapeTouchContext *resolvedContext,
+    CGPoint *resolvedPoint,
+    BOOL *resolvedFromRight) {
+    CGRect bounds = context.visualBounds;
+    if (CGRectGetWidth(bounds) <= CGRectGetHeight(bounds) ||
+        CGRectGetHeight(bounds) <= 1.0) {
+        return NO;
+    }
+
+    UIInterfaceOrientation orientations[] = {
+        context.orientation,
+        UIInterfaceOrientationLandscapeLeft,
+        UIInterfaceOrientationLandscapeRight,
+    };
+    for (NSUInteger index = 0;
+         index < sizeof(orientations) / sizeof(orientations[0]);
+         index++) {
+        UIInterfaceOrientation orientation = orientations[index];
+        if (!UIInterfaceOrientationIsLandscape(orientation)) {
+            continue;
+        }
+        BOOL duplicate = NO;
+        for (NSUInteger previous = 0; previous < index; previous++) {
+            if (orientations[previous] == orientation) {
+                duplicate = YES;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+        FLMLandscapeTouchContext candidate = context;
+        candidate.orientation = orientation;
+        candidate.valid = YES;
+        CGPoint point =
+            FLMLandscapeModuleVisualPointFromRawPointInContext(candidate,
+                                                               rawPoint);
+        BOOL fromRight = NO;
+        if (!FLMLandscapeModulePointInsideCornerTrigger(point,
+                                                        bounds,
+                                                        &fromRight)) {
+            continue;
+        }
+        if (resolvedContext) {
+            *resolvedContext = candidate;
+        }
+        if (resolvedPoint) {
+            *resolvedPoint = point;
+        }
+        if (resolvedFromRight) {
+            *resolvedFromRight = fromRight;
+        }
+        return YES;
+    }
+
+    // Some SpringBoard builds already report UITouch coordinates in the
+    // landscape visual space. Preserve that stream instead of rotating twice.
+    FLMLandscapeTouchContext visualContext = context;
+    visualContext.valid = NO;
+    CGPoint visualPoint =
+        FLMLandscapeModuleVisualPointFromRawPointInContext(visualContext,
+                                                           rawPoint);
+    BOOL visualFromRight = NO;
+    if (!FLMLandscapeModulePointInsideCornerTrigger(visualPoint,
+                                                    bounds,
+                                                    &visualFromRight)) {
+        return NO;
+    }
+    if (resolvedContext) {
+        *resolvedContext = visualContext;
+    }
+    if (resolvedPoint) {
+        *resolvedPoint = visualPoint;
+    }
+    if (resolvedFromRight) {
+        *resolvedFromRight = visualFromRight;
+    }
+    return YES;
+}
+
+static void FLMLandscapeCaptureRootTouch(
+    FLMWheelController *root,
+    FLMLandscapeTouchContext context,
+    CGPoint rawPoint,
+    CGPoint point,
+    BOOL fromRight) {
     FLMLandscapeActiveRoot = root;
-    FLMLandscapeActiveTouchContext =
-        FLMLandscapeModuleCaptureTouchContext();
-    FLMLandscapeTouchContextValid =
-        FLMLandscapeActiveTouchContext.valid;
-    CGPoint rawPoint = [touch locationInView:nil];
-    CGPoint point = FLMLandscapeWheelPoint(rawPoint);
-    BOOL fromRight = NO;
-    FLMLandscapeModulePointInsideCornerTrigger(
-        point, FLMLandscapeActiveTouchContext.visualBounds, &fromRight);
+    FLMLandscapeActiveTouchContext = context;
+    // This flag means that a mapping was selected for the whole stream. The
+    // context's own valid bit still distinguishes rotated from already-visual
+    // coordinates.
+    FLMLandscapeTouchContextValid = YES;
     root.cornerGestureStartPoint = point;
     root.presentingFromRight = fromRight;
     root.wheelGestureActive = NO;
@@ -179,6 +276,7 @@ BOOL FLMLandscapeWheelShouldReceiveSharedTouch(
     id wheelController,
     UIGestureRecognizer *gestureRecognizer,
     UITouch *touch) {
+    FLMLandscapeWriteTouchDelegateMarkerOnce();
     if (!FLMLandscapeWheelOwnsSharedGesture(wheelController,
                                             gestureRecognizer) ||
         !touch) {
@@ -195,21 +293,32 @@ BOOL FLMLandscapeWheelShouldReceiveSharedTouch(
     FLMLandscapeTouchContext context =
         FLMLandscapeModuleCaptureTouchContext();
     CGPoint rawPoint = [touch locationInView:nil];
-    CGPoint point =
-        FLMLandscapeModuleVisualPointFromRawPointInContext(context, rawPoint);
-    BOOL accepted = context.valid &&
-                    FLMLandscapeModulePointInsideCornerTrigger(
-                        point, context.visualBounds, NULL);
+    FLMLandscapeTouchContext resolvedContext = context;
+    CGPoint point = CGPointZero;
+    BOOL fromRight = NO;
+    BOOL accepted = FLMLandscapeResolveCornerTouch(context,
+                                                   rawPoint,
+                                                   &resolvedContext,
+                                                   &point,
+                                                   &fromRight);
     if (accepted && FLMLandscapeGestureIsOpener(root, gestureRecognizer)) {
-        FLMLandscapeCaptureRootTouch(root, touch);
+        FLMLandscapeCaptureRootTouch(root,
+                                     resolvedContext,
+                                     rawPoint,
+                                     point,
+                                     fromRight);
+        FLMWriteLandscapeBootstrapMarker("entry-touch-accepted");
     }
     if (accepted) {
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-root-wheel-priority recognizer=%@ point={%.1f,%.1f}",
+            @"sb landscape-root-wheel-priority recognizer=%@ raw={%.1f,%.1f} point={%.1f,%.1f} fromRight=%d reportedOrientation=%ld resolvedOrientation=%ld reportedValid=%d visual=%@ fixed=%@",
             FLMLandscapeGestureIsGuard(root, gestureRecognizer)
                 ? @"guard"
                 : @"opener",
-            point.x, point.y);
+            rawPoint.x, rawPoint.y, point.x, point.y, fromRight,
+            (long)context.orientation, (long)resolvedContext.orientation,
+            context.valid, NSStringFromCGRect(context.visualBounds),
+            NSStringFromCGRect(context.fixedBounds));
     }
     return accepted;
 }
@@ -233,22 +342,24 @@ BOOL FLMLandscapeWheelShouldBeginSharedGesture(
         return YES;
     }
     if (!FLMLandscapeTouchContextValid || FLMLandscapeActiveRoot != root) {
-        FLMLandscapeActiveTouchContext =
+        FLMLandscapeTouchContext context =
             FLMLandscapeModuleCaptureTouchContext();
-        FLMLandscapeTouchContextValid =
-            FLMLandscapeActiveTouchContext.valid;
-        CGPoint point = FLMLandscapeWheelPoint(
-            [gestureRecognizer locationInView:nil]);
+        CGPoint rawPoint = [gestureRecognizer locationInView:nil];
+        FLMLandscapeTouchContext resolvedContext = context;
+        CGPoint point = CGPointZero;
         BOOL fromRight = NO;
-        if (!FLMLandscapeModulePointInsideCornerTrigger(
-                point, FLMLandscapeActiveTouchContext.visualBounds,
-                &fromRight)) {
+        if (!FLMLandscapeResolveCornerTouch(context,
+                                            rawPoint,
+                                            &resolvedContext,
+                                            &point,
+                                            &fromRight)) {
             return NO;
         }
-        root.cornerGestureStartPoint = point;
-        root.presentingFromRight = fromRight;
-        root.wheelGestureActive = NO;
-        FLMLandscapeActiveRoot = root;
+        FLMLandscapeCaptureRootTouch(root,
+                                     resolvedContext,
+                                     rawPoint,
+                                     point,
+                                     fromRight);
     }
     return FLMLandscapeModulePointInsideCornerTrigger(
         root.cornerGestureStartPoint,
@@ -454,6 +565,7 @@ void FLMLandscapeWheelHandleSharedGesture(
                 break;
             case UIGestureRecognizerStateEnded:
                 [root dismissWheelLaunchingItem:root.highlightedItem];
+                FLMLandscapeModuleSynchronizeRootController(root);
                 FLMLandscapeTouchContextValid = NO;
                 break;
             case UIGestureRecognizerStateCancelled:
@@ -506,8 +618,10 @@ void FLMLandscapeWheelHandleSharedGesture(
                 FLMWheelItemView *selectedItem = root.highlightedItem;
                 if (selectedItem) {
                     [root dismissWheelLaunchingItem:selectedItem];
+                    FLMLandscapeModuleSynchronizeRootController(root);
                 } else {
                     [root pinWheel];
+                    FLMLandscapeModuleSynchronizeRootController(root);
                 }
             }
             FLMEnqueueDiagnosticLine(
@@ -519,6 +633,7 @@ void FLMLandscapeWheelHandleSharedGesture(
         case UIGestureRecognizerStateCancelled:
             if (root.wheelGestureActive) {
                 [root pinWheel];
+                FLMLandscapeModuleSynchronizeRootController(root);
             }
             root.wheelGestureActive = NO;
             FLMLandscapeTouchContextValid = root.wheelPinned;
@@ -526,6 +641,7 @@ void FLMLandscapeWheelHandleSharedGesture(
         case UIGestureRecognizerStateFailed:
             if (root.wheelGestureActive) {
                 [root dismissWheelLaunchingItem:nil];
+                FLMLandscapeModuleSynchronizeRootController(root);
             }
             root.wheelGestureActive = NO;
             FLMLandscapeTouchContextValid = NO;
