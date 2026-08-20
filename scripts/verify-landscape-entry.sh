@@ -45,8 +45,7 @@ grep -Fq '[self restoreSharedPortraitGestureState];' "$wheel"
 grep -Fq 'self.guardGesture.enabled = rootEnabled;' "$wheel"
 
 # Landscape reuses the portrait controller's live wheel values and item UI.
-# No retired standalone preference domain or duplicate fullscreen launcher may
-# remain in the runtime module.
+# No retired standalone preference domain or wheel-owned launcher may remain.
 if grep -Fq 'com.codex.flymelandscape' "$wheel" "$module"; then
     echo "retired standalone landscape preference domain detected" >&2
     exit 1
@@ -55,14 +54,15 @@ grep -Fq 'FLMLandscapeSharedValue(portraitController, @"itemIdentifiers")' "$whe
 grep -Fq 'CFSTR("com.codex.flymemultitasking.preferences-changed")' "$wheel"
 grep -Fq 'format:2' "$wheel"
 grep -Fq '_iconView.layer.cornerRadius = isLockItem ? 0.0 : size * 0.5;' "$wheel"
-if grep -Fq -- '- (void)activateIdentifier:' "$wheel" "$module"; then
-    echo "duplicate landscape wheel application launcher detected" >&2
+if grep -Fq -- '- (void)activateIdentifier:' "$wheel"; then
+    echo "landscape wheel must not own application launch" >&2
     exit 1
 fi
+grep -Fq -- '- (void)activateIdentifier:' "$module"
 
-# Opening a card must not commit a workspace transition. The SpringBoard card
-# is presentation-only and must not compete with the full-screen target Scene
-# for key-window or native keyboard ownership.
+# The card window is presentation-only and never becomes key. The target app,
+# however, must use a real foreground launch so UIKit routes the native system
+# keyboard to its full-screen landscape Scene instead of into the card.
 window_body="$(sed -n '/^@implementation FLMLandscapeWindow/,/^@end/p' "$module")"
 grep -Fq -- '- (BOOL)canBecomeKeyWindow' <<<"$window_body"
 grep -Fq 'return NO;' <<<"$window_body"
@@ -74,49 +74,43 @@ if grep -Fq '[self.window makeKey' <<<"$open_body" ||
     exit 1
 fi
 grep -Fq 'inputOwner=application-scene' "$module"
-prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
-grep -Fq 'suspended:YES' <<<"$prewarm_body"
-grep -Fq 'landscape-scene-prewarm' <<<"$prewarm_body"
-if grep -Fq 'suspended:NO' <<<"$prewarm_body" ||
-   grep -Fq 'openApplicationWithBundleID:' <<<"$prewarm_body"; then
-    echo "landscape card startup still promotes the workspace fullscreen" >&2
+grep -Fq 'keyboardOwner=system' "$module"
+activate_body="$(sed -n '/^- (void)activateIdentifier:/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
+grep -Fq 'suspended:NO' <<<"$activate_body"
+grep -Fq 'SBMainWorkspace' <<<"$activate_body"
+grep -Fq 'openApplicationWithBundleID:' <<<"$activate_body"
+grep -Fq 'landscape-scene-activate' <<<"$activate_body"
+if grep -Fq 'suspended:YES' "$module"; then
+    echo "landscape startup regressed to an inactive suspended application" >&2
     exit 1
 fi
 grep -Fq 'gated=orientation' "$module"
 grep -Fq 'action=retry' "$module"
 
-# A foreground launch may replace the app's primary Scene. The horizontal
-# module must discard a non-resolving handle and reacquire it. The server Scene
-# stays landscape while the suspended launch's portrait client canvas is
-# captured before activation. FBScene only permits client parameter mutation
-# while inactive; an active Scene must be observation-only.
+# A foreground launch may replace the app's primary Scene. Reacquire stale
+# handles, but never mutate a portrait client canvas. Scene, Presenter host,
+# app layout, touch input, and system keyboard share one native 844x390 space.
 grep -Fq 'landscape-scene-handle-stale' "$module"
 grep -Fq 'action=reacquire' "$module"
-grep -Fq 'updateClientSettingsWithBlock:' "$module"
-grep -Fq 'configureParameters:' "$module"
-grep -Fq 'method=inactive-parameters' "$module"
-grep -Fq 'method=active-observation' "$module"
-grep -Fq '!activeStateAvailable || sceneActive' "$module"
-grep -Fq '!finalActiveStateAvailable || finalSceneActive' "$module"
-grep -Fq 'setInterfaceOrientationChangesDisabled:NO' "$module"
-if grep -Fq '[scene updateClientSettingsWithBlock:' "$module"; then
-    echo "host-side FBScene still uses the application-side live client updater" >&2
-    exit 1
-fi
-initial_client_line="$(grep -n 'phase = @"initial-client-settings"' "$module" | head -n 1 | cut -d: -f1)"
-content_state_line="$(grep -n 'phase = @"content-state"' "$module" | head -n 1 | cut -d: -f1)"
-test -n "$initial_client_line"
-test -n "$content_state_line"
-if (( initial_client_line >= content_state_line )); then
-    echo "landscape client canvas is no longer captured before activation" >&2
-    exit 1
-fi
+for retired_client_marker in \
+    'FLMLandscapePortraitCanvasWidth' \
+    'FLMLandscapeSceneClientOrientation' \
+    'FLMLandscapeConfigureClientOrientation' \
+    'updateClientSettingsWithBlock:' \
+    'configureParameters:' \
+    'setInterfaceOrientationChangesDisabled:' \
+    'upright-client'; do
+    if grep -Fq "$retired_client_marker" "$module"; then
+        echo "retired mixed portrait/landscape client contract returned: $retired_client_marker" >&2
+        exit 1
+    fi
+done
 grep -Fq 'FLMLandscapeSceneSettleDelay = 0.04;' "$module"
-grep -Fq 'accepted=presenter-fallback' "$module"
-grep -Fq 'action=attach-never-white' "$module"
 grep -Fq 'landscape-presenter phase=create-begin' "$module"
 grep -Fq 'landscape-presenter recovery' "$module"
 grep -Fq 'landscape-host-reveal' "$module"
+grep -Fq 'reason=non-native-host' "$module"
+grep -Fq 'action=wait-native-identity' "$module"
 prepare_body="$(sed -n '/^- (BOOL)prepareScene:/,/^- (void)layoutCardAnimated:/p' "$module")"
 if [[ "$(grep -Fc '[scene updateSettings:mutableSettings withTransitionContext:nil];' <<<"$prepare_body")" -ne 1 ]]; then
     echo "landscape Scene preparation must use one server-settings transaction" >&2
@@ -127,15 +121,24 @@ if grep -Fq 'committedSettings' <<<"$prepare_body"; then
     exit 1
 fi
 grep -Fq 'phase=post-settings-focus-complete' "$module"
-grep -Fq 'Never push the client back to portrait after Presenter creation.' "$module"
-grep -Fq 'FLMLandscapePortraitCanvasWidth' "$module"
-grep -Fq 'visualRotation=0' "$module"
+grep -Fq 'FLMLandscapeFullScreenContentWidth = 844.0;' "$module"
+grep -Fq 'FLMLandscapeFullScreenContentHeight = 390.0;' "$module"
+grep -Fq 'mode=full-screen-native visual=wrapper-only' "$module"
+grep -Fq 'hostTransform=identity' "$module"
+grep -Fq 'CGAffineTransformRotate(presentationTransform, rotation)' "$module"
+grep -Fq '[hostView convertPoint:screenPoint fromView:rootView]' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
 grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
-if grep -Fq 'CGAffineTransformRotate' "$module"; then
-    echo "landscape card still rotates the application presentation" >&2
-    exit 1
-fi
+
+# The landscape interaction copies the frozen portrait state progression while
+# staying on the physical left in both landscape orientations.
+grep -Fq 'FLMLandscapeDockWidthRatio = 156.0 / 315.0;' "$module"
+grep -Fq 'transition=expanded-to-docked side=physical-left' "$module"
+grep -Fq 'transition=docked-to-hidden side=physical-left appSliver=0' "$module"
+grep -Fq 'transition=hidden-to-docked side=physical-left' "$module"
+grep -Fq 'if (self.dockedCard)' "$module"
+grep -Fq '[self promoteToFullscreen];' "$module"
+grep -Fq 'FLMLandscapeHandleBarLength = 42.0;' "$module"
 
 # Closing must first release the shared protection lease and then genuinely
 # deactivate the landscape Scene. Otherwise the next open reuses an active

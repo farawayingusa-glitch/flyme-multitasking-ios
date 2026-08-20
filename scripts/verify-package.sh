@@ -99,7 +99,7 @@ strings "$keyboard" | grep -q "keyboard-app-ready-v47"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.9.52" "$workspace/control/control"
+grep -qx "Version: 0.9.53" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 grep -qx "Conflicts: com.codex.flymelandscape" "$workspace/control/control"
 grep -qx "Replaces: com.codex.flymelandscape" "$workspace/control/control"
