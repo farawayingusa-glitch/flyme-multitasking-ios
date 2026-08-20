@@ -60,13 +60,20 @@ if grep -Fq -- '- (void)activateIdentifier:' "$wheel" "$module"; then
     exit 1
 fi
 
-# Opening a card must not commit a workspace transition. Match the frozen
-# portrait lifecycle: make the SpringBoard host key, prewarm suspended, then
-# foreground the resolved full-display Scene through FrontBoard settings.
-grep -Fq '[self.window makeKeyAndVisible];' "$module"
-grep -Fq '@property(nonatomic, weak) UIWindow *previousKeyWindow;' "$module"
-grep -Fq '[previousKeyWindow makeKeyWindow];' "$module"
-grep -Fq 'landscape-card-window key-reasserted' "$module"
+# Opening a card must not commit a workspace transition. The SpringBoard card
+# is presentation-only and must not compete with the full-screen target Scene
+# for key-window or native keyboard ownership.
+window_body="$(sed -n '/^@implementation FLMLandscapeWindow/,/^@end/p' "$module")"
+grep -Fq -- '- (BOOL)canBecomeKeyWindow' <<<"$window_body"
+grep -Fq 'return NO;' <<<"$window_body"
+open_body="$(sed -n '/^- (void)openIdentifier:/,/^- (void)lockTimerFired:/p' "$module")"
+grep -Fq 'self.window.hidden = NO;' <<<"$open_body"
+if grep -Fq '[self.window makeKey' <<<"$open_body" ||
+   grep -Fq 'landscape-card-window key-reasserted' "$module"; then
+    echo "landscape visual card still takes key-window ownership" >&2
+    exit 1
+fi
+grep -Fq 'inputOwner=application-scene' "$module"
 prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
 grep -Fq 'suspended:YES' <<<"$prewarm_body"
 grep -Fq 'landscape-scene-prewarm' <<<"$prewarm_body"
@@ -91,6 +98,7 @@ grep -Fq 'method=inactive-parameters' "$module"
 grep -Fq 'method=active-observation' "$module"
 grep -Fq '!activeStateAvailable || sceneActive' "$module"
 grep -Fq '!finalActiveStateAvailable || finalSceneActive' "$module"
+grep -Fq 'setInterfaceOrientationChangesDisabled:NO' "$module"
 if grep -Fq '[scene updateClientSettingsWithBlock:' "$module"; then
     echo "host-side FBScene still uses the application-side live client updater" >&2
     exit 1
@@ -103,7 +111,9 @@ if (( initial_client_line >= content_state_line )); then
     echo "landscape client canvas is no longer captured before activation" >&2
     exit 1
 fi
-grep -Fq 'FLMLandscapeSceneSettleDelay = 0.10;' "$module"
+grep -Fq 'FLMLandscapeSceneSettleDelay = 0.04;' "$module"
+grep -Fq 'accepted=presenter-fallback' "$module"
+grep -Fq 'action=attach-never-white' "$module"
 grep -Fq 'landscape-presenter phase=create-begin' "$module"
 grep -Fq 'landscape-presenter recovery' "$module"
 grep -Fq 'landscape-host-reveal' "$module"
@@ -116,6 +126,8 @@ if grep -Fq 'committedSettings' <<<"$prepare_body"; then
     echo "duplicate landscape Scene settings transaction returned" >&2
     exit 1
 fi
+grep -Fq 'phase=post-settings-focus-complete' "$module"
+grep -Fq 'Never push the client back to portrait after Presenter creation.' "$module"
 grep -Fq 'FLMLandscapePortraitCanvasWidth' "$module"
 grep -Fq 'visualRotation=0' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
@@ -124,6 +136,29 @@ if grep -Fq 'CGAffineTransformRotate' "$module"; then
     echo "landscape card still rotates the application presentation" >&2
     exit 1
 fi
+
+# Closing must first release the shared protection lease and then genuinely
+# deactivate the landscape Scene. Otherwise the next open reuses an active
+# landscape client and the card can remain permanently white.
+background_body="$(sed -n '/^- (void)backgroundScene:/,/^}/p' "$module")"
+grep -Fq 'FLMClearProtectedScene(scene);' <<<"$background_body"
+grep -Fq '[scene setForeground:NO];' <<<"$background_body"
+grep -Fq '[scene setBackgrounded:YES];' <<<"$background_body"
+grep -Fq '[scene deactivate];' <<<"$background_body"
+grep -Fq 'landscape-scene-background' <<<"$background_body"
+
+# Landscape uses the system keyboard owned by the target Scene. A custom
+# forwarding session or standalone keyboard host must never return.
+for retired_keyboard_marker in \
+    'FLMLandscapeKeyboardRoute' \
+    'FLMLandscapeKeyboardHost' \
+    'keyboardSessionGeneration' \
+    'LandscapeKeyboard.xm'; do
+    if grep -Fq "$retired_keyboard_marker" "$wheel" "$adapter" "$module" "$makefile"; then
+        echo "retired landscape keyboard route returned: $retired_keyboard_marker" >&2
+        exit 1
+    fi
+done
 
 # Horizontal sources are part of FlymeMultitasking.dylib in the same deb; a
 # separate FlymeLandscape tweak target must never return.
