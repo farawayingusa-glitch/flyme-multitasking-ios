@@ -59,7 +59,9 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)setDeactivationReasons:(unsigned long long)reasons;
 - (void)setFrame:(CGRect)frame;
 - (void)setInterfaceOrientation:(NSInteger)orientation;
+- (void)setInterfaceOrientationChangesDisabled:(BOOL)disabled;
 - (void)updateSettings:(id)settings withTransitionContext:(id)context;
+- (void)configureParameters:(void (^)(id parameters))parametersBlock;
 - (void)updateClientSettingsWithBlock:(void (^)(id clientSettings))settingsBlock;
 - (void)_setContentState:(NSInteger)state;
 @end
@@ -150,6 +152,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @end
 
 static NSString *FLMLandscapeSceneIdentifier(id scene);
+static BOOL FLMLandscapeReadBool(id object, SEL selector, BOOL *available);
 
 static UIWindowScene *FLMLandscapeWindowScene(void) {
     if (@available(iOS 13.0, *)) {
@@ -300,15 +303,43 @@ static UIInterfaceOrientation FLMLandscapeSceneClientOrientation(id scene) {
 static BOOL FLMLandscapeConfigureClientOrientation(
     id scene,
     UIInterfaceOrientation interfaceOrientation) {
-    if (!scene ||
-        ![scene respondsToSelector:@selector(updateClientSettingsWithBlock:)]) {
-        FLMEnqueueDiagnosticLine(
-            @"sb landscape-client-settings unsupported scene=%@ class=%@ targetOrientation=%ld",
-            FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
-            scene ? NSStringFromClass([scene class]) : @"<none>",
-            (long)interfaceOrientation);
+    if (!scene) {
         return NO;
     }
+
+    UIInterfaceOrientation observedBefore =
+        FLMLandscapeSceneClientOrientation(scene);
+    BOOL activeStateAvailable = NO;
+    BOOL sceneActive =
+        FLMLandscapeReadBool(scene, @selector(isActive), &activeStateAvailable);
+    BOOL observedTarget = observedBefore == interfaceOrientation;
+
+    // FBScene is the host-side FrontBoard Scene. Unlike the application-side
+    // FBSScene, it does not expose updateClientSettingsWithBlock:. Its only
+    // supported host-side client-settings entry is configureParameters:, and
+    // FrontBoard treats that method as creation-only: calling it after
+    // activation terminates SpringBoard. Never infer inactivity when the
+    // runtime does not expose isActive, and never call the creation path while
+    // an activation is pending or complete.
+    if (!activeStateAvailable || sceneActive) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-client-settings observed scene=%@ class=%@ method=active-observation active=%d/%d targetOrientation=%ld observedOrientation=%ld configured=%d",
+            FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
+            NSStringFromClass([scene class]), sceneActive,
+            activeStateAvailable, (long)interfaceOrientation,
+            (long)observedBefore, observedTarget);
+        return observedTarget;
+    }
+
+    if (![scene respondsToSelector:@selector(configureParameters:)]) {
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-client-settings unsupported scene=%@ class=%@ method=inactive-parameters targetOrientation=%ld observedOrientation=%ld configured=%d",
+            FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
+            NSStringFromClass([scene class]), (long)interfaceOrientation,
+            (long)observedBefore, observedTarget);
+        return observedTarget;
+    }
+
     __block BOOL configured = NO;
     __block NSString *failure = nil;
     void (^applyClientSettings)(id) = ^(id clientSettings) {
@@ -324,30 +355,55 @@ static BOOL FLMLandscapeConfigureClientOrientation(
             } else {
                 failure = @"orientation-setter-unavailable";
             }
+            if ([clientSettings respondsToSelector:
+                                    @selector(setInterfaceOrientationChangesDisabled:)]) {
+                [clientSettings
+                    setInterfaceOrientationChangesDisabled:
+                        interfaceOrientation == UIInterfaceOrientationPortrait];
+            }
         } @catch (NSException *exception) {
             failure = exception.name ?: @"client-settings-exception";
         }
     };
 
-    // This is a live application Scene: it has already been activated by the
-    // suspended launch path. Mutate only its live client settings. Initial
-    // parameter mutation is creation-only and hard-crashes FrontBoard after a
-    // Scene has ever been activated.
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-client-settings begin scene=%@ class=%@ method=live-update targetOrientation=%ld",
+        @"sb landscape-client-settings begin scene=%@ class=%@ method=inactive-parameters active=0/1 targetOrientation=%ld observedOrientation=%ld",
         FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
-        NSStringFromClass([scene class]), (long)interfaceOrientation);
+        NSStringFromClass([scene class]), (long)interfaceOrientation,
+        (long)observedBefore);
     @try {
-        [scene updateClientSettingsWithBlock:applyClientSettings];
+        // Re-read immediately before the creation-only call. prepareScene:
+        // runs on SpringBoard's main thread, so no activation transaction can
+        // interleave after this guard without first returning to the run loop.
+        BOOL finalActiveStateAvailable = NO;
+        BOOL finalSceneActive = FLMLandscapeReadBool(
+            scene, @selector(isActive), &finalActiveStateAvailable);
+        if (!finalActiveStateAvailable || finalSceneActive) {
+            failure = @"activation-raced";
+        } else {
+            [scene configureParameters:^(id parameters) {
+                if ([parameters respondsToSelector:
+                                    @selector(updateClientSettingsWithBlock:)]) {
+                    [parameters
+                        updateClientSettingsWithBlock:applyClientSettings];
+                } else {
+                    failure = @"mutable-parameters-unavailable";
+                }
+            }];
+        }
     } @catch (NSException *exception) {
-        failure = exception.name ?: @"live-update-exception";
+        failure = exception.name ?: @"inactive-parameters-exception";
     }
+    UIInterfaceOrientation observedAfter =
+        FLMLandscapeSceneClientOrientation(scene);
+    BOOL effectiveConfiguration =
+        configured || observedAfter == interfaceOrientation;
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-client-settings complete scene=%@ configured=%d observedOrientation=%ld failure=%@",
-        FLMLandscapeSceneIdentifier(scene) ?: @"<none>", configured,
-        (long)FLMLandscapeSceneClientOrientation(scene),
+        @"sb landscape-client-settings complete scene=%@ method=inactive-parameters configured=%d setterApplied=%d observedOrientation=%ld failure=%@",
+        FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
+        effectiveConfiguration, configured, (long)observedAfter,
         failure ?: @"<none>");
-    return configured;
+    return effectiveConfiguration;
 }
 
 static BOOL FLMLandscapeReadBool(id object,
@@ -1682,6 +1738,19 @@ static id FLMLandscapeSceneForHandle(id handle) {
             self.identifier, FLMLandscapeSceneIdentifier(scene) ?: @"<none>",
             NSStringFromClass([scene class]), NSStringFromCGRect(systemBounds),
             (long)orientation);
+
+        // The suspended launch normally resolves with a portrait client
+        // canvas already in place. Capture that state before activation. If
+        // FrontBoard has not activated the Scene yet, configure the initial
+        // mutable parameters here—the only lifecycle point where FBScene
+        // permits client-settings mutation. If it is already active, the
+        // helper is observation-only and can still accept the existing
+        // portrait canvas without entering the old permanent retry loop.
+        phase = @"initial-client-settings";
+        self.portraitClientCanvasConfigured =
+            FLMLandscapeConfigureClientOrientation(
+                scene, UIInterfaceOrientationPortrait);
+
         phase = @"content-state";
         if ([scene respondsToSelector:@selector(_setContentState:)]) {
             [scene _setContentState:2];
@@ -1725,9 +1794,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
             [mutableSettings setInterfaceOrientation:(NSInteger)orientation];
         }
 
-        // Match the frozen portrait engine's stable ordering: one atomic
-        // server-settings transaction, then one live client-settings update,
-        // followed by a short compositor settle before Presenter creation.
+        // Match the frozen portrait engine's stable ordering after initial
+        // client capture: one atomic server-settings transaction followed by
+        // a short compositor settle before Presenter creation.
         phase = @"server-settings";
         FLMEnqueueDiagnosticLine(
             @"sb landscape-scene-prepare phase=server-settings-begin app=%@ scene=%@ frame=%@ orientation=%ld",
@@ -1738,20 +1807,14 @@ static id FLMLandscapeSceneForHandle(id handle) {
             @"sb landscape-scene-prepare phase=server-settings-complete app=%@ scene=%@",
             self.identifier, FLMLandscapeSceneIdentifier(scene) ?: @"<none>");
 
-        // Keep the server-owned Scene full-screen, foreground and landscape,
-        // while giving UIKit an independent portrait client orientation. This
-        // is the split used by FrontBoard scene hosts: server settings own the
-        // real display contract; client settings own the application canvas.
-        phase = @"client-settings";
-        self.portraitClientCanvasConfigured =
-            FLMLandscapeConfigureClientOrientation(
-                scene, UIInterfaceOrientationPortrait);
-
         CGRect appliedFrame = FLMLandscapeSceneSettingsFrame(scene);
         UIInterfaceOrientation appliedOrientation =
             FLMLandscapeSceneSettingsOrientation(scene);
         UIInterfaceOrientation clientOrientation =
             FLMLandscapeSceneClientOrientation(scene);
+        if (clientOrientation == UIInterfaceOrientationPortrait) {
+            self.portraitClientCanvasConfigured = YES;
+        }
         BOOL nativeLandscape =
             CGRectGetWidth(appliedFrame) > CGRectGetHeight(appliedFrame) &&
             CGRectGetWidth(appliedFrame) > 1.0 &&
@@ -1771,8 +1834,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
             FLMLandscapePortraitCanvasHeight,
             runtimeForeground, runtimeStateKnown, (long)activationState);
         // Server settings and foreground state are asynchronous. Readiness is
-        // checked after the settle delay; only failure to submit the live
-        // portrait-client transaction blocks Presenter creation here.
+        // checked after the settle delay. The client contract is satisfied by
+        // either a guarded initial-parameter write or the portrait state
+        // already supplied by the suspended application Scene.
         return self.portraitClientCanvasConfigured;
     } @catch (NSException *exception) {
         FLMEnqueueDiagnosticLine(

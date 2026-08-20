@@ -80,15 +80,29 @@ grep -Fq 'action=retry' "$module"
 
 # A foreground launch may replace the app's primary Scene. The horizontal
 # module must discard a non-resolving handle and reacquire it. The server Scene
-# stays landscape while client settings establish an upright portrait canvas.
+# stays landscape while the suspended launch's portrait client canvas is
+# captured before activation. FBScene only permits client parameter mutation
+# while inactive; an active Scene must be observation-only.
 grep -Fq 'landscape-scene-handle-stale' "$module"
 grep -Fq 'action=reacquire' "$module"
 grep -Fq 'updateClientSettingsWithBlock:' "$module"
-if grep -Fq 'configureParameters:' "$module"; then
-    echo "activated landscape Scene still uses creation-only parameters" >&2
+grep -Fq 'configureParameters:' "$module"
+grep -Fq 'method=inactive-parameters' "$module"
+grep -Fq 'method=active-observation' "$module"
+grep -Fq '!activeStateAvailable || sceneActive' "$module"
+grep -Fq '!finalActiveStateAvailable || finalSceneActive' "$module"
+if grep -Fq '[scene updateClientSettingsWithBlock:' "$module"; then
+    echo "host-side FBScene still uses the application-side live client updater" >&2
     exit 1
 fi
-grep -Fq 'method=live-update' "$module"
+initial_client_line="$(grep -n 'phase = @"initial-client-settings"' "$module" | head -n 1 | cut -d: -f1)"
+content_state_line="$(grep -n 'phase = @"content-state"' "$module" | head -n 1 | cut -d: -f1)"
+test -n "$initial_client_line"
+test -n "$content_state_line"
+if (( initial_client_line >= content_state_line )); then
+    echo "landscape client canvas is no longer captured before activation" >&2
+    exit 1
+fi
 grep -Fq 'FLMLandscapeSceneSettleDelay = 0.10;' "$module"
 grep -Fq 'landscape-presenter phase=create-begin' "$module"
 grep -Fq 'landscape-presenter recovery' "$module"
