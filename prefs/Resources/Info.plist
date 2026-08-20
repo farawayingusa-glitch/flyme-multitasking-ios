@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.9.45</string>
+    <string>0.9.46</string>
     <key>CFBundleVersion</key>
-    <string>139</string>
+    <string>140</string>
     <key>NSPrincipalClass</key>
     <string>FLMRootListController</string>
 </dict>

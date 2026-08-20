@@ -24,6 +24,7 @@ static const CGFloat FLMLandscapeHandleBarWidth = 5.0;
 static const CGFloat FLMLandscapeSwipeThreshold = 32.0;
 static const CGFloat FLMLandscapeHiddenRevealWidth = 8.0;
 static const NSTimeInterval FLMLandscapeResolveInterval = 0.05;
+static const NSTimeInterval FLMLandscapeResolveGraceDelay = 0.03;
 static const NSTimeInterval FLMLandscapeResolveTimeout = 6.5;
 static const NSTimeInterval FLMLandscapeCloseAnimationDuration = 0.18;
 static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
@@ -101,9 +102,9 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, strong) FLMLandscapeWindow *window;
 @property(nonatomic, strong) FLMLandscapeRootView *rootView;
 @property(nonatomic, strong) UIView *cardView;
-// The application presentation host stays a native full-screen landscape
-// surface. This wrapper is the only layer allowed to carry the card's visual
-// transform; UIKit and the keyboard never receive the card transform.
+// FrontBoard keeps the application Scene full-screen and landscape. This
+// SpringBoard wrapper only scales UIKit's upright client canvas into the card;
+// the application and keyboard never receive the card's visual transform.
 @property(nonatomic, strong) UIView *hostPresentationView;
 @property(nonatomic, strong) UIView *hostView;
 @property(nonatomic, strong) UIView *handleView;
@@ -112,6 +113,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
 @property(nonatomic, strong) UIPanGestureRecognizer *handlePan;
 @property(nonatomic, strong) NSTimer *lockTimer;
+@property(nonatomic, weak) UIWindow *previousKeyWindow;
 @property(nonatomic, strong) id sceneEntity;
 @property(nonatomic, strong) id sceneHandle;
 @property(nonatomic, strong) id scene;
@@ -139,7 +141,7 @@ static const NSTimeInterval FLMLandscapeOpenAnimationDuration = 0.22;
 - (void)updateFrames;
 - (void)orientationDidChange;
 - (void)openIdentifier:(NSString *)identifier;
-- (void)activateIdentifier:(NSString *)identifier;
+- (BOOL)prewarmIdentifier:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
 - (void)refreshSceneForeground;
 - (BOOL)validateHostGeometry;
@@ -170,6 +172,23 @@ static UIWindowScene *FLMLandscapeWindowScene(void) {
             }
         }
         return fallback;
+    }
+    return nil;
+}
+
+static UIWindow *FLMLandscapeCurrentKeyWindow(void) {
+    UIWindowScene *scene = FLMLandscapeWindowScene();
+    if (@available(iOS 13.0, *)) {
+        for (UIWindow *window in scene.windows) {
+            if (window.isKeyWindow) {
+                return window;
+            }
+        }
+    }
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            return window;
+        }
     }
     return nil;
 }
@@ -837,10 +856,10 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
 @implementation FLMLandscapeWindow
 
 - (BOOL)canBecomeKeyWindow {
-    // The target application Scene, not the SpringBoard card window, owns
-    // first responder and keyboard focus. The card remains visible and
-    // touchable without entering the system keyboard responder chain.
-    return NO;
+    // Match the proven portrait host path: SpringBoard's presentation window
+    // must remain key while the target Scene is activated off-workspace. The
+    // remote application still owns its own responder chain inside the host.
+    return YES;
 }
 
 @end
@@ -1172,7 +1191,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
                                       CGRectGetWidth(self.displayBounds),
                                       CGRectGetHeight(self.displayBounds));
     self.rootView.frame = self.rootView.bounds;
-    self.window.hidden = NO;
+    self.previousKeyWindow = FLMLandscapeCurrentKeyWindow();
+    [self.window makeKeyAndVisible];
     self.window.alpha = 1.0;
     self.cardView.alpha = 1.0;
     self.cardView.transform = CGAffineTransformIdentity;
@@ -1200,7 +1220,7 @@ static id FLMLandscapeSceneForHandle(id handle) {
         self.identifier, (unsigned long)self.generation,
         NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
         NSStringFromCGRect(target), safeArea.left, safeArea.right);
-    [self activateIdentifier:self.identifier];
+    [self prewarmIdentifier:self.identifier];
     [self.lockTimer invalidate];
     self.lockTimer = [NSTimer timerWithTimeInterval:0.25
                                              target:self
@@ -1208,20 +1228,23 @@ static id FLMLandscapeSceneForHandle(id handle) {
                                            userInfo:nil
                                             repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.lockTimer forMode:NSRunLoopCommonModes];
-    [self scheduleResolveForGeneration:self.generation delay:0.0];
+    // As in the frozen portrait path, let UIKit publish the suspended primary
+    // Scene before resolving its SpringBoard entity.
+    [self scheduleResolveForGeneration:self.generation
+                                  delay:FLMLandscapeResolveGraceDelay];
 }
 
 - (void)lockTimerFired:(NSTimer *)timer {
     (void)timer;
     if (self.hasVisibleCard) {
-        NSString *frontmostIdentifier =
-            FLMLandscapeFrontmostApplicationIdentifier();
-        if (frontmostIdentifier.length > 0 &&
-            ![frontmostIdentifier isEqualToString:self.identifier]) {
-            [self activateIdentifier:self.identifier];
+        if (!self.window.isKeyWindow) {
+            [self.window makeKeyWindow];
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-card-window key-reasserted app=%@ level=%.1f",
+                self.identifier, self.window.windowLevel);
         }
         // SceneLifecycle protects this scene from normal deactivation. Reassert
-        // the foreground contract while the independent landscape card lives.
+        // the foreground contract without switching the workspace fullscreen.
         [self refreshSceneForeground];
         [self validateHostGeometry];
     }
@@ -1239,37 +1262,27 @@ static id FLMLandscapeSceneForHandle(id handle) {
     }
 }
 
-- (void)activateIdentifier:(NSString *)identifier {
+- (BOOL)prewarmIdentifier:(NSString *)identifier {
     if (identifier.length == 0) {
-        return;
+        return NO;
     }
     UIApplication *application = [UIApplication sharedApplication];
-    BOOL launchRequested = NO;
+    BOOL prewarmRequested = NO;
     if ([application respondsToSelector:
                          @selector(launchApplicationWithIdentifier:suspended:)]) {
-        // The landscape card is only a visual presentation. The target app
-        // must be a real foreground application so UIKit attaches the native
-        // keyboard to its full-screen landscape Scene.
-        launchRequested =
+        // Start the normal full-display application Scene without committing a
+        // workspace transition. prepareScene: then makes that Scene foreground
+        // and landscape while SpringBoard keeps its visual surface in the card.
+        prewarmRequested =
             [application launchApplicationWithIdentifier:identifier
-                                                suspended:NO];
-    }
-    BOOL workspaceRequested = NO;
-    if (!launchRequested) {
-        Class workspaceClass = NSClassFromString(@"SBMainWorkspace");
-        id workspace =
-            [workspaceClass respondsToSelector:@selector(sharedInstance)]
-                ? [workspaceClass sharedInstance]
-                : nil;
-        if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)]) {
-            workspaceRequested =
-                [workspace openApplicationWithBundleID:identifier];
-        }
+                                                suspended:YES];
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-activate app=%@ suspended=0 launchRequested=%d workspaceRequested=%d frontmost=%@",
-        identifier, launchRequested, workspaceRequested,
-        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
+        @"sb landscape-scene-prewarm app=%@ suspended=1 requested=%d frontmost=%@ cardWindowKey=%d",
+        identifier, prewarmRequested,
+        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>",
+        self.window.isKeyWindow);
+    return prewarmRequested;
 }
 
 - (void)scheduleResolveForGeneration:(NSUInteger)generation delay:(NSTimeInterval)delay {
@@ -1285,19 +1298,35 @@ static id FLMLandscapeSceneForHandle(id handle) {
 }
 
 - (void)resolveAndAttachForGeneration:(NSUInteger)generation {
-    if (generation != self.generation || self.closing ||
-        !FLMLandscapeModuleIsLandscape() || FLMLandscapeDeviceIsLocked()) {
+    if (generation != self.generation || self.closing) {
         return;
     }
-    if (CACurrentMediaTime() - self.openedAt > FLMLandscapeResolveTimeout) {
+    self.resolveAttempt += 1;
+    NSTimeInterval elapsed = CACurrentMediaTime() - self.openedAt;
+    if (elapsed > FLMLandscapeResolveTimeout) {
         FLMEnqueueDiagnosticLine(
             @"sb landscape-module-open timeout app=%@ generation=%lu",
             self.identifier, (unsigned long)generation);
         [self closeKeepingApplication:YES];
         return;
     }
-    self.resolveAttempt += 1;
-    NSTimeInterval elapsed = CACurrentMediaTime() - self.openedAt;
+    if (FLMLandscapeDeviceIsLocked()) {
+        [self closeKeepingApplication:YES];
+        return;
+    }
+    if (!FLMLandscapeModuleIsLandscape()) {
+        if (self.resolveAttempt <= 3 || self.resolveAttempt % 20 == 0) {
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-scene-resolve gated=orientation generation=%lu attempt=%lu elapsed=%.2f interfaceOrientation=%ld visualBounds=%@ cardWindowKey=%d action=retry",
+                (unsigned long)generation, (unsigned long)self.resolveAttempt,
+                elapsed, (long)FLMLandscapeInterfaceOrientation(),
+                NSStringFromCGRect(FLMLandscapeModuleVisualBounds()),
+                self.window.isKeyWindow);
+        }
+        [self scheduleResolveForGeneration:generation
+                                      delay:FLMLandscapeResolveInterval];
+        return;
+    }
     id scene = FLMLandscapeSceneForHandle(self.sceneHandle);
     if (!scene && (self.sceneHandle || self.sceneEntity)) {
         if (self.resolveAttempt <= 3 || self.resolveAttempt % 20 == 0) {
@@ -1362,6 +1391,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
         }
     }
     if (!scene) {
+        if (self.resolveAttempt == 8) {
+            [self prewarmIdentifier:self.identifier];
+        }
         [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
         return;
     }
@@ -1943,6 +1975,8 @@ static id FLMLandscapeSceneForHandle(id handle) {
     self.rootView.hostView = nil;
     id scene = self.scene;
     id presenter = self.presenter;
+    UIWindow *previousKeyWindow = self.previousKeyWindow;
+    self.previousKeyWindow = nil;
     FLMEnqueueDiagnosticLine(
         @"sb landscape-content-exit scene={%.1f,%.1f} contract=full-screen-landscape orientation=%ld",
         self.displayBounds.size.width, self.displayBounds.size.height,
@@ -1967,6 +2001,9 @@ static id FLMLandscapeSceneForHandle(id handle) {
             [presenter invalidate];
         }
     } @catch (__unused NSException *exception) {
+    }
+    if (previousKeyWindow && previousKeyWindow != self.window) {
+        [previousKeyWindow makeKeyWindow];
     }
     NSString *queued = [self.queuedIdentifier copy];
     self.queuedIdentifier = nil;

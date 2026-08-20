@@ -36,10 +36,28 @@ grep -Fq 'FLMLandscapeSharedValue(portraitController, @"itemIdentifiers")' "$whe
 grep -Fq 'CFSTR("com.codex.flymemultitasking.preferences-changed")' "$wheel"
 grep -Fq 'format:2' "$wheel"
 grep -Fq '_iconView.layer.cornerRadius = isLockItem ? 0.0 : size * 0.5;' "$wheel"
-if grep -Fq -- '- (void)activateIdentifier:' "$wheel"; then
+if grep -Fq -- '- (void)activateIdentifier:' "$wheel" "$module"; then
     echo "duplicate landscape wheel application launcher detected" >&2
     exit 1
 fi
+
+# Opening a card must not commit a workspace transition. Match the frozen
+# portrait lifecycle: make the SpringBoard host key, prewarm suspended, then
+# foreground the resolved full-display Scene through FrontBoard settings.
+grep -Fq '[self.window makeKeyAndVisible];' "$module"
+grep -Fq '@property(nonatomic, weak) UIWindow *previousKeyWindow;' "$module"
+grep -Fq '[previousKeyWindow makeKeyWindow];' "$module"
+grep -Fq 'landscape-card-window key-reasserted' "$module"
+prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
+grep -Fq 'suspended:YES' <<<"$prewarm_body"
+grep -Fq 'landscape-scene-prewarm' <<<"$prewarm_body"
+if grep -Fq 'suspended:NO' <<<"$prewarm_body" ||
+   grep -Fq 'openApplicationWithBundleID:' <<<"$prewarm_body"; then
+    echo "landscape card startup still promotes the workspace fullscreen" >&2
+    exit 1
+fi
+grep -Fq 'gated=orientation' "$module"
+grep -Fq 'action=retry' "$module"
 
 # A foreground launch may replace the app's primary Scene. The horizontal
 # module must discard a non-resolving handle and reacquire it. The server Scene
@@ -49,6 +67,8 @@ grep -Fq 'action=reacquire' "$module"
 grep -Fq 'updateClientSettingsWithBlock:' "$module"
 grep -Fq 'FLMLandscapePortraitCanvasWidth' "$module"
 grep -Fq 'visualRotation=0' "$module"
+grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
+grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
 if grep -Fq 'CGAffineTransformRotate' "$module"; then
     echo "landscape card still rotates the application presentation" >&2
     exit 1
