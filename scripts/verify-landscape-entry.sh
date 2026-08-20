@@ -84,6 +84,24 @@ grep -Fq 'action=retry' "$module"
 grep -Fq 'landscape-scene-handle-stale' "$module"
 grep -Fq 'action=reacquire' "$module"
 grep -Fq 'updateClientSettingsWithBlock:' "$module"
+if grep -Fq 'configureParameters:' "$module"; then
+    echo "activated landscape Scene still uses creation-only parameters" >&2
+    exit 1
+fi
+grep -Fq 'method=live-update' "$module"
+grep -Fq 'FLMLandscapeSceneSettleDelay = 0.10;' "$module"
+grep -Fq 'landscape-presenter phase=create-begin' "$module"
+grep -Fq 'landscape-presenter recovery' "$module"
+grep -Fq 'landscape-host-reveal' "$module"
+prepare_body="$(sed -n '/^- (BOOL)prepareScene:/,/^- (void)layoutCardAnimated:/p' "$module")"
+if [[ "$(grep -Fc '[scene updateSettings:mutableSettings withTransitionContext:nil];' <<<"$prepare_body")" -ne 1 ]]; then
+    echo "landscape Scene preparation must use one server-settings transaction" >&2
+    exit 1
+fi
+if grep -Fq 'committedSettings' <<<"$prepare_body"; then
+    echo "duplicate landscape Scene settings transaction returned" >&2
+    exit 1
+fi
 grep -Fq 'FLMLandscapePortraitCanvasWidth' "$module"
 grep -Fq 'visualRotation=0' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
