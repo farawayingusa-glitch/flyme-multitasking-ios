@@ -58,27 +58,30 @@ if grep -Fq -- '- (void)activateIdentifier:' "$wheel"; then
     echo "landscape wheel must not own application launch" >&2
     exit 1
 fi
-grep -Fq -- '- (BOOL)activateIdentifierInForeground:' "$module"
+grep -Fq -- '- (BOOL)prewarmIdentifier:' "$module"
 
-# Opening a card is a real foreground activation. The full-display SpringBoard
-# card remains the key/highest interaction boundary while the target Scene is
-# brought to the foreground behind it.
+# Opening a card follows the proven portrait route: the target's primary Scene
+# is published suspended, then prepareScene: makes that Scene foreground while
+# the full-display SpringBoard card remains the key/highest interaction
+# boundary. A real Workspace transition is reserved for the explicit white-bar
+# right-swipe fullscreen action.
 window_body="$(sed -n '/^@implementation FLMLandscapeWindow/,/^@end/p' "$module")"
 grep -Fq -- '- (BOOL)canBecomeKeyWindow' <<<"$window_body"
 grep -Fq 'return YES;' <<<"$window_body"
 grep -Fq -- '- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event' <<<"$window_body"
 open_body="$(sed -n '/^- (void)openIdentifier:(NSString \*)identifier {/,/^- (void)lockTimerFired:/p' "$module")"
 grep -Fq '[self.window makeKeyAndVisible];' <<<"$open_body"
-foreground_body="$(sed -n '/^- (BOOL)activateIdentifierInForeground:(NSString \*)identifier {/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
-grep -Fq 'suspended:NO' <<<"$foreground_body"
-grep -Fq 'openApplicationWithBundleID:' <<<"$foreground_body"
-grep -Fq 'workspaceTransition=1' <<<"$foreground_body"
-if grep -Fq 'suspended:YES' <<<"$foreground_body"; then
-    echo "card-open path regressed to suspended-only target activation" >&2
+prewarm_body="$(sed -n '/^- (BOOL)prewarmIdentifier:(NSString \*)identifier {/,/^- (void)scheduleResolveForGeneration:/p' "$module")"
+grep -Fq 'suspended:YES' <<<"$prewarm_body"
+grep -Fq 'workspaceTransition=0' <<<"$prewarm_body"
+if grep -Fq 'suspended:NO' <<<"$prewarm_body" ||
+   grep -Fq 'openApplicationWithBundleID:' <<<"$prewarm_body" ||
+   grep -Fq 'workspaceTransition=1' <<<"$prewarm_body"; then
+    echo "card-open path must not perform a Workspace foreground transition" >&2
     exit 1
 fi
-grep -Fq 'mode=foreground-exclusive-hosted-portrait' "$module"
-grep -Fq 'workspaceOwner=target' "$module"
+grep -Fq 'mode=suspended-prewarm-hosted-portrait' "$module"
+grep -Fq 'workspaceOwner=unchanged' "$module"
 grep -Fq 'keyboardOwner=system-bridge' "$module"
 grep -Fq 'gated=orientation' "$module"
 grep -Fq 'action=retry' "$module"
