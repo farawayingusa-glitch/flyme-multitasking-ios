@@ -69,11 +69,15 @@ for marker in \
     "floatingSceneCardGeometryPending" \
     "floatingSceneCardGeometryCommitted" \
     "floatingKeyboardFramePending" \
+    "floatingKeyboardHideSessionGeneration" \
+    "floatingKeyboardVisibleFrameSessionGeneration" \
     "frame-deferred waiting=scene-host" \
     "host-deferred waiting=application-host" \
     "frame-deferred replay=1" \
     "floatingKeyboardSessionGeneration" \
     "sb frame-apply rejected=inactive-session" \
+    "sb did-hide ignored=stale-session" \
+    "sb host-reassert from=" \
     "sb session-end route-cleared" \
     "FLMPublishKeyboardState" \
     "FLMPublishKeyboardAvoidance" \

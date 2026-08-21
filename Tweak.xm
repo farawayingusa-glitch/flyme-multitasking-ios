@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.41"
+#define FLMLogBuildString @"0.10.0"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1329,6 +1329,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL floatingKeyboardFramePending;
 @property(nonatomic, assign) CGRect floatingKeyboardPendingFrame;
 @property(nonatomic, assign) NSUInteger floatingKeyboardPendingSessionGeneration;
+@property(nonatomic, assign) BOOL floatingKeyboardHidePending;
+@property(nonatomic, assign) NSUInteger floatingKeyboardHideSessionGeneration;
+@property(nonatomic, assign) NSUInteger floatingKeyboardVisibleFrameSessionGeneration;
 @property(nonatomic, weak) UIView *floatingKeyboardDeferredHostView;
 @property(nonatomic, strong) id floatingKeyboardDeferredScene;
 @property(nonatomic, assign) NSUInteger floatingKeyboardDeferredSessionGeneration;
@@ -1410,6 +1413,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id)scene
             sessionGeneration:(NSUInteger)sessionGeneration;
+- (BOOL)ensureFloatingKeyboardHostAttached;
 - (BOOL)floatingKeyboardPresentationReady;
 - (BOOL)floatingApplicationHostReadyForKeyboardRoute;
 - (void)flushDeferredFloatingKeyboardHostIfReady;
@@ -2073,6 +2077,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                  object:nil];
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
+        self.floatingKeyboardHidePending = NO;
+        self.floatingKeyboardHideSessionGeneration = 0;
+        self.floatingKeyboardVisibleFrameSessionGeneration = 0;
         // Dock presentation width is session-local. Every new dock transition
         // starts from the configured minimum size instead of restoring stale geometry.
         self.floatingDockWidth = FLMDefaultDockWidth;
@@ -6400,7 +6407,49 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingKeyboardSessionGeneration) {
         return NO;
     }
-    return YES;
+    return [self ensureFloatingKeyboardHostAttached];
+}
+
+- (BOOL)ensureFloatingKeyboardHostAttached {
+    UIView *hostView = self.floatingKeyboardLayerHostView;
+    NSUInteger sessionGeneration = self.floatingKeyboardSessionGeneration;
+    if (!hostView || sessionGeneration == 0 ||
+        self.floatingKeyboardHostSessionGeneration != sessionGeneration) {
+        return NO;
+    }
+
+    [self prepareKeyboardForwardingWindowIfNeeded];
+    UIView *forwardingRoot =
+        self.keyboardForwardingWindow.rootViewController.view;
+    if (!forwardingRoot) {
+        return NO;
+    }
+
+    BOOL wasAttached = hostView.superview == forwardingRoot;
+    if (!wasAttached) {
+        // UIKit can transiently put the already accepted native host back into
+        // the card hierarchy during a Scene/responder handoff. Reuse the same
+        // paired host and restore only its presentation parent; creating a
+        // second keyboard host here is what caused the intermittent in-card
+        // keyboard in earlier iterations.
+        FLMEnqueueDiagnosticLine(
+            @"sb host-reassert from=%p oldSuperview=%p session=%lu",
+            (__bridge void *)hostView, (__bridge void *)hostView.superview,
+            (unsigned long)sessionGeneration);
+        [hostView removeFromSuperview];
+        hostView.translatesAutoresizingMaskIntoConstraints = YES;
+        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight;
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+        [forwardingRoot addSubview:hostView];
+    } else {
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+    }
+    [hostView setNeedsLayout];
+    [hostView layoutIfNeeded];
+    return hostView.superview == forwardingRoot;
 }
 
 - (void)flushPendingFloatingKeyboardFrameIfReady {
@@ -6533,6 +6582,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            CGRectGetHeight(bounds) - height,
                            CGRectGetWidth(bounds),
                            height);
+        self.floatingKeyboardVisibleFrameSessionGeneration =
+            self.floatingKeyboardSessionGeneration;
         self.floatingKeyboardVisible = YES;
         self.floatingKeyboardFrame = frame;
         CGRect interactionFrame = [self floatingKeyboardInteractionFrame];
@@ -6565,6 +6616,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     BOOL wasKeyboardInteraction =
         self.floatingKeyboardVisible || self.floatingKeyboardInteractionSessionActive;
+    self.floatingKeyboardHidePending = NO;
+    self.floatingKeyboardHideSessionGeneration = 0;
+    self.floatingKeyboardVisibleFrameSessionGeneration = 0;
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
     [self deactivateKeyboardForwardingWindow];
@@ -6600,6 +6654,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardFramePending = NO;
     self.floatingKeyboardPendingFrame = CGRectNull;
     self.floatingKeyboardPendingSessionGeneration = 0;
+    self.floatingKeyboardHidePending = NO;
+    self.floatingKeyboardHideSessionGeneration = 0;
+    self.floatingKeyboardVisibleFrameSessionGeneration = 0;
     self.floatingKeyboardDeferredHostView = nil;
     self.floatingKeyboardDeferredScene = nil;
     self.floatingKeyboardDeferredSessionGeneration = 0;
@@ -6617,6 +6674,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardState(nil, nil, 0);
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingKeyboardVisibleFrameSessionGeneration = 0;
     self.floatingKeyboardMaximumVisibleHeight = 0.0;
     self.floatingBackdropTap.additionalProtectedFrame = CGRectNull;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
@@ -6764,20 +6822,57 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         notification.name, NSStringFromCGRect(frame), NSStringFromCGRect(bounds),
         visible);
     if (visible) {
+        // A visible frame belongs to the current route and supersedes any
+        // dismissal that was queued by a previous UIKit transaction.
+        self.floatingKeyboardHidePending = NO;
+        self.floatingKeyboardHideSessionGeneration = 0;
         [self applyKeyboardFrame:frame visible:YES];
     } else {
         // WillChangeFrame marks the beginning of the physical dismissal
         // animation. Keep the stable avoidance and touch envelope until
         // UIKeyboardDidHide confirms that the keyboard is actually gone.
+        NSUInteger sessionGeneration = self.floatingKeyboardSessionGeneration;
+        BOOL activeRoute = sessionGeneration != 0 &&
+                           !self.floatingWindow.hidden &&
+                           !self.floatingDocked;
+        self.floatingKeyboardHidePending =
+            activeRoute &&
+            (self.floatingKeyboardVisibleFrameSessionGeneration ==
+                 sessionGeneration ||
+             (self.floatingKeyboardFramePending &&
+              self.floatingKeyboardPendingSessionGeneration ==
+                  sessionGeneration));
+        self.floatingKeyboardHideSessionGeneration =
+            self.floatingKeyboardHidePending ? sessionGeneration : 0;
         FLMEnqueueDiagnosticLine(
-            @"sb frame-hidden pending-confirmation stableHeight=%.2f avoidance-retained=1",
-            self.floatingKeyboardMaximumVisibleHeight);
+            @"sb frame-hidden pending-confirmation stableHeight=%.2f avoidance-retained=1 session=%lu active=%d",
+            self.floatingKeyboardMaximumVisibleHeight,
+            (unsigned long)self.floatingKeyboardHideSessionGeneration,
+            self.floatingKeyboardHidePending);
     }
 }
 
 - (void)keyboardDidHide:(NSNotification *)notification {
-    FLMEnqueueDiagnosticLine(@"sb notification=%@ did-hide",
-                             notification.name);
+    NSUInteger sessionGeneration = self.floatingKeyboardSessionGeneration;
+    BOOL accepted = self.floatingKeyboardHidePending &&
+                    sessionGeneration != 0 &&
+                    self.floatingKeyboardHideSessionGeneration ==
+                        sessionGeneration;
+    FLMEnqueueDiagnosticLine(
+        @"sb notification=%@ did-hide accepted=%d pending=%d pendingSession=%lu currentSession=%lu",
+        notification.name, accepted, self.floatingKeyboardHidePending,
+        (unsigned long)self.floatingKeyboardHideSessionGeneration,
+        (unsigned long)sessionGeneration);
+    if (!accepted) {
+        // UIKeyboardDidHide is process-wide and can arrive after the old card
+        // session has ended or after a new session has already received a
+        // visible frame. Without the matching WillChangeFrame marker this is
+        // a stale dismissal and must not hide the current external keyboard.
+        FLMEnqueueDiagnosticLine(@"sb did-hide ignored=stale-session");
+        return;
+    }
+    self.floatingKeyboardHidePending = NO;
+    self.floatingKeyboardHideSessionGeneration = 0;
     [self applyKeyboardFrame:CGRectNull visible:NO];
     [self finalizeKeyboardDismissalProtection];
 }
@@ -6795,6 +6890,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
         CGRectNull;
     [self endFloatingKeyboardInteractionSession];
+    self.floatingKeyboardHidePending = NO;
+    self.floatingKeyboardHideSessionGeneration = 0;
     self.floatingKeyboardMaximumVisibleHeight = 0.0;
     FLMEnqueueDiagnosticLine(
         @"sb frame-hidden protection=finalized generation=%lu",

@@ -511,6 +511,10 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
 @end
 
+@interface FLMInputHeightAppListController : PSListController
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *applications;
+@end
+
 @interface FLMAppOrderController
     : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, strong) NSMutableArray<NSString *> *items;
@@ -733,6 +737,106 @@ static NSString *FLMNameForIdentifier(
         [items removeObject:identifier];
     }
     FLMSetPreference(@"wheelItems", items);
+}
+
+@end
+
+@implementation FLMInputHeightAppListController
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        self.title = @"Input height applications";
+    }
+    return self;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    self.applications = FLMInstalledApplications();
+    _specifiers = nil;
+    [self reloadSpecifiers];
+}
+
+- (NSArray *)specifiers {
+    if (_specifiers) {
+        return _specifiers;
+    }
+
+    self.applications = FLMInstalledApplications();
+    NSMutableArray<PSSpecifier *> *specifiers = [NSMutableArray array];
+    PSSpecifier *group =
+        [PSSpecifier groupSpecifierWithName:@"Input height applications"];
+    [group setProperty:
+        @"Enable an app to adjust its editable bottom input field. The value is in points; an app-specific value overrides the global default."
+             forKey:@"footerText"];
+    [specifiers addObject:group];
+
+    for (NSDictionary *application in self.applications) {
+        NSString *identifier = application[@"identifier"];
+        NSString *name = application[@"name"];
+        if (identifier.length == 0) {
+            continue;
+        }
+        NSString *enabledKey = [@"inputFieldHeightEnabled."
+            stringByAppendingString:identifier];
+        NSString *heightKey = [@"inputFieldHeight."
+            stringByAppendingString:identifier];
+        PSSpecifier *enabledSpecifier =
+            [PSSpecifier preferenceSpecifierNamed:name ?: identifier
+                                           target:self
+                                              set:@selector(setInputAppEnabled:specifier:)
+                                              get:@selector(inputAppEnabled:)
+                                           detail:nil
+                                             cell:PSSwitchCell
+                                             edit:nil];
+        [enabledSpecifier setProperty:identifier forKey:@"itemIdentifier"];
+        UIImage *icon = FLMIconForIdentifier(identifier);
+        if (icon) {
+            [enabledSpecifier setProperty:icon forKey:@"iconImage"];
+        }
+        [specifiers addObject:enabledSpecifier];
+
+        NSString *heightLabel = [NSString stringWithFormat:
+            @"%@ input height", name ?: identifier];
+        PSSpecifier *heightSpecifier =
+            [PSSpecifier preferenceSpecifierNamed:heightLabel
+                                           target:self
+                                              set:NULL
+                                              get:NULL
+                                           detail:nil
+                                             cell:PSStaticTextCell
+                                             edit:nil];
+        [heightSpecifier setProperty:NSStringFromClass([FLMWheelSliderCell class])
+                              forKey:@"cellClass"];
+        [heightSpecifier setProperty:heightKey forKey:@"preferenceKey"];
+        [heightSpecifier setProperty:@56.0 forKey:@"defaultValue"];
+        [heightSpecifier setProperty:@32.0 forKey:@"minimumValue"];
+        [heightSpecifier setProperty:@180.0 forKey:@"maximumValue"];
+        [heightSpecifier setProperty:@1.0 forKey:@"inputStep"];
+        [heightSpecifier setProperty:@92.0 forKey:@"height"];
+        [heightSpecifier setProperty:enabledKey forKey:@"enabledPreferenceKey"];
+        [specifiers addObject:heightSpecifier];
+    }
+
+    _specifiers = [specifiers copy];
+    return _specifiers;
+}
+
+- (NSNumber *)inputAppEnabled:(PSSpecifier *)specifier {
+    NSString *identifier = [specifier propertyForKey:@"itemIdentifier"];
+    NSString *key = [@"inputFieldHeightEnabled." stringByAppendingString:identifier ?: @""];
+    id value = FLMCopyPreference(key);
+    return @([value isKindOfClass:[NSNumber class]] && [value boolValue]);
+}
+
+- (void)setInputAppEnabled:(NSNumber *)value specifier:(PSSpecifier *)specifier {
+    NSString *identifier = [specifier propertyForKey:@"itemIdentifier"];
+    if (identifier.length == 0) {
+        return;
+    }
+    NSString *key = [@"inputFieldHeightEnabled." stringByAppendingString:identifier];
+    FLMSetPreference(key, @([value boolValue]));
 }
 
 @end

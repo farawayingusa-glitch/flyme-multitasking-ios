@@ -27,6 +27,8 @@
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
+#define FLYME_PREFERENCES_NOTIFICATION "com.codex.flymemultitasking.preferences-changed"
+#define FLYME_PREFERENCES_DOMAIN CFSTR("com.codex.flymemultitasking")
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -59,6 +61,12 @@ static BOOL FLMContentViewportAdapterApplying = NO;
 static BOOL FLMContentViewportAdapterActive = NO;
 static uint64_t FLMContentViewportAdapterGeneration = 0;
 static NSMapTable<UIView *, NSDictionary *> *FLMContentViewportOriginalLayouts;
+static BOOL FLMInputFieldHeightAdjustmentEnabled = NO;
+static CGFloat FLMConfiguredInputFieldHeight = 56.0;
+static NSString *FLMInputFieldHeightBundleIdentifier;
+static uint64_t FLMInputFieldHeightGeneration = 0;
+static NSMapTable<UIView *, NSValue *> *FLMInputFieldOriginalFrames;
+static BOOL FLMInputFieldHeightApplying = NO;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
@@ -87,6 +95,13 @@ static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
+static BOOL FLMSceneMatchesKeyboardRoute(UIWindowScene *scene);
+static void FLMReloadInputFieldHeightPreference(void);
+static void FLMKeyboardPreferencesChanged(CFNotificationCenterRef center,
+                                           void *observer,
+                                           CFStringRef name,
+                                           const void *object,
+                                           CFDictionaryRef userInfo);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -149,6 +164,211 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
+}
+
+static id FLMCopyKeyboardPreference(NSString *key) {
+    if (key.length == 0) {
+        return nil;
+    }
+    CFPropertyListRef value = CFPreferencesCopyValue(
+        (__bridge CFStringRef)key,
+        FLYME_PREFERENCES_DOMAIN,
+        kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
+    return CFBridgingRelease(value);
+}
+
+static NSString *FLMInputFieldHeightPreferenceKey(NSString *prefix,
+                                                    NSString *bundleIdentifier) {
+    if (prefix.length == 0 || bundleIdentifier.length == 0) {
+        return nil;
+    }
+    return [prefix stringByAppendingString:bundleIdentifier];
+}
+
+static CGFloat FLMClampedInputFieldHeight(CGFloat value) {
+    if (!isfinite(value)) {
+        value = 56.0;
+    }
+    return MAX(32.0, MIN(180.0, value));
+}
+
+static void FLMRestoreInputFieldOriginalFrames(void) {
+    if (!FLMInputFieldOriginalFrames) {
+        return;
+    }
+    for (UIView *view in FLMInputFieldOriginalFrames.keyEnumerator) {
+        NSValue *value = [FLMInputFieldOriginalFrames objectForKey:view];
+        if (!value || !view) {
+            continue;
+        }
+        @try {
+            view.frame = value.CGRectValue;
+            [view setNeedsLayout];
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    [FLMInputFieldOriginalFrames removeAllObjects];
+}
+
+static BOOL FLMIsConfiguredInputField(UIView *view) {
+    if (!FLMInputFieldHeightAdjustmentEnabled ||
+        !FLMKeyboardTargetApplication || !FLMKeyboardRouteActive ||
+        !view || view.hidden || view.alpha < 0.01 || !view.window) {
+        return NO;
+    }
+
+    BOOL editable = NO;
+    if ([view isKindOfClass:[UITextView class]]) {
+        UITextView *textView = (UITextView *)view;
+        editable = textView.editable && textView.userInteractionEnabled;
+    } else if ([view isKindOfClass:[UITextField class]]) {
+        UITextField *textField = (UITextField *)view;
+        editable = textField.enabled && textField.userInteractionEnabled;
+    }
+    if (!editable) {
+        return NO;
+    }
+
+    // The configurable field is intended for the chat/composer control. A
+    // target app may also contain search fields near the top of the screen;
+    // keeping the bottom-area gate prevents those controls from being resized.
+    CGRect windowFrame = [view convertRect:view.bounds toView:view.window];
+    CGFloat windowHeight = CGRectGetHeight(view.window.bounds);
+    if (windowHeight <= 1.0 ||
+        CGRectGetMaxY(windowFrame) < windowHeight * 0.58) {
+        return NO;
+    }
+    return CGRectGetHeight(view.bounds) <= 180.0 || view.isFirstResponder;
+}
+
+static void FLMApplyConfiguredInputFieldHeightToView(UIView *view) {
+    if (FLMInputFieldHeightApplying || !FLMIsConfiguredInputField(view)) {
+        return;
+    }
+    if (!FLMInputFieldOriginalFrames) {
+        FLMInputFieldOriginalFrames =
+            [NSMapTable weakToStrongObjectsMapTable];
+    }
+    if (![FLMInputFieldOriginalFrames objectForKey:view]) {
+        [FLMInputFieldOriginalFrames setObject:[NSValue valueWithCGRect:view.frame]
+                                         forKey:view];
+    }
+
+    CGRect frame = view.frame;
+    CGFloat targetHeight = FLMClampedInputFieldHeight(
+        FLMConfiguredInputFieldHeight);
+    if (fabs(CGRectGetHeight(frame) - targetHeight) < 0.5) {
+        return;
+    }
+    CGFloat bottom = CGRectGetMaxY(frame);
+    frame.origin.y = bottom - targetHeight;
+    frame.size.height = targetHeight;
+    FLMInputFieldHeightApplying = YES;
+    @try {
+        view.frame = frame;
+        [view setNeedsLayout];
+    } @catch (__unused NSException *exception) {
+    }
+    FLMInputFieldHeightApplying = NO;
+}
+
+static void FLMApplyConfiguredInputFieldHeightToVisibleControls(void) {
+    if (!FLMInputFieldHeightAdjustmentEnabled ||
+        !FLMKeyboardTargetApplication || !FLMKeyboardRouteActive) {
+        return;
+    }
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            [window.rootViewController.view setNeedsLayout];
+            [window.rootViewController.view setNeedsUpdateConstraints];
+        }
+    }
+}
+
+static void FLMReloadInputFieldHeightPreference(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMReloadInputFieldHeightPreference();
+        });
+        return;
+    }
+
+    BOOL routeEligible = FLMKeyboardTargetApplication &&
+                         FLMKeyboardRouteActive &&
+                         FLMKeyboardSessionGeneration != 0;
+    NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    NSNumber *enabledValue = nil;
+    NSNumber *heightValue = nil;
+    if (routeEligible && bundleIdentifier.length > 0) {
+        NSString *enabledKey = FLMInputFieldHeightPreferenceKey(
+            @"inputFieldHeightEnabled.", bundleIdentifier);
+        NSString *heightKey = FLMInputFieldHeightPreferenceKey(
+            @"inputFieldHeight.", bundleIdentifier);
+        id enabledCandidate = FLMCopyKeyboardPreference(enabledKey);
+        id heightCandidate = FLMCopyKeyboardPreference(heightKey);
+        if ([enabledCandidate isKindOfClass:[NSNumber class]]) {
+            enabledValue = enabledCandidate;
+        }
+        if ([heightCandidate isKindOfClass:[NSNumber class]]) {
+            heightValue = heightCandidate;
+        }
+    }
+
+    BOOL enabled = routeEligible && [enabledValue boolValue];
+    CGFloat defaultHeight = 56.0;
+    id defaultCandidate = FLMCopyKeyboardPreference(@"inputFieldHeightDefault");
+    if ([defaultCandidate isKindOfClass:[NSNumber class]]) {
+        defaultHeight = [defaultCandidate doubleValue];
+    }
+    CGFloat configuredHeight = [heightValue isKindOfClass:[NSNumber class]]
+                                   ? [heightValue doubleValue]
+                                   : defaultHeight;
+    configuredHeight = FLMClampedInputFieldHeight(configuredHeight);
+
+    BOOL generationChanged = FLMInputFieldHeightGeneration !=
+                             FLMKeyboardSessionGeneration;
+    BOOL bundleChanged = ![FLMInputFieldHeightBundleIdentifier
+        isEqualToString:bundleIdentifier];
+    BOOL settingsChanged = FLMInputFieldHeightAdjustmentEnabled != enabled ||
+                           fabs(FLMConfiguredInputFieldHeight -
+                                configuredHeight) > 0.5 || bundleChanged ||
+                           generationChanged;
+    if (settingsChanged &&
+        (generationChanged || bundleChanged ||
+         FLMInputFieldHeightAdjustmentEnabled != enabled)) {
+        FLMRestoreInputFieldOriginalFrames();
+    }
+    FLMInputFieldHeightAdjustmentEnabled = enabled;
+    FLMConfiguredInputFieldHeight = configuredHeight;
+    FLMInputFieldHeightBundleIdentifier = [bundleIdentifier copy];
+    FLMInputFieldHeightGeneration = FLMKeyboardSessionGeneration;
+    if (settingsChanged) {
+        NSLog(@"[FlymeKeyboard] input-height route bundle=%@ enabled=%d height=%.1f session=%llu",
+              bundleIdentifier ?: @"<none>", enabled, configuredHeight,
+              (unsigned long long)FLMKeyboardSessionGeneration);
+    }
+}
+
+static void FLMKeyboardPreferencesChanged(CFNotificationCenterRef center,
+                                           void *observer,
+                                           CFStringRef name,
+                                           const void *object,
+                                           CFDictionaryRef userInfo) {
+    (void)center;
+    (void)observer;
+    (void)name;
+    (void)object;
+    (void)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        FLMReloadInputFieldHeightPreference();
+        FLMApplyConfiguredInputFieldHeightToVisibleControls();
+    });
 }
 
 static BOOL FLMProcessIsKeyboardExtension(void) {
@@ -484,6 +704,7 @@ static void FLMReloadKeyboardRoute(void) {
     }
     FLMReloadKeyboardCardGeometry();
     FLMReloadKeyboardAvoidance();
+    FLMReloadInputFieldHeightPreference();
 
     if (FLMKeyboardRouteActive || previousTargetApplication ||
         previousGeneration != sessionGeneration) {
@@ -877,6 +1098,30 @@ static void FLMUpdateContentViewportAdapter(void) {
 
 %end
 
+%group FLMInputFieldHeight
+
+%hook UITextView
+
+- (void)layoutSubviews {
+    %orig;
+    FLMReloadInputFieldHeightPreference();
+    FLMApplyConfiguredInputFieldHeightToView(self);
+}
+
+%end
+
+%hook UITextField
+
+- (void)layoutSubviews {
+    %orig;
+    FLMReloadInputFieldHeightPreference();
+    FLMApplyConfiguredInputFieldHeightToView(self);
+}
+
+%end
+
+%end
+
 %group FLMRemoteKeyboardGeometry
 
 %hook UITextEffectsWindow
@@ -955,6 +1200,11 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
         return;
     }
     FLMKeyboardRouteObserversInstalled = YES;
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+        FLMKeyboardPreferencesChanged,
+        CFSTR("com.codex.flymemultitasking.preferences-changed"), NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
     notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
                              &FLMKeyboardRouteToken,
                              dispatch_get_main_queue(),
@@ -1027,6 +1277,7 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
     // full-screen root layout.  The remote keyboard hook below remains gated
     // by the exact Scene route.
     %init(FLMContentViewportAdapter);
+    %init(FLMInputFieldHeight);
     FLMInstallRemoteKeyboardGeometryIfAvailable();
     FLMReloadKeyboardRoute();
     FLMPublishKeyboardAppLifecycleStage(
