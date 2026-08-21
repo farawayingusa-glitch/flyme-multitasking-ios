@@ -184,15 +184,13 @@ typedef NS_ENUM(NSInteger, FLMLandscapeInteractionDomain) {
 @property(nonatomic, assign) CGRect interactionStartHandleFrame;
 @property(nonatomic, assign) CFTimeInterval interactionStartedAt;
 @property(nonatomic, assign) BOOL started;
-@property(nonatomic, assign) BOOL foregroundActivationRequested;
-@property(nonatomic, assign) NSTimeInterval foregroundActivationLastAttemptAt;
 @property(nonatomic, copy) NSString *queuedIdentifier;
 + (instancetype)sharedModule;
 - (void)start;
 - (void)updateFrames;
 - (void)orientationDidChange;
 - (void)openIdentifier:(NSString *)identifier;
-- (BOOL)activateIdentifierInForeground:(NSString *)identifier;
+- (BOOL)prewarmIdentifier:(NSString *)identifier;
 - (void)closeKeepingApplication:(BOOL)keepApplication;
 - (void)refreshSceneForeground;
 - (BOOL)validateHostGeometry;
@@ -1733,8 +1731,6 @@ static NSString *FLMLandscapeInteractionDomainName(
     self.expectedHostBounds = FLMLandscapePortraitSceneBounds();
     self.expectedHostGeneration = self.generation;
     self.expectedHostSceneIdentifier = nil;
-    self.foregroundActivationRequested = NO;
-    self.foregroundActivationLastAttemptAt = 0.0;
     self.dockedCard = NO;
     self.hiddenCard = NO;
     self.dockedOnRight = NO;
@@ -1778,9 +1774,9 @@ static NSString *FLMLandscapeInteractionDomainName(
         self.identifier, (unsigned long)self.generation,
         NSStringFromCGRect(self.displayBounds), NSStringFromCGRect(target),
         (long)self.displayOrientation, safeArea.left, safeArea.right);
-    [self activateIdentifierInForeground:self.identifier];
+    [self prewarmIdentifier:self.identifier];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-bootstrap app=%@ generation=%lu mode=foreground-exclusive-hosted-portrait cardWindowKey=%d workspaceOwner=target keyboardOwner=system-bridge windowLevel=%.1f",
+        @"sb landscape-scene-bootstrap app=%@ generation=%lu mode=suspended-prewarm-hosted-portrait cardWindowKey=%d workspaceOwner=unchanged keyboardOwner=system-bridge windowLevel=%.1f",
         self.identifier, (unsigned long)self.generation,
         self.window.isKeyWindow, self.window.windowLevel);
     [self.lockTimer invalidate];
@@ -1813,11 +1809,6 @@ static NSString *FLMLandscapeInteractionDomainName(
                 foregroundDrifted, (long)activationState,
                 FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>");
             [self refreshSceneForeground];
-            if (foregroundDrifted &&
-                CACurrentMediaTime() - self.foregroundActivationLastAttemptAt >=
-                    1.0) {
-                [self activateIdentifierInForeground:self.identifier];
-            }
         }
         [self validateHostGeometry];
     }
@@ -1835,64 +1826,28 @@ static NSString *FLMLandscapeInteractionDomainName(
     }
 }
 
-- (BOOL)activateIdentifierInForeground:(NSString *)identifier {
+- (BOOL)prewarmIdentifier:(NSString *)identifier {
     if (identifier.length == 0) {
         return NO;
     }
-    if (self.foregroundActivationRequested &&
-        CACurrentMediaTime() - self.foregroundActivationLastAttemptAt < 1.0) {
-        return YES;
-    }
-    NSString *frontmostBefore =
-        [FLMLandscapeFrontmostApplicationIdentifier() copy];
     UIApplication *application = [UIApplication sharedApplication];
-    BOOL foregroundRequested = NO;
+    BOOL prewarmRequested = NO;
     if ([application respondsToSelector:
                           @selector(launchApplicationWithIdentifier:suspended:)]) {
-        // This must be a real foreground activation. A suspended primary Scene
-        // can render into the card, but it leaves the previous application
-        // frontmost and lets its touch stream remain reachable underneath.
-        foregroundRequested =
+        // Match the proven portrait route. Publish the target's primary Scene
+        // without committing a Workspace transition; the SpringBoard card
+        // remains the visual and input owner while the hosted Scene is made
+        // foreground at the Scene level by prepareScene:.
+        prewarmRequested =
             [application launchApplicationWithIdentifier:identifier
-                                                suspended:NO];
+                                                suspended:YES];
     }
-    if (!foregroundRequested) {
-        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-        id workspace = nil;
-        if (workspaceClass &&
-            [workspaceClass respondsToSelector:@selector(defaultWorkspace)]) {
-            id (*getWorkspace)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-            workspace = getWorkspace((id)workspaceClass,
-                                     @selector(defaultWorkspace));
-        }
-        if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)]) {
-            BOOL (*openApplication)(id, SEL, NSString *) =
-                (BOOL (*)(id, SEL, NSString *))objc_msgSend;
-            foregroundRequested =
-                openApplication(workspace,
-                                @selector(openApplicationWithBundleID:),
-                                identifier);
-        }
-    }
-    self.foregroundActivationRequested = YES;
-    self.foregroundActivationLastAttemptAt = CACurrentMediaTime();
-    // The Workspace transition belongs to the target application, but the
-    // SpringBoard card must remain the key, highest-level interaction surface.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                  (int64_t)(0.08 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (self.hasVisibleCard && !self.closing &&
-            self.identifier.length > 0 &&
-            [self.identifier isEqualToString:identifier]) {
-            [self.window makeKeyWindow];
-        }
-    });
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-scene-foreground app=%@ suspended=0 requested=%d frontmostBefore=%@ cardWindowKey=%d workspaceTransition=1 exclusive=1",
-        identifier, foregroundRequested,
-        frontmostBefore ?: @"<none>",
+        @"sb landscape-scene-prewarm app=%@ suspended=1 requested=%d frontmost=%@ cardWindowKey=%d workspaceTransition=0",
+        identifier, prewarmRequested,
+        FLMLandscapeFrontmostApplicationIdentifier() ?: @"<none>",
         self.window.isKeyWindow);
-    return foregroundRequested;
+    return prewarmRequested;
 }
 
 - (void)scheduleResolveForGeneration:(NSUInteger)generation delay:(NSTimeInterval)delay {
@@ -2000,9 +1955,6 @@ static NSString *FLMLandscapeInteractionDomainName(
         }
     }
     if (!scene) {
-        if (self.resolveAttempt == 8) {
-            [self activateIdentifierInForeground:self.identifier];
-        }
         [self scheduleResolveForGeneration:generation delay:FLMLandscapeResolveInterval];
         return;
     }
@@ -3076,8 +3028,6 @@ static NSString *FLMLandscapeInteractionDomainName(
                            self.hiddenCard = NO;
                            self.dockedOnRight = NO;
                            self.expectedHostSceneIdentifier = nil;
-                           self.foregroundActivationRequested = NO;
-                           self.foregroundActivationLastAttemptAt = 0.0;
                            self.fullscreenPromotionInProgress = NO;
                            self.closing = NO;
                            [self configureLocalInteractionState];
