@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.41"
+#define FLMLogBuildString @"0.10.1"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1410,6 +1410,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id)scene
             sessionGeneration:(NSUInteger)sessionGeneration;
+- (BOOL)ensureFloatingKeyboardHostAttached;
+- (BOOL)ensureFloatingKeyboardExternalPresentation;
 - (BOOL)floatingKeyboardPresentationReady;
 - (BOOL)floatingApplicationHostReadyForKeyboardRoute;
 - (void)flushDeferredFloatingKeyboardHostIfReady;
@@ -5909,19 +5911,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return YES;
     }
 
-    SEL updateSelector = NSSelectorFromString(@"updateClientSettingsWithBlock:");
-    if (![keyboardScene respondsToSelector:updateSelector]) {
-        FLMEnqueueDiagnosticLine(
-            @"sb scene-pair apply=unsupported session=%lu keyboardScene=%@ class=%@",
-            (unsigned long)sessionGeneration,
-            FLMSceneIdentifier(keyboardScene) ?: @"<none>",
-            NSStringFromClass([keyboardScene class]));
-        return NO;
-    }
-
+    // FBScene on the target iOS build does not expose the public/private
+    // client-settings mutator.  That does not mean the native host is
+    // unpaired: UIKit has already supplied a valid keyboard Scene and host
+    // identity (and _isPaired was true at the callback).  Keep that native
+    // relationship recorded so the external presentation path never falls
+    // back to the card merely because our optional propagation selector is
+    // unavailable.
     self.floatingKeyboardScene = keyboardScene;
     self.floatingKeyboardPreferredHostIdentity = preferredHostIdentity;
     self.floatingKeyboardPairingSessionGeneration = sessionGeneration;
+
+    SEL updateSelector = NSSelectorFromString(@"updateClientSettingsWithBlock:");
+    if (![keyboardScene respondsToSelector:updateSelector]) {
+        FLMEnqueueDiagnosticLine(
+            @"sb scene-pair apply=unsupported policy=retain-native-pair session=%lu keyboardScene=%@ class=%@ preferred=%p",
+            (unsigned long)sessionGeneration,
+            FLMSceneIdentifier(keyboardScene) ?: @"<none>",
+            NSStringFromClass([keyboardScene class]),
+            (__bridge void *)preferredHostIdentity);
+        return YES;
+    }
+
     __block BOOL applied = NO;
     __block NSString *failure = nil;
     void (^settingsBlock)(id) = ^(id mutableSettings) {
@@ -6247,8 +6258,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
+    BOOL external = NO;
     if (self.floatingKeyboardVisible) {
-        [self.keyboardForwardingWindow makeKeyAndVisible];
+        external = [self ensureFloatingKeyboardExternalPresentation];
     } else {
         // Keep the forwarding window completely hidden while the keyboard is
         // not visible. The native host can remain attached for the next
@@ -6256,9 +6268,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.keyboardForwardingWindow.hidden = YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb host-update paired host=%p session=%lu visible=%d hostFrame=%@ windowLevel=%.1f key=%d",
+        @"sb host-update paired host=%p session=%lu visible=%d external=%d hostFrame=%@ hostWindow=%p forwardingWindow=%p windowLevel=%.1f key=%d",
         (__bridge void *)hostView, (unsigned long)sessionGeneration,
-        self.floatingKeyboardVisible, NSStringFromCGRect(hostView.frame),
+        self.floatingKeyboardVisible, external, NSStringFromCGRect(hostView.frame),
+        (__bridge void *)hostView.window,
+        (__bridge void *)self.keyboardForwardingWindow,
         self.keyboardForwardingWindow.windowLevel,
         self.keyboardForwardingWindow.isKeyWindow);
     [self flushDeferredFloatingKeyboardHostIfReady];
@@ -6400,7 +6414,90 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingKeyboardSessionGeneration) {
         return NO;
     }
-    return YES;
+    // The keyboard frame is allowed to pass through only after the native
+    // host is physically outside the card hierarchy.  UIKit can transiently
+    // reparent this view during a Scene transaction; reasserting the same
+    // host here avoids creating a second host and prevents an in-card frame
+    // from ever becoming the visible route.
+    return [self ensureFloatingKeyboardHostAttached];
+}
+
+- (BOOL)ensureFloatingKeyboardHostAttached {
+    UIView *hostView = self.floatingKeyboardLayerHostView;
+    NSUInteger sessionGeneration = self.floatingKeyboardSessionGeneration;
+    if (!hostView || sessionGeneration == 0 ||
+        self.floatingKeyboardHostSessionGeneration != sessionGeneration) {
+        return NO;
+    }
+
+    [self prepareKeyboardForwardingWindowIfNeeded];
+    FLMKeyboardForwardingWindow *window = self.keyboardForwardingWindow;
+    UIView *forwardingRoot = window.rootViewController.view;
+    UIWindowScene *expectedWindowScene = self.floatingWindow.windowScene ?:
+        FLMForegroundWindowScene();
+    if (!window || !forwardingRoot ||
+        window.windowScene != expectedWindowScene) {
+        FLMEnqueueDiagnosticLine(
+            @"sb host-external rejected=window-scene host=%p session=%lu window=%p windowScene=%@ cardScene=%@",
+            (__bridge void *)hostView, (unsigned long)sessionGeneration,
+            (__bridge void *)window,
+            FLMSceneIdentifier(window.windowScene) ?: @"<none>",
+            FLMSceneIdentifier(expectedWindowScene) ?: @"<none>");
+        return NO;
+    }
+
+    CGRect bounds = FLMVisualScreenBounds();
+    window.frame = bounds;
+    window.rootViewController.view.frame = window.bounds;
+    window.windowLevel = self.floatingWindow.windowLevel + 1.0;
+    if (hostView.superview != forwardingRoot) {
+        FLMEnqueueDiagnosticLine(
+            @"sb host-reassert from=%p oldSuperview=%p session=%lu",
+            (__bridge void *)hostView, (__bridge void *)hostView.superview,
+            (unsigned long)sessionGeneration);
+        [hostView removeFromSuperview];
+        hostView.translatesAutoresizingMaskIntoConstraints = YES;
+        hostView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                    UIViewAutoresizingFlexibleHeight;
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+        [forwardingRoot addSubview:hostView];
+    } else {
+        hostView.transform = CGAffineTransformIdentity;
+        hostView.frame = forwardingRoot.bounds;
+    }
+    [hostView setNeedsLayout];
+    [hostView layoutIfNeeded];
+    return hostView.superview == forwardingRoot && hostView.window == window;
+}
+
+- (BOOL)ensureFloatingKeyboardExternalPresentation {
+    if (![self floatingKeyboardPresentationReady]) {
+        return NO;
+    }
+    FLMKeyboardForwardingWindow *window = self.keyboardForwardingWindow;
+    UIView *hostView = self.floatingKeyboardLayerHostView;
+    UIView *forwardingRoot = window.rootViewController.view;
+    if (!window || !hostView || !forwardingRoot) {
+        return NO;
+    }
+
+    window.keyboardInteractionFrame = [self floatingKeyboardInteractionFrame];
+    window.windowLevel = self.floatingWindow.windowLevel + 1.0;
+    window.hidden = NO;
+    [window makeKeyAndVisible];
+    BOOL external = !window.hidden && window.isKeyWindow &&
+                    window.windowLevel > self.floatingWindow.windowLevel &&
+                    hostView.superview == forwardingRoot &&
+                    hostView.window == window;
+    FLMEnqueueDiagnosticLine(
+        @"sb host-external visible=%d host=%p hostSuperview=%p root=%p hostWindow=%p forwardingWindow=%p key=%d level=%.1f cardLevel=%.1f interaction=%@",
+        external, (__bridge void *)hostView,
+        (__bridge void *)hostView.superview, (__bridge void *)forwardingRoot,
+        (__bridge void *)hostView.window, (__bridge void *)window,
+        window.isKeyWindow, window.windowLevel, self.floatingWindow.windowLevel,
+        NSStringFromCGRect(window.keyboardInteractionFrame));
+    return external;
 }
 
 - (void)flushPendingFloatingKeyboardFrameIfReady {
@@ -6542,6 +6639,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.keyboardForwardingWindow.windowLevel =
             self.floatingWindow.windowLevel + 1.0;
         self.keyboardForwardingWindow.keyboardInteractionFrame = interactionFrame;
+        if (![self ensureFloatingKeyboardExternalPresentation]) {
+            self.floatingKeyboardVisible = NO;
+            self.floatingKeyboardFrame = CGRectNull;
+            self.floatingKeyboardFramePending = YES;
+            self.floatingKeyboardPendingFrame = frame;
+            self.floatingKeyboardPendingSessionGeneration =
+                self.floatingKeyboardSessionGeneration;
+            [self deactivateKeyboardForwardingWindow];
+            FLMEnqueueDiagnosticLine(
+                @"sb frame-deferred rejected=not-external session=%lu frame=%@",
+                (unsigned long)self.floatingKeyboardSessionGeneration,
+                NSStringFromCGRect(frame));
+            return;
+        }
         CGFloat avoidanceHeight =
             [self floatingKeyboardAvoidanceHeightForFrame:interactionFrame];
         // The application Scene frame remains immutable.  UIKit in the target
@@ -6550,11 +6661,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
                                     avoidanceHeight,
                                     YES);
-        if (self.floatingKeyboardLayerHostView) {
-            [self.keyboardForwardingWindow makeKeyAndVisible];
-        }
         FLMEnqueueDiagnosticLine(
-            @"sb frame-visible reportedHeight=%.2f stableHeight=%.2f normalized=%@ interaction=%@ avoidance=%.2f forwardingKey=%d level=%.1f cardLevel=%.1f",
+            @"sb frame-visible reportedHeight=%.2f stableHeight=%.2f normalized=%@ interaction=%@ avoidance=%.2f external=1 forwardingKey=%d level=%.1f cardLevel=%.1f",
             reportedHeight, height,
             NSStringFromCGRect(frame), NSStringFromCGRect(interactionFrame),
             avoidanceHeight,

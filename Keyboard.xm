@@ -420,6 +420,48 @@ static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
     });
 }
 
+static BOOL FLMReadKeyboardNotifyRouteState(uint64_t *targetHash,
+                                             uint64_t *sceneHash,
+                                             uint64_t *sessionGeneration) {
+    if (targetHash) {
+        *targetHash = 0;
+    }
+    if (sceneHash) {
+        *sceneHash = 0;
+    }
+    if (sessionGeneration) {
+        *sessionGeneration = 0;
+    }
+    if (FLMKeyboardRouteToken < 0 || FLMKeyboardSessionToken < 0) {
+        return NO;
+    }
+
+    uint64_t notifyTargetHash = 0;
+    uint64_t notifySceneHash = 0;
+    uint64_t notifySessionGeneration = 0;
+    if (notify_get_state(FLMKeyboardRouteToken, &notifyTargetHash) !=
+            NOTIFY_STATUS_OK ||
+        notify_get_state(FLMKeyboardSessionToken,
+                         &notifySessionGeneration) != NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    if (FLMKeyboardSceneToken >= 0) {
+        // A scene hash is optional on older SpringBoard transactions.  Route
+        // and session state are still sufficient to select the exact app.
+        notify_get_state(FLMKeyboardSceneToken, &notifySceneHash);
+    }
+    if (targetHash) {
+        *targetHash = notifyTargetHash;
+    }
+    if (sceneHash) {
+        *sceneHash = notifySceneHash;
+    }
+    if (sessionGeneration) {
+        *sessionGeneration = notifySessionGeneration;
+    }
+    return YES;
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
@@ -433,7 +475,15 @@ static void FLMReloadKeyboardRoute(void) {
         [sharedState[@"bundleID"] isKindOfClass:[NSString class]]
             ? sharedState[@"bundleID"]
             : nil;
-    if (sharedStateAvailable) {
+    BOOL notifyStateAvailable = FLMReadKeyboardNotifyRouteState(
+        &targetHash, &sceneHash, &sessionGeneration);
+    if (notifyStateAvailable) {
+        // SpringBoard updates libnotify synchronously and writes the shared
+        // plist asynchronously. Prefer this state during the handoff so an
+        // app that receives the route notification cannot select the previous
+        // session from a still-unreplaced plist. The plist remains the source
+        // for bundle identity and geometry.
+    } else if (sharedStateAvailable) {
         targetHash = sharedStateActive
                          ? FLMIdentifierHash(sharedTargetIdentifier)
                          : 0;
@@ -499,11 +549,12 @@ static void FLMReloadKeyboardRoute(void) {
              (FLMKeyboardExtensionProcess ? 4U : 0U) |
              (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
              (sceneHash != 0 ? 16U : 0U) |
-            ((applicationIdentityFlags & 1U) != 0 ? 32U : 0U) |
-            ((applicationIdentityFlags & 2U) != 0 ? 64U : 0U) |
-            ((applicationIdentityFlags & 4U) != 0 ? 128U : 0U) |
+             ((applicationIdentityFlags & 1U) != 0 ? 32U : 0U) |
+             ((applicationIdentityFlags & 2U) != 0 ? 64U : 0U) |
+             ((applicationIdentityFlags & 4U) != 0 ? 128U : 0U) |
              (sharedStateAvailable ? 256U : 0U) |
-             (sharedStateActive ? 512U : 0U);
+             (sharedStateActive ? 512U : 0U) |
+             (notifyStateAvailable ? 1024U : 0U);
         FLMPublishDiagnosticEvent(
             role,
             FLMDiagnosticEventRouteReload,

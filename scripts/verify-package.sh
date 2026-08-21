@@ -66,6 +66,11 @@ if grep -q "centeredCardHeight" "$preferences_root"; then
     echo "preferences still exposes the removed logical card-height setting" >&2
     exit 1
 fi
+if grep -Eq "inputFieldHeight|FLMInputFieldHeight|FLMInputHeightAppListController" \
+    "$preferences_root"; then
+    echo "package unexpectedly contains the removed input-height mechanism" >&2
+    exit 1
+fi
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
 grep -q "com.apple.UIKit" "$keyboard_filter"
@@ -96,7 +101,7 @@ strings "$keyboard" | grep -q "keyboard-app-ready-v47"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.9.41" "$workspace/control/control"
+grep -qx "Version: 0.10.1" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "generic" "$workspace/control/postinst"
