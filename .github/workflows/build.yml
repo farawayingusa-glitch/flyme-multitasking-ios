@@ -53,11 +53,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.9.57_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.9.58_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.9.57-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_0.9.57_iphoneos-arm64.deb
+          name: flyme-multitasking-0.9.58-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_0.9.58_iphoneos-arm64.deb
           if-no-files-found: error

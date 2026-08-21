@@ -20,6 +20,10 @@ static const CGFloat FLMLandscapePortraitContentHeight = 844.0;
 static const CGFloat FLMLandscapePortraitCardWidthToHeightRatio =
     390.0 / 844.0;
 static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;
+// The expanded landscape card deliberately gives the portrait contract more
+// horizontal room.  The hosted Scene remains 390 x 844; the presentation
+// wrapper scales uniformly from this width and clips only the vertical excess.
+static const CGFloat FLMLandscapeExpandedCardWidth = 220.0;
 static const CGFloat FLMLandscapeHandleWidth = 44.0;
 static const CGFloat FLMLandscapeHandleBarWidth = 5.0;
 // Portrait's hidden handle is 44 x 5 pt. Keep the same physical affordance
@@ -872,8 +876,12 @@ static CGPoint FLMMiniWindowInputMapperPoint(FLMLandscapeRootView *rootView,
     CGRect portraitBounds = FLMLandscapePortraitSceneBounds();
     CGFloat contentWidth = CGRectGetWidth(portraitBounds);
     CGFloat contentHeight = CGRectGetHeight(portraitBounds);
-    CGFloat scale = MIN(cardSize.width / contentWidth,
-                        cardSize.height / contentHeight);
+    // Keep this fallback in lock-step with layoutHost:.  A height-fitting
+    // scale made the 390 x 844 portrait contract render at only 165 pt wide
+    // in the 358 pt-tall landscape card.  Width-driven uniform scaling gives
+    // the card the same visual scale as the real presentation wrapper and
+    // intentionally crops the top/bottom of the portrait content.
+    CGFloat scale = cardSize.width / contentWidth;
     scale = MAX(0.05, scale);
     CGFloat renderedWidth = contentWidth * scale;
     CGFloat renderedHeight = contentHeight * scale;
@@ -2355,9 +2363,10 @@ static NSString *FLMLandscapeInteractionDomainName(
         return CGRectZero;
     }
     CGFloat cardHeight = displayHeight * FLMLandscapeCardMaximumHeightRatio;
-    CGFloat cardWidth = cardHeight *
-                        FLMLandscapePortraitCardWidthToHeightRatio;
     UIEdgeInsets safeArea = FLMLandscapeModuleVisualSafeAreaInsets();
+    CGFloat availableWidth = MAX(1.0, displayWidth - safeArea.left -
+                                          safeArea.right);
+    CGFloat cardWidth = MIN(FLMLandscapeExpandedCardWidth, availableWidth);
     CGFloat maximumCardOriginX = MAX(0.0, displayWidth - cardWidth);
     CGFloat cardOriginX = MAX(0.0, MIN(maximumCardOriginX, safeArea.left));
     return CGRectMake(floor(cardOriginX),
@@ -2605,14 +2614,17 @@ static NSString *FLMLandscapeInteractionDomainName(
     self.expectedHostBounds = nativeHostBounds;
     CGSize cardSize = self.cardView.bounds.size;
     CGSize presentedSize = nativeHostBounds.size;
-    CGFloat uniformScale =
-        MIN(cardSize.width / presentedSize.width,
-            cardSize.height / presentedSize.height);
+    // Match the approved landscape card contract: scale the complete portrait
+    // Scene uniformly from the card width, then let the card's clipped bounds
+    // crop the vertical excess.  Do not stretch X/Y independently and do not
+    // fit the full 844 pt height, which was the source of the 165 pt card.
+    CGFloat uniformScale = cardSize.width / presentedSize.width;
     uniformScale = MAX(0.01, uniformScale);
-    CGFloat visualWidth = presentedSize.width * uniformScale;
-    CGFloat visualHeight = presentedSize.height * uniformScale;
-    CGFloat visualLetterboxX = MAX(0.0, (cardSize.width - visualWidth) * 0.5);
-    CGFloat visualLetterboxY = MAX(0.0, (cardSize.height - visualHeight) * 0.5);
+    CGFloat visualCropLogicalHeight =
+        MAX(0.0, presentedSize.height - cardSize.height / uniformScale);
+    CGFloat visualCropLogicalTop = visualCropLogicalHeight * 0.5;
+    CGFloat visualCropLogicalBottom = visualCropLogicalHeight -
+                                      visualCropLogicalTop;
     // The application and Presenter stay identity portrait. Only this
     // SpringBoard-owned wrapper applies one uniform scale into the card.
     presentationView.transform = CGAffineTransformIdentity;
@@ -2632,13 +2644,13 @@ static NSString *FLMLandscapeInteractionDomainName(
         uniformScale,
         !self.dockedCard && !self.hiddenCard && !self.closing);
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-visual-card appScene=%@ appOrientation=%ld outerDisplay=%@ outerOrientation=%ld host=%@ hostTransform=identity card=%@ presented={%.1f,%.1f} scale=%.6f letterbox={%.1f,%.1f} visualRotation=0 state=%@",
+        @"sb landscape-visual-card appScene=%@ appOrientation=%ld outerDisplay=%@ outerOrientation=%ld host=%@ hostTransform=identity card=%@ presented={%.1f,%.1f} scale=%.6f scalePolicy=width-driven-uniform-crop cropLogical={%.1f,%.1f} visualRotation=0 state=%@",
         NSStringFromCGRect(sceneFrame), (long)sceneOrientation,
         NSStringFromCGRect(self.displayBounds), (long)self.displayOrientation,
         NSStringFromCGRect(self.hostView.bounds),
         NSStringFromCGRect(self.cardView.bounds), presentedSize.width,
-        presentedSize.height, uniformScale, visualLetterboxX,
-        visualLetterboxY,
+        presentedSize.height, uniformScale, visualCropLogicalTop,
+        visualCropLogicalBottom,
         self.hiddenCard ? @"hidden" : (self.dockedCard ? @"docked" : @"expanded"));
 }
 - (void)outsideTap:(UITapGestureRecognizer *)gesture {

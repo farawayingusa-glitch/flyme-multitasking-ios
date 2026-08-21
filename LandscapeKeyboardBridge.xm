@@ -124,6 +124,9 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
 @property(nonatomic, assign) uint64_t keyboardHostSessionGeneration;
 @property(nonatomic, assign) BOOL keyboardVisible;
 @property(nonatomic, assign) CGRect keyboardFrame;
+@property(nonatomic, assign) BOOL keyboardFramePending;
+@property(nonatomic, assign) CGRect pendingKeyboardFrame;
+@property(nonatomic, assign) uint64_t pendingKeyboardSessionGeneration;
 @property(nonatomic, assign) CGRect cardFrame;
 @property(nonatomic, assign) CGFloat cardScale;
 @property(nonatomic, assign) BOOL cardInteractive;
@@ -163,6 +166,7 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
         coordinator.avoidanceToken = -1;
         coordinator.cardGeometryToken = -1;
         coordinator.keyboardFrame = CGRectNull;
+        coordinator.pendingKeyboardFrame = CGRectNull;
         coordinator.cardFrame = CGRectNull;
         coordinator.sharedStateQueue = dispatch_queue_create(
             "com.codex.flymemultitasking.landscape-keyboard-state",
@@ -404,6 +408,9 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     self.cardWindow = cardWindow;
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
+    self.keyboardFramePending = NO;
+    self.pendingKeyboardFrame = CGRectNull;
+    self.pendingKeyboardSessionGeneration = 0;
     self.cardInteractive = YES;
     if (!cardWindow.isKeyWindow) {
         [cardWindow makeKeyWindow];
@@ -650,6 +657,39 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     });
 }
 
+- (BOOL)hasActiveKeyboardHost {
+    return self.keyboardHostView != nil &&
+           self.keyboardHostSessionGeneration == self.sessionGeneration;
+}
+
+- (BOOL)replayPendingKeyboardFrameIfReady {
+    if (!self.keyboardFramePending || !self.keyboardVisible ||
+        self.pendingKeyboardSessionGeneration != self.sessionGeneration ||
+        CGRectIsNull(self.pendingKeyboardFrame) ||
+        ![self hasActiveKeyboardHost] || ![self routeIsActive]) {
+        return NO;
+    }
+    [self prepareForwardingWindowIfNeeded];
+    if (!self.forwardingWindow) {
+        return NO;
+    }
+    self.keyboardFrame = self.pendingKeyboardFrame;
+    self.forwardingWindow.keyboardInteractionFrame = self.keyboardFrame;
+    self.forwardingWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
+    [self.forwardingWindow makeKeyAndVisible];
+    self.keyboardFramePending = NO;
+    self.pendingKeyboardFrame = CGRectNull;
+    self.pendingKeyboardSessionGeneration = 0;
+    [self writeSharedStateAndPublishTokens];
+    FLMEnqueueDiagnosticLine(
+        @"sb landscape-keyboard frame-deferred replay=1 frame=%@ host=%p session=%llu forwardingKey=%d",
+        NSStringFromCGRect(self.keyboardFrame),
+        (__bridge void *)self.keyboardHostView,
+        (unsigned long long)self.sessionGeneration,
+        self.forwardingWindow.isKeyWindow);
+    return YES;
+}
+
 - (void)keyboardHostView:(UIView *)hostView didUpdateForScene:(id)updatedScene {
     if (!hostView || ![self routeIsActive]) {
         return;
@@ -676,22 +716,40 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     if (!matches) {
         return;
     }
+    if (self.keyboardHostView && self.keyboardHostView != hostView &&
+        self.keyboardHostSessionGeneration == self.sessionGeneration) {
+        // UIKit can report an alternate keyboard host while the native host
+        // is being paired.  Keep the first valid host for this route instead
+        // of replacing it with a transient remote/alternate surface.
+        FLMEnqueueDiagnosticLine(
+            @"sb landscape-keyboard host-update ignored=alternate-current active=%p incoming=%p session=%llu",
+            (__bridge void *)self.keyboardHostView,
+            (__bridge void *)hostView,
+            (unsigned long long)self.sessionGeneration);
+        return;
+    }
     if (!paired || !keyboardScene || !preferredHostIdentity) {
+        if ([self hasActiveKeyboardHost] && self.keyboardHostView == hostView) {
+            // The host's pairing flag can briefly drop while UIKit publishes
+            // the next client-settings update.  It is still the active host;
+            // do not tear it down or wait for a new host during this window.
+            self.deferredHostView = nil;
+            self.deferredUpdatedScene = nil;
+            self.deferredAttempt = 0;
+            FLMEnqueueDiagnosticLine(
+                @"sb landscape-keyboard host-update ignored=unpaired-current host=%p session=%llu pending=%d",
+                (__bridge void *)hostView,
+                (unsigned long long)self.sessionGeneration,
+                self.keyboardFramePending);
+            [self replayPendingKeyboardFrameIfReady];
+            return;
+        }
         [self scheduleDeferredHostRetry:hostView updatedScene:updatedScene];
         return;
     }
     self.deferredHostView = nil;
     self.deferredUpdatedScene = nil;
     self.deferredAttempt = 0;
-    if (self.keyboardHostView && self.keyboardHostView != hostView &&
-        self.keyboardHostSessionGeneration == self.sessionGeneration) {
-        FLMEnqueueDiagnosticLine(
-            @"sb landscape-keyboard host-rejected reason=alternate active=%p incoming=%p session=%llu",
-            (__bridge void *)self.keyboardHostView,
-            (__bridge void *)hostView,
-            (unsigned long long)self.sessionGeneration);
-        return;
-    }
     // The host is already paired by UIKit.  Match the proven portrait route:
     // propagating preferredSceneHostIdentity is auxiliary bookkeeping, not a
     // prerequisite for moving the native host to the full-display forwarding
@@ -735,17 +793,19 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     }
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
-    if (self.keyboardVisible) {
+    BOOL replayedPendingFrame = [self replayPendingKeyboardFrameIfReady];
+    if (!replayedPendingFrame && self.keyboardVisible) {
         self.forwardingWindow.keyboardInteractionFrame = self.keyboardFrame;
         self.forwardingWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
         [self.forwardingWindow makeKeyAndVisible];
-    } else {
+    } else if (!self.keyboardVisible) {
         self.forwardingWindow.hidden = YES;
     }
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d forwardingKey=%d level=%.1f pairingPropagated=%d route=external-full-display cardHost=0",
+        @"sb landscape-keyboard host-attached host=%p frame=%@ session=%llu visible=%d pendingReplay=%d forwardingKey=%d level=%.1f pairingPropagated=%d route=external-full-display cardHost=0",
         (__bridge void *)hostView, NSStringFromCGRect(hostView.frame),
         (unsigned long long)self.sessionGeneration, self.keyboardVisible,
+        replayedPendingFrame,
         self.forwardingWindow.isKeyWindow, self.forwardingWindow.windowLevel,
         pairingPropagated);
 }
@@ -773,22 +833,28 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     self.keyboardFrame = CGRectIntersection(bounds, rawFrame);
     [self prepareForwardingWindowIfNeeded];
     self.forwardingWindow.keyboardInteractionFrame = self.keyboardFrame;
-    if (self.keyboardHostView &&
-        self.keyboardHostSessionGeneration == self.sessionGeneration) {
+    if ([self hasActiveKeyboardHost]) {
+        self.keyboardFramePending = NO;
+        self.pendingKeyboardFrame = CGRectNull;
+        self.pendingKeyboardSessionGeneration = 0;
         self.forwardingWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
         [self.forwardingWindow makeKeyAndVisible];
     } else {
+        self.keyboardFramePending = YES;
+        self.pendingKeyboardFrame = self.keyboardFrame;
+        self.pendingKeyboardSessionGeneration = self.sessionGeneration;
         FLMEnqueueDiagnosticLine(
-            @"sb landscape-keyboard frame-visible waiting-host session=%llu forwardingLevel=%.1f",
+            @"sb landscape-keyboard frame-visible waiting-host pending=1 session=%llu forwardingLevel=%.1f",
             (unsigned long long)self.sessionGeneration,
             self.forwardingWindow.windowLevel);
     }
     [self writeSharedStateAndPublishTokens];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-keyboard frame-visible raw=%@ normalized=%@ outer=%@ card=%@ scale=%.6f host=%p forwardingKey=%d",
+        @"sb landscape-keyboard frame-visible raw=%@ normalized=%@ outer=%@ card=%@ scale=%.6f host=%p pending=%d forwardingKey=%d",
         NSStringFromCGRect(rawFrame), NSStringFromCGRect(self.keyboardFrame),
         NSStringFromCGRect(bounds), NSStringFromCGRect(self.cardFrame),
         self.cardScale, (__bridge void *)self.keyboardHostView,
+        self.keyboardFramePending,
         self.forwardingWindow.isKeyWindow);
 }
 
@@ -799,6 +865,9 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     }
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
+    self.keyboardFramePending = NO;
+    self.pendingKeyboardFrame = CGRectNull;
+    self.pendingKeyboardSessionGeneration = 0;
     self.forwardingWindow.keyboardInteractionFrame = CGRectNull;
     BOOL wasKey = self.forwardingWindow.isKeyWindow;
     self.forwardingWindow.hidden = YES;
@@ -831,6 +900,9 @@ static NSString *FLMLandscapeKeyboardSceneIdentifier(id scene) {
     self.forwardingWindow.hidden = YES;
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
+    self.keyboardFramePending = NO;
+    self.pendingKeyboardFrame = CGRectNull;
+    self.pendingKeyboardSessionGeneration = 0;
     self.cardInteractive = NO;
     self.targetIdentifier = nil;
     self.targetScene = nil;

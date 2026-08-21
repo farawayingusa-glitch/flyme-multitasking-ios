@@ -128,6 +128,9 @@ grep -Fq 'CGAffineTransformMakeScale(uniformScale, uniformScale)' "$module"
 grep -Fq '[hostView convertPoint:screenPoint fromView:rootView]' "$module"
 grep -Fq 'static const CGFloat FLMLandscapeCardMaximumHeightRatio = 0.92;' "$module"
 grep -Fq 'FLMLandscapePortraitCardWidthToHeightRatio' "$module"
+grep -Fq 'static const CGFloat FLMLandscapeExpandedCardWidth = 220.0;' "$module"
+grep -Fq 'CGFloat scale = cardSize.width / contentWidth;' "$module"
+grep -Fq 'scalePolicy=width-driven-uniform-crop' "$module"
 
 # Landscape retains the two already-registered portrait recognizers only as a
 # compatibility lease. The full-display window uses local UIKit recognizers so
@@ -216,6 +219,10 @@ grep -Fq 'policy=continue-native-host' "$keyboard_bridge"
 grep -Fq 'pairingPropagated' "$keyboard_bridge"
 grep -Fq 'route=external-full-display cardHost=0' "$keyboard_bridge"
 grep -Fq 'policy=external-host-only' "$keyboard_bridge"
+grep -Fq 'keyboardFramePending' "$keyboard_bridge"
+grep -Fq 'frame-deferred replay=1' "$keyboard_bridge"
+grep -Fq 'ignored=unpaired-current' "$keyboard_bridge"
+grep -Fq 'ignored=alternate-current' "$keyboard_bridge"
 grep -Fq 'FLMLandscapeKeyboardBridgeContainsVisualPoint' "$keyboard_bridge"
 if grep -Fq 'if (![self applyKeyboardScenePairing' "$keyboard_bridge"; then
     echo "keyboard pairing propagation must not hard-gate native host attachment" >&2
