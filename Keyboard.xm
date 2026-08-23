@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 #import <notify.h>
 #import <unistd.h>
@@ -21,12 +22,12 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v48"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v48"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF148ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF248ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 48ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -64,6 +65,20 @@ static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
+static int FLMInputGeometryStateToken = -1;
+static int FLMInputKeyboardStateToken = -1;
+static int FLMInputSpacingStateToken = -1;
+static int FLMInputInsetsStateToken = -1;
+static int FLMInputCommitToken = -1;
+static BOOL FLMInputDiagnosticTokensReady = NO;
+static BOOL FLMInputGeometryObserversInstalled = NO;
+static BOOL FLMInputGeometryRetryScheduled = NO;
+static id FLMInputGeometryFrameObserver = nil;
+static id FLMInputGeometryShowObserver = nil;
+static uint16_t FLMInputGeometrySequence = 0;
+static uint64_t FLMInputGeometryLastSession = 0;
+static uint64_t FLMInputGeometryLastFields[4] = {0, 0, 0, 0};
+static BOOL FLMInputGeometryLastSampleValid = NO;
 
 // The application-side logical viewport is deliberately fixed at the full
 // display size. Card width/crop values belong to SpringBoard presentation and
@@ -87,6 +102,9 @@ static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
+static void FLMInstallInputGeometryDiagnosticsIfNeeded(void);
+static void FLMCaptureInputGeometryForNotification(NSNotification *notification,
+                                                    BOOL allowRetry);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -659,6 +677,354 @@ static BOOL FLMIsApplicationContentWindow(UIWindow *window) {
     return YES;
 }
 
+static uint16_t FLMInputDiagnosticUnsignedTenths(CGFloat value) {
+    if (!isfinite(value) || value <= 0.0) {
+        return 0;
+    }
+    return (uint16_t)MIN(65535.0, llround(value * 10.0));
+}
+
+static uint16_t FLMInputDiagnosticSignedTenths(CGFloat value) {
+    if (!isfinite(value)) {
+        return 0;
+    }
+    long long tenths = llround(value * 10.0);
+    tenths = MAX((long long)INT16_MIN,
+                  MIN((long long)INT16_MAX, tenths));
+    return (uint16_t)(int16_t)tenths;
+}
+
+static UIView *FLMFirstResponderInView(UIView *view) {
+    if (!view || view.hidden || view.alpha <= 0.01) {
+        return nil;
+    }
+    if (view.isFirstResponder) {
+        return view;
+    }
+    for (UIView *subview in view.subviews) {
+        UIView *responder = FLMFirstResponderInView(subview);
+        if (responder) {
+            return responder;
+        }
+    }
+    return nil;
+}
+
+static UIView *FLMInputContainerForResponder(UIView *responder,
+                                             UIWindow *window) {
+    if (!responder || !window) {
+        return responder;
+    }
+    CGRect inputRect = [responder convertRect:responder.bounds toView:window];
+    CGFloat inputHeight = CGRectGetHeight(inputRect);
+    CGFloat minimumWidth = CGRectGetWidth(window.bounds) * 0.55;
+    UIView *best = nil;
+    CGFloat bestScore = CGFLOAT_MAX;
+    for (UIView *ancestor = responder.superview;
+         ancestor && ancestor != window;
+         ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha <= 0.01) {
+            continue;
+        }
+        CGRect rect = [ancestor convertRect:ancestor.bounds toView:window];
+        CGFloat width = CGRectGetWidth(rect);
+        CGFloat height = CGRectGetHeight(rect);
+        if (width < minimumWidth || height + 0.5 < inputHeight ||
+            height > 180.0 ||
+            !CGRectContainsPoint(CGRectInset(rect, -1.0, -1.0),
+                                 CGPointMake(CGRectGetMidX(inputRect),
+                                             CGRectGetMidY(inputRect)))) {
+            continue;
+        }
+        // Prefer the shallow, wide composer ancestor.  This avoids selecting
+        // the full conversation/root view while still including padding below
+        // a UITextView or custom input control.
+        CGFloat score = height +
+                        (CGRectGetWidth(window.bounds) - width) * 0.10;
+        if (score < bestScore) {
+            best = ancestor;
+            bestScore = score;
+        }
+    }
+    return best ?: responder;
+}
+
+static UIScrollView *FLMNearestScrollViewForView(UIView *view) {
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:[UIScrollView class]]) {
+            return (UIScrollView *)ancestor;
+        }
+    }
+    return nil;
+}
+
+static BOOL FLMFindInputResponderWindow(UIWindow **windowOut,
+                                        UIView **responderOut) {
+    UIWindow *fallbackWindow = nil;
+    UIView *fallbackResponder = nil;
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            if (!FLMIsApplicationContentWindow(window)) {
+                continue;
+            }
+            UIView *responder =
+                FLMFirstResponderInView(window.rootViewController.view);
+            if (!responder) {
+                continue;
+            }
+            if (window.isKeyWindow) {
+                if (windowOut) {
+                    *windowOut = window;
+                }
+                if (responderOut) {
+                    *responderOut = responder;
+                }
+                return YES;
+            }
+            fallbackWindow = window;
+            fallbackResponder = responder;
+        }
+    }
+    if (fallbackWindow && fallbackResponder) {
+        if (windowOut) {
+            *windowOut = fallbackWindow;
+        }
+        if (responderOut) {
+            *responderOut = fallbackResponder;
+        }
+        return YES;
+    }
+    return NO;
+}
+
+static BOOL FLMRegisterInputDiagnosticTokens(void) {
+    if (FLMInputDiagnosticTokensReady) {
+        return YES;
+    }
+    BOOL ready =
+        notify_register_check(FLYME_DIAGNOSTIC_INPUT_GEOMETRY_STATE,
+                              &FLMInputGeometryStateToken) == NOTIFY_STATUS_OK;
+    ready = ready &&
+            notify_register_check(FLYME_DIAGNOSTIC_INPUT_KEYBOARD_STATE,
+                                  &FLMInputKeyboardStateToken) ==
+                NOTIFY_STATUS_OK;
+    ready = ready &&
+            notify_register_check(FLYME_DIAGNOSTIC_INPUT_SPACING_STATE,
+                                  &FLMInputSpacingStateToken) ==
+                NOTIFY_STATUS_OK;
+    ready = ready &&
+            notify_register_check(FLYME_DIAGNOSTIC_INPUT_INSETS_STATE,
+                                  &FLMInputInsetsStateToken) ==
+                NOTIFY_STATUS_OK;
+    ready = ready &&
+            notify_register_check(FLYME_DIAGNOSTIC_INPUT_COMMIT_NOTIFICATION,
+                                  &FLMInputCommitToken) == NOTIFY_STATUS_OK;
+    FLMInputDiagnosticTokensReady = ready;
+    return ready;
+}
+
+static void FLMPublishCommittedInputGeometry(uint16_t inputHeight,
+                                             uint16_t containerHeight,
+                                             uint16_t containerBottom,
+                                             uint16_t keyboardTop,
+                                             uint16_t gap,
+                                             uint16_t safeBottom,
+                                             uint16_t contentBottom,
+                                             uint16_t adjustedBottom) {
+    if (!FLMRegisterInputDiagnosticTokens()) {
+        return;
+    }
+    uint64_t payloads[4] = {
+        ((uint64_t)inputHeight << 16) | containerHeight,
+        ((uint64_t)containerBottom << 16) | keyboardTop,
+        ((uint64_t)gap << 16) | safeBottom,
+        ((uint64_t)contentBottom << 16) | adjustedBottom,
+    };
+    BOOL unchanged =
+        FLMInputGeometryLastSampleValid &&
+        FLMInputGeometryLastSession == FLMKeyboardSessionGeneration;
+    for (NSUInteger index = 0; index < 4 && unchanged; index++) {
+        unchanged = FLMInputGeometryLastFields[index] == payloads[index];
+    }
+    if (unchanged) {
+        return;
+    }
+
+    FLMInputGeometrySequence += 1;
+    if (FLMInputGeometrySequence == 0) {
+        FLMInputGeometrySequence = 1;
+    }
+    uint16_t sequence = FLMInputGeometrySequence;
+    uint64_t states[4] = {
+        FLMPackDiagnosticState(FLMDiagnosticRoleApplication,
+                               FLMDiagnosticEventInputGeometry,
+                               sequence,
+                               inputHeight,
+                               containerHeight),
+        FLMPackDiagnosticState(FLMDiagnosticRoleApplication,
+                               FLMDiagnosticEventInputKeyboardFrame,
+                               sequence,
+                               containerBottom,
+                               keyboardTop),
+        FLMPackDiagnosticState(FLMDiagnosticRoleApplication,
+                               FLMDiagnosticEventInputSpacing,
+                               sequence,
+                               gap,
+                               safeBottom),
+        FLMPackDiagnosticState(FLMDiagnosticRoleApplication,
+                               FLMDiagnosticEventInputInsets,
+                               sequence,
+                               contentBottom,
+                               adjustedBottom),
+    };
+    notify_set_state(FLMInputGeometryStateToken, states[0]);
+    notify_set_state(FLMInputKeyboardStateToken, states[1]);
+    notify_set_state(FLMInputSpacingStateToken, states[2]);
+    notify_set_state(FLMInputInsetsStateToken, states[3]);
+    uint16_t monotonicTick =
+        (uint16_t)((uint64_t)llround(CACurrentMediaTime() * 1000.0) &
+                   0xFFFFULL);
+    uint64_t commit =
+        FLMPackDiagnosticState(
+            FLMDiagnosticRoleApplication,
+            FLMDiagnosticEventInputSampleCommit,
+            sequence,
+            (uint16_t)(FLMKeyboardSessionGeneration & 0xFFFFULL),
+            monotonicTick);
+    notify_set_state(FLMInputCommitToken, commit);
+    notify_post(FLYME_DIAGNOSTIC_INPUT_COMMIT_NOTIFICATION);
+
+    FLMInputGeometryLastSession = FLMKeyboardSessionGeneration;
+    for (NSUInteger index = 0; index < 4; index++) {
+        FLMInputGeometryLastFields[index] = payloads[index];
+    }
+    FLMInputGeometryLastSampleValid = YES;
+}
+
+static void FLMCaptureInputGeometryForNotification(NSNotification *notification,
+                                                    BOOL allowRetry) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMCaptureInputGeometryForNotification(notification, allowRetry);
+        });
+        return;
+    }
+    if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive ||
+        FLMKeyboardSessionGeneration == 0) {
+        return;
+    }
+    UIWindow *window = nil;
+    UIView *responder = nil;
+    if (!FLMFindInputResponderWindow(&window, &responder)) {
+        if (allowRetry && !FLMInputGeometryRetryScheduled) {
+            FLMInputGeometryRetryScheduled = YES;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                FLMInputGeometryRetryScheduled = NO;
+                FLMCaptureInputGeometryForNotification(notification, NO);
+            });
+        }
+        return;
+    }
+    NSValue *keyboardValue =
+        [notification.userInfo[UIKeyboardFrameEndUserInfoKey]
+            isKindOfClass:[NSValue class]]
+            ? notification.userInfo[UIKeyboardFrameEndUserInfoKey]
+            : nil;
+    if (!keyboardValue) {
+        return;
+    }
+    [window layoutIfNeeded];
+    UIView *container = FLMInputContainerForResponder(responder, window);
+    UIScreen *screen = window.windowScene.screen ?: [UIScreen mainScreen];
+    id<UICoordinateSpace> fixedSpace = screen.fixedCoordinateSpace;
+    id<UICoordinateSpace> screenSpace = screen.coordinateSpace;
+    CGRect keyboardFixed =
+        [fixedSpace convertRect:keyboardValue.CGRectValue
+            fromCoordinateSpace:screenSpace];
+    CGRect keyboardVisible =
+        CGRectIntersection(fixedSpace.bounds, keyboardFixed);
+    if (CGRectIsNull(keyboardVisible) || CGRectIsEmpty(keyboardVisible)) {
+        return;
+    }
+    CGRect inputWindow =
+        [responder convertRect:responder.bounds toView:window];
+    CGRect containerWindow =
+        [container convertRect:container.bounds toView:window];
+    CGRect inputFixed =
+        [fixedSpace convertRect:inputWindow fromCoordinateSpace:window];
+    CGRect containerFixed =
+        [fixedSpace convertRect:containerWindow fromCoordinateSpace:window];
+    CGFloat keyboardVisualTop = CGRectGetMinY(keyboardVisible);
+    CGFloat visualGap = keyboardVisualTop - CGRectGetMaxY(containerFixed);
+    UIScrollView *scrollView = FLMNearestScrollViewForView(responder);
+    CGFloat contentInsetBottom = scrollView ? scrollView.contentInset.bottom : 0.0;
+    CGFloat adjustedInsetBottom =
+        scrollView ? scrollView.adjustedContentInset.bottom : 0.0;
+
+    uint16_t inputHeight =
+        FLMInputDiagnosticUnsignedTenths(CGRectGetHeight(inputFixed));
+    uint16_t containerHeight =
+        FLMInputDiagnosticUnsignedTenths(CGRectGetHeight(containerFixed));
+    uint16_t containerBottom =
+        FLMInputDiagnosticUnsignedTenths(CGRectGetMaxY(containerFixed));
+    uint16_t keyboardTop =
+        FLMInputDiagnosticUnsignedTenths(keyboardVisualTop);
+    uint16_t gap = FLMInputDiagnosticSignedTenths(visualGap);
+    uint16_t safeBottom =
+        FLMInputDiagnosticUnsignedTenths(window.safeAreaInsets.bottom);
+    uint16_t contentBottom =
+        FLMInputDiagnosticUnsignedTenths(contentInsetBottom);
+    uint16_t adjustedBottom =
+        FLMInputDiagnosticUnsignedTenths(adjustedInsetBottom);
+    FLMPublishCommittedInputGeometry(inputHeight,
+                                     containerHeight,
+                                     containerBottom,
+                                     keyboardTop,
+                                     gap,
+                                     safeBottom,
+                                     contentBottom,
+                                     adjustedBottom);
+    NSLog(@"[FlymeKeyboard] input-sample session=%llu space=fixed-screen responder=%@ container=%@ input=%@ containerRect=%@ keyboardVisual=%@ gap=%.1f safeBottom=%.1f contentInsetBottom=%.1f adjustedInsetBottom=%.1f",
+          (unsigned long long)FLMKeyboardSessionGeneration,
+          NSStringFromClass(responder.class),
+          NSStringFromClass(container.class),
+          NSStringFromCGRect(inputFixed),
+          NSStringFromCGRect(containerFixed),
+          NSStringFromCGRect(keyboardVisible),
+          visualGap,
+          window.safeAreaInsets.bottom,
+          contentInsetBottom,
+          adjustedInsetBottom);
+}
+
+static void FLMInstallInputGeometryDiagnosticsIfNeeded(void) {
+    if (FLMInputGeometryObserversInstalled ||
+        !FLMKeyboardTargetApplication || !FLMRegisterInputDiagnosticTokens()) {
+        return;
+    }
+    FLMInputGeometryObserversInstalled = YES;
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    FLMInputGeometryFrameObserver =
+        [center addObserverForName:UIKeyboardDidChangeFrameNotification
+                           object:nil
+                            queue:[NSOperationQueue mainQueue]
+                       usingBlock:^(NSNotification *notification) {
+        FLMCaptureInputGeometryForNotification(notification, YES);
+    }];
+    FLMInputGeometryShowObserver =
+        [center addObserverForName:UIKeyboardDidShowNotification
+                           object:nil
+                            queue:[NSOperationQueue mainQueue]
+                       usingBlock:^(NSNotification *notification) {
+        FLMCaptureInputGeometryForNotification(notification, YES);
+    }];
+}
+
 static void FLMLogContentViewportLayout(NSString *stage,
                                         UIWindow *window,
                                         UIView *contentView,
@@ -1028,6 +1394,10 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
     // by the exact Scene route.
     %init(FLMContentViewportAdapter);
     FLMInstallRemoteKeyboardGeometryIfAvailable();
+    // Geometry-only observer: it samples the active responder, composer
+    // container and UIKit keyboard visual frame after layout.  It never
+    // changes frames, constraints, insets or keyboard intersection returns.
+    FLMInstallInputGeometryDiagnosticsIfNeeded();
     FLMReloadKeyboardRoute();
     FLMPublishKeyboardAppLifecycleStage(
         FLYME_KEYBOARD_APP_READY_NOTIFICATION,

@@ -20,6 +20,16 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...);
     "com.codex.flymemultitasking.diagnostic-keyboard-v3"
 #define FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-uikit-other-v3"
+#define FLYME_DIAGNOSTIC_INPUT_GEOMETRY_STATE \
+    "com.codex.flymemultitasking.diagnostic-input-geometry-v1"
+#define FLYME_DIAGNOSTIC_INPUT_KEYBOARD_STATE \
+    "com.codex.flymemultitasking.diagnostic-input-keyboard-v1"
+#define FLYME_DIAGNOSTIC_INPUT_SPACING_STATE \
+    "com.codex.flymemultitasking.diagnostic-input-spacing-v1"
+#define FLYME_DIAGNOSTIC_INPUT_INSETS_STATE \
+    "com.codex.flymemultitasking.diagnostic-input-insets-v1"
+#define FLYME_DIAGNOSTIC_INPUT_COMMIT_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-input-commit-v1"
 
 typedef NS_ENUM(uint8_t, FLMDiagnosticRole) {
     FLMDiagnosticRoleSpringBoard = 1,
@@ -49,7 +59,24 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventAdapterLoaded = 18,
     FLMDiagnosticEventAdapterCtor = 19,
     FLMDiagnosticEventAdapterReady = 20,
+    FLMDiagnosticEventInputGeometry = 21,
+    FLMDiagnosticEventInputKeyboardFrame = 22,
+    FLMDiagnosticEventInputSpacing = 23,
+    FLMDiagnosticEventInputInsets = 24,
+    FLMDiagnosticEventInputSampleCommit = 25,
 };
+
+static inline uint64_t FLMPackDiagnosticState(FLMDiagnosticRole role,
+                                              FLMDiagnosticEvent event,
+                                              uint64_t sessionGeneration,
+                                              uint16_t firstValue,
+                                              uint16_t secondValue) {
+    return ((uint64_t)event << 56) |
+           ((uint64_t)role << 48) |
+           ((sessionGeneration & 0xFFFFULL) << 32) |
+           ((uint64_t)firstValue << 16) |
+           (uint64_t)secondValue;
+}
 
 // Cross-process diagnostics intentionally carry only fixed-width integers.
 // UIKit clients and third-party keyboard extensions never perform file I/O;
@@ -99,11 +126,11 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
     if (*eventToken < 0) {
         return;
     }
-    uint64_t state = ((uint64_t)event << 56) |
-                     ((uint64_t)role << 48) |
-                     ((sessionGeneration & 0xFFFFULL) << 32) |
-                     ((uint64_t)firstValue << 16) |
-                     (uint64_t)secondValue;
+    uint64_t state = FLMPackDiagnosticState(role,
+                                            event,
+                                            sessionGeneration,
+                                            firstValue,
+                                            secondValue);
     notify_set_state(*eventToken, state);
     notify_post(notificationName);
 }
