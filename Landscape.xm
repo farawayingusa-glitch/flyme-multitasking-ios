@@ -155,7 +155,48 @@ static CGRect FLMLInterpolateRect(CGRect from, CGRect to, CGFloat progress) {
 static UIInterfaceOrientation FLMLLastKnownInterfaceOrientation =
     UIInterfaceOrientationPortrait;
 
+// Once a landscape wheel is visibly active, SpringBoard may temporarily flip
+// its foreground Scene, UIScreen bounds, and UIDevice orientation back to the
+// portrait home-screen contract.  Keep the physical landscape contract that
+// admitted the gesture until the wheel/card session actually becomes idle.
+static BOOL FLMLLandscapeSessionActive = NO;
+static CGRect FLMLLandscapeSessionBounds = {{0.0, 0.0}, {0.0, 0.0}};
+static UIInterfaceOrientation FLMLLandscapeSessionOrientation =
+    UIInterfaceOrientationUnknown;
+
+static void FLMLBeginLandscapeSession(CGRect bounds,
+                                      UIInterfaceOrientation orientation) {
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    if (width < height) {
+        CGFloat swap = width;
+        width = height;
+        height = swap;
+    }
+    FLMLLandscapeSessionBounds = CGRectMake(0.0, 0.0, width, height);
+    if (!UIInterfaceOrientationIsLandscape(orientation)) {
+        orientation = UIInterfaceOrientationIsLandscape(
+                          FLMLLastKnownInterfaceOrientation)
+                          ? FLMLLastKnownInterfaceOrientation
+                          : UIInterfaceOrientationLandscapeRight;
+    }
+    FLMLLandscapeSessionOrientation = orientation;
+    FLMLLastKnownInterfaceOrientation = orientation;
+    FLMLLandscapeSessionActive = width > height && height > 1.0;
+}
+
+static void FLMLEndLandscapeSession(void) {
+    FLMLLandscapeSessionActive = NO;
+    FLMLLandscapeSessionBounds = CGRectZero;
+    FLMLLandscapeSessionOrientation = UIInterfaceOrientationUnknown;
+}
+
 static UIInterfaceOrientation FLMLActiveInterfaceOrientation(void) {
+    if (FLMLLandscapeSessionActive &&
+        UIInterfaceOrientationIsLandscape(
+            FLMLLandscapeSessionOrientation)) {
+        return FLMLLandscapeSessionOrientation;
+    }
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     BOOL screenBoundsLandscape = FLMLIsLandscapeBounds(screenBounds);
     UIInterfaceOrientation portraitCandidate = UIInterfaceOrientationUnknown;
@@ -251,6 +292,10 @@ static UIInterfaceOrientation FLMLActiveInterfaceOrientation(void) {
 }
 
 static CGRect FLMLPhysicalDisplayBounds(void) {
+    if (FLMLLandscapeSessionActive &&
+        FLMLIsLandscapeBounds(FLMLLandscapeSessionBounds)) {
+        return FLMLLandscapeSessionBounds;
+    }
     CGRect bounds = [UIScreen mainScreen].bounds;
     BOOL targetLandscape = UIInterfaceOrientationIsLandscape(
         FLMLActiveInterfaceOrientation());
@@ -595,6 +640,7 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 @property(nonatomic, assign) CGRect transitionTargetFrame;
 @property(nonatomic, assign) NSUInteger orientationEpoch;
 @property(nonatomic, assign) BOOL layoutPassActive;
+@property(nonatomic, assign) BOOL wheelLayoutPassActive;
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, copy) NSString *queuedIdentifier;
 @property(nonatomic, copy) NSString *queuedFullscreenIdentifier;
@@ -630,6 +676,10 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 + (instancetype)sharedCoordinator;
 - (void)start;
 - (void)reloadPreferences;
+- (void)wheelRootLayoutDidChange;
+- (void)synchronizeWheelItemLocalCentersWithReason:(NSString *)reason;
+- (void)handleWheelItemTap:(UITapGestureRecognizer *)gesture;
+- (void)endLandscapeSessionIfIdleWithReason:(NSString *)reason;
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id _Nullable)scene
             sessionGeneration:(NSUInteger)sessionGeneration;
@@ -810,8 +860,13 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                        frame:bounds];
     self.wheelWindow.windowLevel = UIWindowLevelAlert + 121.0;
     self.wheelWindow.backgroundColor = [UIColor clearColor];
-    self.wheelWindow.rootViewController =
+    FLMLandscapeRootViewController *wheelRoot =
         [self newRootControllerWithLayoutCallback:NO];
+    __weak typeof(self) weakWheelCoordinator = self;
+    wheelRoot.layoutDidChange = ^{
+        [weakWheelCoordinator wheelRootLayoutDidChange];
+    };
+    self.wheelWindow.rootViewController = wheelRoot;
     self.wheelWindow.hidden = YES;
     self.wheelWindow.userInteractionEnabled = NO;
     self.wheelContainer = [[UIView alloc] initWithFrame:bounds];
@@ -819,6 +874,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.wheelTapGesture =
         [[UITapGestureRecognizer alloc] initWithTarget:self
                                                action:@selector(handleWheelTap:)];
+    self.wheelTapGesture.delegate = self;
     [self.wheelWindow.rootViewController.view
         addGestureRecognizer:self.wheelTapGesture];
 
@@ -1063,6 +1119,31 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     [self updateWindowFrames];
     [self layoutForCurrentState];
     self.layoutPassActive = NO;
+}
+
+- (void)endLandscapeSessionIfIdleWithReason:(NSString *)reason {
+    if (!FLMLLandscapeSessionActive) {
+        return;
+    }
+    BOOL wheelBusy = (self.wheelWindow && !self.wheelWindow.hidden) ||
+                     self.wheelPinned || self.wheelGestureActive ||
+                     self.wheelDismissInProgress;
+    BOOL cardBusy = self.cardState != FLMLCardStateInactive;
+    if (wheelBusy || cardBusy) {
+        return;
+    }
+    CGRect retainedBounds = FLMLLandscapeSessionBounds;
+    UIInterfaceOrientation retainedOrientation =
+        FLMLLandscapeSessionOrientation;
+    FLMLEndLandscapeSession();
+    FLMEnqueueDiagnosticLine(
+        @"landscape session-end reason=%@ retainedOrientation=%ld retainedBounds=%@ screen=%@ device=%ld",
+        reason ?: @"idle",
+        (long)retainedOrientation,
+        NSStringFromCGRect(retainedBounds),
+        NSStringFromCGRect([UIScreen mainScreen].bounds),
+        (long)[UIDevice currentDevice].orientation);
+    [self updateWindowFrames];
 }
 
 - (void)orientationDidChange:(NSNotification *)notification {
@@ -1572,6 +1653,20 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         }
         return accepted;
     }
+    if (gestureRecognizer == self.wheelTapGesture) {
+        if (!self.wheelPinned) {
+            return NO;
+        }
+        UIView *view = touch.view;
+        for (FLMLandscapeWheelItemView *item in self.itemViews) {
+            if (view == item || [view isDescendantOfView:item]) {
+                // The icon's own recognizer carries the identifier directly;
+                // do not let the ancestor fallback recognizer race it.
+                return NO;
+            }
+        }
+        return YES;
+    }
     CGPoint point = [self visualPointForTouch:touch gesture:gestureRecognizer];
     if (gestureRecognizer == self.globalModalGesture) {
         return self.wheelPinned;
@@ -1729,10 +1824,61 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                     fromView:self.wheelWindow];
 }
 
+- (void)synchronizeWheelItemLocalCentersWithReason:(NSString *)reason {
+    if (!self.wheelWindow || !self.wheelContainer ||
+        self.itemViews.count == 0) {
+        return;
+    }
+    NSMutableArray<NSString *> *changes = [NSMutableArray array];
+    for (FLMLandscapeWheelItemView *item in self.itemViews) {
+        CGPoint oldCenter = item.center;
+        CGPoint newCenter =
+            [self wheelLocalPointForVisualPoint:item.visualCenter];
+        if (hypot(newCenter.x - oldCenter.x,
+                  newCenter.y - oldCenter.y) < 0.5) {
+            continue;
+        }
+        item.center = newCenter;
+        [changes addObject:[NSString stringWithFormat:
+                            @"%@:old{%.1f,%.1f}/new{%.1f,%.1f}",
+                            item.identifier ?: @"<none>",
+                            oldCenter.x,
+                            oldCenter.y,
+                            newCenter.x,
+                            newCenter.y]];
+    }
+    if (changes.count > 0) {
+        FLMEnqueueDiagnosticLine(
+            @"landscape wheel-layout-sync reason=%@ changes=[%@] window=%@ root=%@ screen=%@ orientation=%ld device=%ld",
+            reason ?: @"layout",
+            [changes componentsJoinedByString:@","],
+            NSStringFromCGRect(self.wheelWindow.bounds),
+            NSStringFromCGRect(self.wheelWindow.rootViewController.view.bounds),
+            NSStringFromCGRect([UIScreen mainScreen].bounds),
+            (long)FLMLActiveInterfaceOrientation(),
+            (long)[UIDevice currentDevice].orientation);
+    }
+}
+
+- (void)wheelRootLayoutDidChange {
+    if (self.wheelLayoutPassActive || self.wheelWindow.hidden ||
+        self.itemViews.count == 0) {
+        return;
+    }
+    self.wheelLayoutPassActive = YES;
+    [self updateWindowFrames];
+    [self synchronizeWheelItemLocalCentersWithReason:@"root-layout"];
+    self.wheelLayoutPassActive = NO;
+}
+
 - (void)presentWheelFromRight:(BOOL)fromRight {
     if (![self isLandscapeActive] || self.itemIdentifiers.count == 0) {
         return;
     }
+    CGRect admittedBounds = [self displayBounds];
+    UIInterfaceOrientation admittedOrientation =
+        FLMLActiveInterfaceOrientation();
+    FLMLBeginLandscapeSession(admittedBounds, admittedOrientation);
     [self updateWindowFrames];
     FLMQuiescePortraitControllerForLandscape();
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
@@ -1810,6 +1956,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                     initWithIdentifier:identifier
                                  image:FLMApplicationIcon(identifier)
                                   size:self.wheelIconSize];
+            UITapGestureRecognizer *itemTap =
+                [[UITapGestureRecognizer alloc]
+                    initWithTarget:self
+                            action:@selector(handleWheelItemTap:)];
+            itemTap.cancelsTouchesInView = YES;
+            itemTap.delaysTouchesBegan = NO;
+            itemTap.delaysTouchesEnded = NO;
+            [item addGestureRecognizer:itemTap];
             item.visualCenter = center;
             CGPoint localCenter = [self wheelLocalPointForVisualPoint:center];
             item.center = localCenter;
@@ -1845,7 +1999,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                          completion:nil];
     }];
     FLMEnqueueDiagnosticLine(
-        @"landscape wheel-present side=%@ bounds=%@ safeInsets=%@ anchor={%.1f,%.1f} radius=%.1f rings=%lu centers=[%@] windowFrame=%@ windowBounds=%@ root=%@",
+        @"landscape wheel-present side=%@ bounds=%@ safeInsets=%@ anchor={%.1f,%.1f} radius=%.1f rings=%lu centers=[%@] windowFrame=%@ windowBounds=%@ root=%@ sessionOrientation=%ld screen=%@ device=%ld",
         fromRight ? @"right" : @"left",
         NSStringFromCGRect(visualBounds),
         NSStringFromUIEdgeInsets(safeInsets),
@@ -1856,7 +2010,10 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         [centers componentsJoinedByString:@","],
         NSStringFromCGRect(self.wheelWindow.frame),
         NSStringFromCGRect(self.wheelWindow.bounds),
-        NSStringFromCGRect(self.wheelWindow.rootViewController.view.bounds));
+        NSStringFromCGRect(self.wheelWindow.rootViewController.view.bounds),
+        (long)FLMLLandscapeSessionOrientation,
+        NSStringFromCGRect([UIScreen mainScreen].bounds),
+        (long)[UIDevice currentDevice].orientation);
 }
 
 - (FLMLandscapeWheelItemView *)wheelItemNearPoint:(CGPoint)point {
@@ -1885,6 +2042,90 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         }
     }
     return distance <= self.wheelIconSize * 0.5 + 12.0 ? nearest : nil;
+}
+
+- (FLMLandscapeWheelItemView *)wheelItemNearWindowPoint:(CGPoint)point
+                                          matchedCenter:(CGPoint *)matchedCenter {
+    FLMLandscapeWheelItemView *nearest = nil;
+    CGPoint nearestCenter = CGPointZero;
+    CGFloat distance = CGFLOAT_MAX;
+    for (FLMLandscapeWheelItemView *item in self.itemViews) {
+        CGRect windowRect =
+            [item convertRect:item.bounds toView:self.wheelWindow];
+        CGPoint center = CGPointMake(CGRectGetMidX(windowRect),
+                                     CGRectGetMidY(windowRect));
+        CGFloat candidate = hypot(point.x - center.x, point.y - center.y);
+        if (candidate < distance) {
+            distance = candidate;
+            nearest = item;
+            nearestCenter = center;
+        }
+    }
+    if (distance > self.wheelIconSize * 0.5 + 12.0) {
+        return nil;
+    }
+    if (matchedCenter) {
+        *matchedCenter = nearestCenter;
+    }
+    return nearest;
+}
+
+- (FLMLandscapeWheelItemView *)wheelItemNearVisualCandidateForWindowPoint:(CGPoint)windowPoint
+                                                                  hitMode:(NSString * __autoreleasing *)hitMode
+                                                             matchedPoint:(CGPoint *)matchedPoint {
+    CGRect bounds = [self displayBounds];
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    NSArray<NSValue *> *candidatePoints = @[
+        [NSValue valueWithCGPoint:windowPoint],
+        [NSValue valueWithCGPoint:
+                     CGPointMake(width - windowPoint.x, windowPoint.y)],
+        [NSValue valueWithCGPoint:
+                     CGPointMake(windowPoint.x, height - windowPoint.y)],
+        [NSValue valueWithCGPoint:
+                     CGPointMake(width - windowPoint.x,
+                                 height - windowPoint.y)],
+        [NSValue valueWithCGPoint:
+                     CGPointMake(windowPoint.y, height - windowPoint.x)],
+        [NSValue valueWithCGPoint:
+                     CGPointMake(width - windowPoint.y, windowPoint.x)],
+    ];
+    NSArray<NSString *> *candidateModes = @[
+        @"visual-identity",
+        @"visual-mirror-x",
+        @"visual-mirror-y",
+        @"visual-rotate-180",
+        @"visual-fixed-left",
+        @"visual-fixed-right",
+    ];
+    FLMLandscapeWheelItemView *nearest = nil;
+    CGPoint nearestPoint = CGPointZero;
+    NSString *nearestMode = nil;
+    CGFloat nearestDistance = CGFLOAT_MAX;
+    for (NSUInteger index = 0; index < candidatePoints.count; index++) {
+        CGPoint candidatePoint = candidatePoints[index].CGPointValue;
+        for (FLMLandscapeWheelItemView *item in self.itemViews) {
+            CGFloat candidateDistance =
+                hypot(candidatePoint.x - item.visualCenter.x,
+                      candidatePoint.y - item.visualCenter.y);
+            if (candidateDistance < nearestDistance) {
+                nearestDistance = candidateDistance;
+                nearest = item;
+                nearestPoint = candidatePoint;
+                nearestMode = candidateModes[index];
+            }
+        }
+    }
+    if (nearestDistance > self.wheelIconSize * 0.5 + 12.0) {
+        return nil;
+    }
+    if (hitMode) {
+        *hitMode = nearestMode;
+    }
+    if (matchedPoint) {
+        *matchedPoint = nearestPoint;
+    }
+    return nearest;
 }
 
 - (void)updateWheelHighlightForPoint:(CGPoint)point {
@@ -1937,23 +2178,71 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
+- (void)handleWheelItemTap:(UITapGestureRecognizer *)gesture {
+    if (!self.wheelPinned || gesture.state != UIGestureRecognizerStateEnded ||
+        ![gesture.view isKindOfClass:[FLMLandscapeWheelItemView class]]) {
+        return;
+    }
+    FLMLandscapeWheelItemView *item =
+        (FLMLandscapeWheelItemView *)gesture.view;
+    CGPoint windowPoint = [gesture locationInView:self.wheelWindow];
+    FLMEnqueueDiagnosticLine(
+        @"landscape wheel-item-tap hit=direct app=%@ window={%.1f,%.1f} localCenter=%@ visualCenter=%@ screen=%@ orientation=%ld device=%ld session=%d",
+        item.identifier ?: @"<none>",
+        windowPoint.x,
+        windowPoint.y,
+        NSStringFromCGPoint(item.center),
+        NSStringFromCGPoint(item.visualCenter),
+        NSStringFromCGRect([UIScreen mainScreen].bounds),
+        (long)FLMLActiveInterfaceOrientation(),
+        (long)[UIDevice currentDevice].orientation,
+        FLMLLandscapeSessionActive);
+    [self dismissWheelLaunchingItem:item];
+}
+
 - (void)handleWheelTap:(UITapGestureRecognizer *)gesture {
     if (!self.wheelPinned || gesture.state != UIGestureRecognizerStateEnded) {
         return;
     }
     CGPoint localPoint = [gesture locationInView:self.wheelContainer];
+    CGPoint windowPoint = [gesture locationInView:self.wheelWindow];
+    CGPoint matchedPoint = CGPointZero;
+    NSString *hitMode = @"window-view-tree";
     FLMLandscapeWheelItemView *item =
-        [self wheelItemNearLocalPoint:localPoint];
+        [self wheelItemNearWindowPoint:windowPoint
+                         matchedCenter:&matchedPoint];
+    if (!item) {
+        item = [self wheelItemNearLocalPoint:localPoint];
+        if (item) {
+            hitMode = @"container-local";
+            matchedPoint = item.center;
+        }
+    }
+    if (!item) {
+        item = [self wheelItemNearVisualCandidateForWindowPoint:windowPoint
+                                                        hitMode:&hitMode
+                                                   matchedPoint:&matchedPoint];
+    }
     NSString *localCenter = item ? NSStringFromCGPoint(item.center) : @"<none>";
     NSString *visualCenter =
         item ? NSStringFromCGPoint(item.visualCenter) : @"<none>";
+    NSString *matchedCenter =
+        item ? NSStringFromCGPoint(matchedPoint) : @"<none>";
     FLMEnqueueDiagnosticLine(
-        @"landscape wheel-tap input=window-local local={%.1f,%.1f} selected=%@ localCenter=%@ visualCenter=%@",
+        @"landscape wheel-tap input=window-tree window={%.1f,%.1f} local={%.1f,%.1f} hit=%@ selected=%@ matched=%@ localCenter=%@ visualCenter=%@ screen=%@ orientation=%ld device=%ld session=%d",
+        windowPoint.x,
+        windowPoint.y,
         localPoint.x,
         localPoint.y,
+        item ? hitMode : @"none",
         item.identifier ?: @"<none>",
+        matchedCenter,
         localCenter,
-        visualCenter);
+        visualCenter,
+        NSStringFromCGRect([UIScreen mainScreen].bounds),
+        (long)FLMLActiveInterfaceOrientation(),
+        (long)[UIDevice currentDevice].orientation,
+        FLMLLandscapeSessionActive);
     [self dismissWheelLaunchingItem:item];
 }
 
@@ -1979,10 +2268,13 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     [self refreshGestureAvailability];
     if (self.wheelWindow.hidden) {
         self.wheelDismissInProgress = NO;
-        [self refreshGestureAvailability];
         if (identifier.length > 0) {
             [self activateIdentifier:identifier];
         }
+        [self endLandscapeSessionIfIdleWithReason:
+                  identifier.length > 0 ? @"wheel-selection-finished"
+                                        : @"wheel-dismissed"];
+        [self refreshGestureAvailability];
         return;
     }
     [UIView animateWithDuration:0.22
@@ -2001,10 +2293,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                              @selector(removeFromSuperview)];
                          self.itemViews = @[];
                          self.wheelDismissInProgress = NO;
-                         [self refreshGestureAvailability];
                          if (identifier.length > 0) {
                              [self activateIdentifier:identifier];
                          }
+                         [self endLandscapeSessionIfIdleWithReason:
+                                   identifier.length > 0
+                                       ? @"wheel-selection-finished"
+                                       : @"wheel-dismissed"];
+                         [self refreshGestureAvailability];
                      }];
 }
 
@@ -3148,7 +3444,6 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                          self.edgeHandleBar.alpha = 1.0;
                          self.launchCoverView.hidden = YES;
                          self.statusLabel.hidden = YES;
-                         [self refreshGestureAvailability];
                          NSString *nextIdentifier =
                              self.queuedIdentifier.length > 0
                                  ? [self.queuedIdentifier copy]
@@ -3169,6 +3464,11 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                     !FLMDeviceIsLocked()) {
                              [self openIdentifier:nextIdentifier];
                          }
+                         [self endLandscapeSessionIfIdleWithReason:
+                                   fullscreenIdentifier.length > 0
+                                       ? @"fullscreen-handoff"
+                                       : @"card-closed"];
+                         [self refreshGestureAvailability];
                      }];
 }
 

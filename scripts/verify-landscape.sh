@@ -61,13 +61,26 @@ require_literal "$landscape" "FLMLRawCoordinateModeFixedLandscapeRight"
 require_literal "$landscape" "resolveAndPrimeGlobalCornerGesture"
 
 # Wheel geometry is anchored to the physical corners, then converted into the
-# wheel window's local space. Pinned taps stay window-local so the registered
-# system modal recognizer cannot dismiss a visible item before UIKit hits it.
+# wheel window's local space. A visible wheel retains the admitted landscape
+# contract even if SpringBoard's home Scene flips back to portrait. Icon taps
+# carry their identifier directly; the ancestor fallback compares live view-
+# tree coordinates and known Scene transforms rather than trusting one space.
 require_literal "$landscape" "CGRectGetMaxX(visualBounds) - 4.0"
 require_literal "$landscape" "item.visualCenter = center;"
+require_literal "$landscape" "FLMLLandscapeSessionActive"
+require_literal "$landscape" "FLMLBeginLandscapeSession"
+require_literal "$landscape" "FLMLLandscapeSessionBounds"
+require_literal "$landscape" "endLandscapeSessionIfIdleWithReason"
+require_literal "$landscape" "wheelRootLayoutDidChange"
+require_literal "$landscape" "synchronizeWheelItemLocalCentersWithReason"
+require_literal "$landscape" "@selector(handleWheelItemTap:)"
+require_literal "$landscape" "hit=direct"
+require_literal "$landscape" "convertRect:item.bounds toView:self.wheelWindow"
+require_literal "$landscape" "visual-mirror-x"
 require_literal "$landscape" "wheelItemNearLocalPoint"
 require_literal "$landscape" "point.x - item.center.x"
 require_literal "$landscape" "[self wheelItemNearLocalPoint:localPoint]"
+require_literal "$landscape" "self.wheelTapGesture.delegate = self;"
 require_literal "$landscape" "self.globalModalGesture.enabled = NO;"
 require_literal "$landscape" "self.wheelTapGesture.enabled = YES;"
 require_literal "$landscape" "!self.wheelDismissInProgress"
