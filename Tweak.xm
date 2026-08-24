@@ -14,6 +14,7 @@
 #import <unistd.h>
 
 #import "FLMDiagnostics.h"
+#import "FLMLandscapeRuntime.h"
 #import "FLMSceneLifecycle.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
@@ -34,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.44"
+#define FLMLogBuildString @"0.9.45"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -561,7 +562,7 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
 - (void)_setContentState:(NSInteger)state;
 @end
 
-static BOOL FLMDeviceIsLocked(void) {
+BOOL FLMDeviceIsLocked(void) {
     id manager = [NSClassFromString(@"SBLockScreenManager") sharedInstance];
     if (!manager) {
         return NO;
@@ -619,7 +620,7 @@ static NSString *FLMIdentifierForApplication(id application) {
     return nil;
 }
 
-static NSString *FLMFrontmostApplicationIdentifier(void) {
+NSString *FLMFrontmostApplicationIdentifier(void) {
     id workspaceClass = NSClassFromString(@"SBMainWorkspace");
     id workspace =
         [workspaceClass respondsToSelector:@selector(sharedInstance)]
@@ -641,7 +642,7 @@ static NSString *FLMFrontmostApplicationIdentifier(void) {
     return nil;
 }
 
-static BOOL FLMPrewarmApplicationIdentifier(NSString *identifier) {
+BOOL FLMPrewarmApplicationIdentifier(NSString *identifier) {
     if (identifier.length == 0 ||
         [identifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return NO;
@@ -1780,7 +1781,7 @@ static CGFloat FLMKeyboardSharedCardHeight = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportWidth = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportHeight = 0.0;
 
-static id FLMCopyPreference(NSString *key) {
+id FLMCopyPreference(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyValue((__bridge CFStringRef)key,
                                                       FLYME_PREFERENCES_DOMAIN,
                                                       kCFPreferencesCurrentUser,
@@ -1788,7 +1789,7 @@ static id FLMCopyPreference(NSString *key) {
     return CFBridgingRelease(value);
 }
 
-static NSString *FLMSceneIdentifier(id scene) {
+NSString *FLMSceneIdentifier(id scene) {
     if (!scene) {
         return nil;
     }
@@ -2001,9 +2002,9 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         FLMKeyboardSharedCardScale);
 }
 
-static void FLMPublishKeyboardState(NSString *identifier,
-                                    id scene,
-                                    uint64_t sessionGeneration) {
+void FLMPublishKeyboardState(NSString *identifier,
+                             id scene,
+                             uint64_t sessionGeneration) {
     uint64_t routeHash = FLMIdentifierHash(identifier);
     uint64_t sceneHash = FLMIdentifierHash(FLMSceneIdentifier(scene));
     FLMKeyboardSharedIdentifier = [identifier copy];
@@ -2061,9 +2062,9 @@ static void FLMPublishKeyboardState(NSString *identifier,
     }
 }
 
-static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
-                                        CGFloat keyboardHeight,
-                                        BOOL visible) {
+void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
+                                 CGFloat keyboardHeight,
+                                 BOOL visible) {
     if (sessionGeneration == 0) {
         return;
     }
@@ -2101,12 +2102,12 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
         height, adapterReady, adapterPID, (unsigned long long)state);
 }
 
-static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
-                                           CGFloat cardBottom,
-                                           CGFloat visualScale,
-                                           CGFloat cardWidth,
-                                           CGFloat cardHeight,
-                                           BOOL active) {
+void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
+                                    CGFloat cardBottom,
+                                    CGFloat visualScale,
+                                    CGFloat cardWidth,
+                                    CGFloat cardHeight,
+                                    BOOL active) {
     BOOL hasCardDimensions = cardWidth > 1.0 && cardHeight > 1.0;
     FLMKeyboardSharedCardActive = active && sessionGeneration != 0 &&
                                   cardBottom > 1.0 && visualScale > 0.05 &&
@@ -2169,7 +2170,7 @@ static UIWindowScene *FLMForegroundWindowScene(void) {
     return nil;
 }
 
-static UIWindow *FLMCurrentKeyWindow(void) {
+UIWindow *FLMCurrentKeyWindow(void) {
     UIWindowScene *scene = FLMForegroundWindowScene();
     if (@available(iOS 13.0, *)) {
         for (UIWindow *window in scene.windows) {
@@ -2251,7 +2252,7 @@ static UIImage *FLMLockImage(void) {
                        renderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
-static UIImage *FLMApplicationIcon(NSString *bundleIdentifier) {
+UIImage *FLMApplicationIcon(NSString *bundleIdentifier) {
     if ([bundleIdentifier isEqualToString:FLYME_LOCK_SCREEN_ITEM]) {
         return FLMLockImage();
     }
@@ -8998,6 +8999,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 @end
 
+void FLMQuiescePortraitControllerForLandscape(void) {
+    FLMWheelController *controller = [FLMWheelController sharedController];
+    if (controller.wheelPinned || !controller.overlayWindow.hidden) {
+        [controller dismissWheelLaunchingItem:nil];
+    }
+    if (!controller.floatingWindow.hidden &&
+        !controller.floatingCloseInProgress) {
+        FLMEnqueueDiagnosticLine(
+            @"sb portrait-quiesce reason=landscape app=%@ docked=%d hidden=%d",
+            controller.floatingIdentifier ?: @"<none>",
+            controller.floatingDocked,
+            controller.floatingDockHidden);
+        [controller closeFloatingWindowKeepingApplication:YES];
+    }
+}
+
 static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
     FLMWheelController *controller = [FLMWheelController sharedController];
     if (!controller.enabled || controller.wheelPinned ||
@@ -9033,6 +9050,23 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
     // UIKit must finish its private keyboard Scene transaction before the host
     // changes superviews.  Moving it synchronously is what leaves the remote
     // keyboard half-paired and makes keys or the collapse control stop routing.
+    NSUInteger landscapeSessionGeneration =
+        FLMLandscapeKeyboardSessionGeneration();
+    if (landscapeSessionGeneration != 0) {
+        __weak UIView *weakLandscapeHostView = (UIView *)self;
+        __weak id weakLandscapeUpdatedScene = scene;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIView *hostView = weakLandscapeHostView;
+            if (!hostView) {
+                return;
+            }
+            FLMLandscapeKeyboardHostDidUpdate(
+                hostView,
+                weakLandscapeUpdatedScene,
+                landscapeSessionGeneration);
+        });
+        return;
+    }
     FLMWheelController *controller = [FLMWheelController sharedController];
     NSUInteger sessionGeneration =
         controller.floatingKeyboardSessionGeneration;
@@ -9068,6 +9102,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
                        [[FLMWheelController sharedController] start];
+                       FLMLandscapeStart();
                    });
     // Diagnostics are deliberately initialized after SpringBoard launch and
     // away from keyboard host callbacks. UIKit clients only publish compact

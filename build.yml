@@ -27,6 +27,11 @@ jobs:
           chmod +x scripts/verify-frozen-foundation.sh
           scripts/verify-frozen-foundation.sh Tweak.xm
 
+      - name: Verify independent landscape mechanism
+        run: |
+          chmod +x scripts/verify-landscape.sh
+          scripts/verify-landscape.sh
+
       - name: Install Theos
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -49,11 +54,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_0.9.44_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_0.9.45_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-0.9.44-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_0.9.44_iphoneos-arm64.deb
+          name: flyme-multitasking-0.9.45-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_0.9.45_iphoneos-arm64.deb
           if-no-files-found: error
