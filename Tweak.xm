@@ -25,16 +25,16 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v48"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v48"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF148ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF248ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 48ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v49"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v49"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF149ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF249ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 49ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.42"
+#define FLMLogBuildString @"0.9.43"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -369,7 +369,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    [NSString stringWithFormat:@"logger-ready build=%@ schema=20",
+                    [NSString stringWithFormat:@"logger-ready build=%@ schema=21",
                                                FLMLogBuildString]);
             }
         });
@@ -1495,7 +1495,6 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL floatingDockContentTailProtected;
 @property(nonatomic, assign) NSUInteger floatingDockContentProtectionGeneration;
 @property(nonatomic, assign) BOOL floatingDockContentTransitionCommitted;
-@property(nonatomic, assign) BOOL floatingDockContentRecognizerReset;
 @property(nonatomic, assign) CGRect floatingDockContentProtectionFrame;
 @property(nonatomic, assign) CGRect floatingDockTouchGateTransitionFrame;
 @property(nonatomic, assign) BOOL floatingDockBarrierTouchActive;
@@ -4341,6 +4340,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 point.x,
                 point.y,
                 (unsigned long)gesture.flmActiveTouchCount);
+            if (self.floatingDockContentTailProtected) {
+                [self releaseFloatingContentProtectionAfterDockTransition:
+                          self.floatingDockContentProtectionGeneration];
+            }
         }
         return;
     }
@@ -4876,9 +4879,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockContentTailProtected = YES;
     NSUInteger generation = ++self.floatingDockContentProtectionGeneration;
     self.floatingDockContentTransitionCommitted = NO;
-    self.floatingDockContentRecognizerReset =
-        self.floatingDockInputGesture.flmActiveTouchCount == 0 &&
-        self.floatingDockInputGesture.state == UIGestureRecognizerStatePossible;
     self.floatingDockContentProtectionFrame = frame;
     [self setFloatingApplicationInputBlocked:YES];
     FLMEnqueueDiagnosticLine(
@@ -4894,10 +4894,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.floatingDockContentTailProtected) {
         return;
     }
-    BOOL reset = self.floatingDockInputGesture.flmActiveTouchCount == 0 &&
-                 self.floatingDockInputGesture.state ==
-                     UIGestureRecognizerStatePossible;
-    self.floatingDockContentRecognizerReset = reset;
     [self releaseFloatingContentProtectionAfterDockTransition:
               self.floatingDockContentProtectionGeneration];
 }
@@ -4918,14 +4914,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (generation != self.floatingDockContentProtectionGeneration) {
             return;
         }
-        BOOL recognizerReset =
-            self.floatingDockContentRecognizerReset &&
+        // A recognizer registered through _UISystemGestureManager is allowed
+        // to remain in Ended after its touch has drained.  Waiting for
+        // Possible here therefore deadlocks the content barrier on affected
+        // builds.  The active-touch count plus the controller-owned barrier
+        // session are the actual lifetime of the stream we must absorb.
+        BOOL touchesQuiescent =
             self.floatingDockInputGesture.flmActiveTouchCount == 0 &&
-            self.floatingDockInputGesture.state ==
-                UIGestureRecognizerStatePossible;
+            !self.floatingDockBarrierTouchActive;
         if (!self.floatingDockContentTailProtected ||
             !self.floatingDockContentTransitionCommitted ||
-            !recognizerReset || self.floatingDockTransitionActive) {
+            !touchesQuiescent || self.floatingDockTransitionActive) {
             return;
         }
         self.floatingDockContentTailProtected = NO;
@@ -4939,8 +4938,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self setFloatingDockRoutingSuppressed:NO];
         [self updateFloatingDockTouchGate];
         FLMEnqueueDiagnosticLine(
-            @"sb dock-content-barrier released generation=%lu animationCommitted=1 recognizerReset=1",
-            (unsigned long)generation);
+            @"sb dock-content-barrier released generation=%lu animationCommitted=1 touchesQuiescent=1 recognizerState=%ld",
+            (unsigned long)generation,
+            (long)self.floatingDockInputGesture.state);
     });
 }
 
@@ -5897,7 +5897,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockContentProtectionGeneration += 1;
     self.floatingDockContentProtectionFrame = CGRectNull;
     self.floatingDockContentTransitionCommitted = NO;
-    self.floatingDockContentRecognizerReset = NO;
     // Invalidate any global dock recognizer that may still be observing the
     // centered handle's original touch.  The dock becomes eligible only for a
     // later touch, never for the tail of the docking swipe itself.
@@ -6046,9 +6045,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     floatingWindow.passesTouchesOutsideFloatingContent = NO;
     self.floatingDockTap.enabled = NO;
     self.floatingDockDragPress.enabled = NO;
-    // Keep the recognizer alive until its current touch reaches reset.  UIKit
-    // may reset it after this Ended action returns; disabling it here was the
-    // source of the old replay interval.
+    // Keep the recognizer alive while the current Ended action unwinds. The
+    // content barrier now follows the touch stream itself because a recognizer
+    // owned by _UISystemGestureManager may never report Possible here.
     self.floatingDockInputGesture.enabled = YES;
     self.floatingDockInputGeneration += 1;
     self.floatingDockGlobalDragActivated = NO;
@@ -8369,7 +8368,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockContentTailProtected = NO;
     self.floatingDockContentProtectionGeneration += 1;
     self.floatingDockContentTransitionCommitted = NO;
-    self.floatingDockContentRecognizerReset = NO;
     self.floatingDockContentProtectionFrame = CGRectNull;
     self.floatingDockTouchGateTransitionFrame = CGRectNull;
     self.floatingDockBarrierTouchActive = NO;

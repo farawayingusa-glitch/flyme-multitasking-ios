@@ -228,4 +228,12 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
+
+# A recognizer owned by _UISystemGestureManager may remain in Ended after its
+# touch stream drains. The centered-card barrier must therefore follow actual
+# active touches and the controller-owned barrier session, never state==Possible.
+require_source "BOOL touchesQuiescent ="
+require_source "!self.floatingDockBarrierTouchActive"
+require_source "touchesQuiescent=1 recognizerState=%ld"
+reject_source "floatingDockContentRecognizerReset"
 echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
