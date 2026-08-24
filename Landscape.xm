@@ -1729,18 +1729,6 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                     fromView:self.wheelWindow];
 }
 
-- (CGPoint)wheelVisualPointForLocalPoint:(CGPoint)localPoint {
-    if (!self.wheelWindow || !self.wheelContainer) {
-        return localPoint;
-    }
-    UIScreen *screen = self.wheelWindow.screen ?: [UIScreen mainScreen];
-    id<UICoordinateSpace> screenSpace = screen.coordinateSpace;
-    CGPoint windowPoint = [self.wheelContainer convertPoint:localPoint
-                                                     toView:self.wheelWindow];
-    return [self.wheelWindow convertPoint:windowPoint
-                        toCoordinateSpace:screenSpace];
-}
-
 - (void)presentWheelFromRight:(BOOL)fromRight {
     if (![self isLandscapeActive] || self.itemIdentifiers.count == 0) {
         return;
@@ -1885,6 +1873,20 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     return distance <= self.wheelIconSize * 0.5 + 12.0 ? nearest : nil;
 }
 
+- (FLMLandscapeWheelItemView *)wheelItemNearLocalPoint:(CGPoint)point {
+    FLMLandscapeWheelItemView *nearest = nil;
+    CGFloat distance = CGFLOAT_MAX;
+    for (FLMLandscapeWheelItemView *item in self.itemViews) {
+        CGFloat candidate = hypot(point.x - item.center.x,
+                                  point.y - item.center.y);
+        if (candidate < distance) {
+            distance = candidate;
+            nearest = item;
+        }
+    }
+    return distance <= self.wheelIconSize * 0.5 + 12.0 ? nearest : nil;
+}
+
 - (void)updateWheelHighlightForPoint:(CGPoint)point {
     FLMLandscapeWheelItemView *nearest = [self wheelItemNearPoint:point];
     if (nearest == self.highlightedItem) {
@@ -1940,16 +1942,18 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGPoint localPoint = [gesture locationInView:self.wheelContainer];
-    CGPoint visualPoint = [self wheelVisualPointForLocalPoint:localPoint];
     FLMLandscapeWheelItemView *item =
-        [self wheelItemNearPoint:visualPoint];
+        [self wheelItemNearLocalPoint:localPoint];
+    NSString *localCenter = item ? NSStringFromCGPoint(item.center) : @"<none>";
+    NSString *visualCenter =
+        item ? NSStringFromCGPoint(item.visualCenter) : @"<none>";
     FLMEnqueueDiagnosticLine(
-        @"landscape wheel-tap local={%.1f,%.1f} visual={%.1f,%.1f} selected=%@",
+        @"landscape wheel-tap input=window-local local={%.1f,%.1f} selected=%@ localCenter=%@ visualCenter=%@",
         localPoint.x,
         localPoint.y,
-        visualPoint.x,
-        visualPoint.y,
-        item.identifier ?: @"<none>");
+        item.identifier ?: @"<none>",
+        localCenter,
+        visualCenter);
     [self dismissWheelLaunchingItem:item];
 }
 

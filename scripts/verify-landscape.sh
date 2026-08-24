@@ -65,11 +65,14 @@ require_literal "$landscape" "resolveAndPrimeGlobalCornerGesture"
 # system modal recognizer cannot dismiss a visible item before UIKit hits it.
 require_literal "$landscape" "CGRectGetMaxX(visualBounds) - 4.0"
 require_literal "$landscape" "item.visualCenter = center;"
-require_literal "$landscape" "wheelVisualPointForLocalPoint"
+require_literal "$landscape" "wheelItemNearLocalPoint"
+require_literal "$landscape" "point.x - item.center.x"
+require_literal "$landscape" "[self wheelItemNearLocalPoint:localPoint]"
 require_literal "$landscape" "self.globalModalGesture.enabled = NO;"
 require_literal "$landscape" "self.wheelTapGesture.enabled = YES;"
 require_literal "$landscape" "!self.wheelDismissInProgress"
 require_literal "$landscape" "landscape wheel-tap"
+reject_literal "$landscape" "[self wheelItemNearPoint:visualPoint]"
 
 # Interaction invariants: left/right hide symmetry, exact-center-left snap,
 # dock tap returning to left operation mode, and normal iOS fullscreen launch.
