@@ -43,10 +43,19 @@ require_literal "$tweak" "FLMLandscapeKeyboardSessionGeneration()"
 # content keeps the stable portrait logical canvas used by keyboard routing.
 require_literal "$landscape" "static const CGFloat FLMLLogicalWidth = 390.0;"
 require_literal "$landscape" "static const CGFloat FLMLLogicalHeight = 844.0;"
-require_literal "$landscape" "scene.coordinateSpace.bounds"
+require_literal "$landscape" "FLMLActiveInterfaceOrientation"
+require_literal "$landscape" "FLMLPhysicalDisplayBounds"
 require_literal "$landscape" "view.safeAreaInsets"
 require_literal "$landscape" "self.presentingFromRight ? -dx : dx"
 require_literal "$landscape" "CGRectGetMinX(safe) + FLMLCardSideMargin"
+
+# The cross-Scene recognizer must remain alive while SpringBoard itself still
+# reports portrait, and a window-local route must remain available even when
+# private system registration reports success without delivering callbacks.
+require_literal "$landscape" "@interface FLMLandscapeCornerGestureRecognizer"
+require_literal "$landscape" "self.globalCornerGesture.enabled = configured;"
+require_literal "$landscape" "self.hotspotWindow.hotspotsEnabled = canSummon"
+require_literal "$landscape" "[self initialVisualPointForCornerGesture:gestureRecognizer]"
 
 # Interaction invariants: left/right hide symmetry, exact-center-left snap,
 # dock tap returning to left operation mode, and normal iOS fullscreen launch.
@@ -75,6 +84,5 @@ require_literal "$landscape" "UIKeyboardDidHideNotification"
 reject_literal "$landscape" "setAutorotationLocked"
 reject_literal "$landscape" "_setHostsKeyboard"
 reject_literal "$landscape" "forceInterfaceOrientation"
-reject_literal "$landscape" "UIDeviceOrientationPortrait"
 
 echo "independent landscape wheel, card states, safe-area geometry, fullscreen handoff, and keyboard routing verified"

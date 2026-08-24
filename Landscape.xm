@@ -148,6 +148,173 @@ static CGRect FLMLInterpolateRect(CGRect from, CGRect to, CGFloat progress) {
                       from.size.height + (to.size.height - from.size.height) * progress);
 }
 
+// SpringBoard's own UIWindowScene can remain portrait while the frontmost
+// application is physically landscape.  The landscape entry route therefore
+// cannot use that Scene as its orientation gate.  Keep the last confirmed
+// physical orientation and prefer live landscape evidence from every source.
+static UIInterfaceOrientation FLMLLastKnownInterfaceOrientation =
+    UIInterfaceOrientationPortrait;
+
+static UIInterfaceOrientation FLMLActiveInterfaceOrientation(void) {
+    UIInterfaceOrientation portraitCandidate = UIInterfaceOrientationUnknown;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *candidate in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![candidate isKindOfClass:[UIWindowScene class]] ||
+                (candidate.activationState != UISceneActivationStateForegroundActive &&
+                 candidate.activationState != UISceneActivationStateForegroundInactive)) {
+                continue;
+            }
+            UIInterfaceOrientation orientation =
+                ((UIWindowScene *)candidate).interfaceOrientation;
+            if (UIInterfaceOrientationIsLandscape(orientation)) {
+                FLMLLastKnownInterfaceOrientation = orientation;
+                return orientation;
+            }
+            if (orientation != UIInterfaceOrientationUnknown) {
+                portraitCandidate = orientation;
+            }
+        }
+    }
+
+    UIApplication *application = [UIApplication sharedApplication];
+    SEL statusBarSelector = NSSelectorFromString(@"statusBarOrientation");
+    if ([application respondsToSelector:statusBarSelector]) {
+        UIInterfaceOrientation (*getter)(id, SEL) =
+            (UIInterfaceOrientation (*)(id, SEL))
+                [application methodForSelector:statusBarSelector];
+        UIInterfaceOrientation orientation =
+            getter ? getter(application, statusBarSelector)
+                   : UIInterfaceOrientationUnknown;
+        if (UIInterfaceOrientationIsLandscape(orientation)) {
+            FLMLLastKnownInterfaceOrientation = orientation;
+            return orientation;
+        }
+        if (orientation != UIInterfaceOrientationUnknown) {
+            portraitCandidate = orientation;
+        }
+    }
+
+    UIDeviceOrientation deviceOrientation = [UIDevice currentDevice].orientation;
+    UIInterfaceOrientation physical = UIInterfaceOrientationUnknown;
+    switch (deviceOrientation) {
+        case UIDeviceOrientationLandscapeLeft:
+            physical = UIInterfaceOrientationLandscapeRight;
+            break;
+        case UIDeviceOrientationLandscapeRight:
+            physical = UIInterfaceOrientationLandscapeLeft;
+            break;
+        case UIDeviceOrientationPortrait:
+            physical = UIInterfaceOrientationPortrait;
+            break;
+        case UIDeviceOrientationPortraitUpsideDown:
+            physical = UIInterfaceOrientationPortraitUpsideDown;
+            break;
+        default:
+            break;
+    }
+    if (physical != UIInterfaceOrientationUnknown) {
+        FLMLLastKnownInterfaceOrientation = physical;
+        return physical;
+    }
+
+    // Face-up/face-down/unknown must not revert a landscape session to the
+    // stale portrait orientation exposed by SpringBoard's home Scene.
+    if (UIInterfaceOrientationIsLandscape(
+            FLMLLastKnownInterfaceOrientation)) {
+        return FLMLLastKnownInterfaceOrientation;
+    }
+    if (portraitCandidate != UIInterfaceOrientationUnknown) {
+        FLMLLastKnownInterfaceOrientation = portraitCandidate;
+    }
+    return FLMLLastKnownInterfaceOrientation;
+}
+
+static CGRect FLMLPhysicalDisplayBounds(void) {
+    CGRect bounds = [UIScreen mainScreen].bounds;
+    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(
+        FLMLActiveInterfaceOrientation());
+    BOOL boundsLandscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
+    if (targetLandscape != boundsLandscape) {
+        bounds.size = CGSizeMake(bounds.size.height, bounds.size.width);
+    }
+    return CGRectMake(0.0,
+                      0.0,
+                      CGRectGetWidth(bounds),
+                      CGRectGetHeight(bounds));
+}
+
+static CGPoint FLMLVisualPointFromRawPoint(CGPoint rawPoint) {
+    CGRect rawBounds = [UIScreen mainScreen].bounds;
+    UIInterfaceOrientation orientation = FLMLActiveInterfaceOrientation();
+    BOOL targetLandscape = UIInterfaceOrientationIsLandscape(orientation);
+    BOOL rawBoundsLandscape =
+        CGRectGetWidth(rawBounds) > CGRectGetHeight(rawBounds);
+    if (rawBoundsLandscape || !targetLandscape) {
+        return rawPoint;
+    }
+    CGFloat rawWidth = CGRectGetWidth(rawBounds);
+    CGFloat rawHeight = CGRectGetHeight(rawBounds);
+    if (orientation == UIInterfaceOrientationLandscapeLeft) {
+        return CGPointMake(rawPoint.y, rawWidth - rawPoint.x);
+    }
+    if (orientation == UIInterfaceOrientationLandscapeRight) {
+        return CGPointMake(rawHeight - rawPoint.y, rawPoint.x);
+    }
+    return rawPoint;
+}
+
+// The system gesture manager is an arbitration boundary, not a regular view
+// hierarchy.  Match the proven portrait recognizer contract so the bottom
+// system gesture cannot prevent the landscape corner stream before it begins.
+@interface FLMLandscapeCornerGestureRecognizer : UILongPressGestureRecognizer
+@property(nonatomic, assign) CGPoint flmlFirstRawPoint;
+@property(nonatomic, assign) BOOL flmlHasFirstRawPoint;
+@end
+
+@implementation FLMLandscapeCornerGestureRecognizer
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    UITouch *firstTouch = [touches anyObject];
+    if (firstTouch && !self.flmlHasFirstRawPoint) {
+        self.flmlFirstRawPoint = [firstTouch locationInView:nil];
+        self.flmlHasFirstRawPoint = YES;
+    }
+    [super touchesBegan:touches withEvent:event];
+}
+
+- (void)reset {
+    [super reset];
+    self.flmlFirstRawPoint = CGPointZero;
+    self.flmlHasFirstRawPoint = NO;
+}
+
+- (BOOL)canBePreventedByGestureRecognizer:
+    (UIGestureRecognizer *)preventingGestureRecognizer {
+    (void)preventingGestureRecognizer;
+    return NO;
+}
+
+- (BOOL)canPreventGestureRecognizer:
+    (UIGestureRecognizer *)preventedGestureRecognizer {
+    (void)preventedGestureRecognizer;
+    return YES;
+}
+
+- (BOOL)shouldBeRequiredToFailByGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return NO;
+}
+
+- (BOOL)shouldRequireFailureOfGestureRecognizer:
+    (UIGestureRecognizer *)otherGestureRecognizer {
+    (void)otherGestureRecognizer;
+    return NO;
+}
+
+@end
+
 @interface FLMLandscapeRootViewController : UIViewController
 @property(nonatomic, copy) void (^layoutDidChange)(void);
 @end
@@ -494,9 +661,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGRect)displayBounds {
-    UIWindowScene *scene = self.cardWindow.windowScene ?: [self foregroundWindowScene];
-    CGRect bounds = scene ? scene.coordinateSpace.bounds
-                          : [UIScreen mainScreen].bounds;
+    CGRect bounds = FLMLPhysicalDisplayBounds();
     if (CGRectGetWidth(bounds) < 1.0 || CGRectGetHeight(bounds) < 1.0) {
         bounds = [UIScreen mainScreen].bounds;
     }
@@ -507,8 +672,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)isLandscapeActive {
-    UIWindowScene *scene = self.cardWindow.windowScene ?: [self foregroundWindowScene];
-    UIInterfaceOrientation orientation = scene.interfaceOrientation;
+    UIInterfaceOrientation orientation = FLMLActiveInterfaceOrientation();
     if (UIInterfaceOrientationIsLandscape(orientation)) {
         return YES;
     }
@@ -517,9 +681,6 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 
 - (UIEdgeInsets)resolvedSafeAreaInsets {
     UIEdgeInsets insets = self.cardWindow.rootViewController.view.safeAreaInsets;
-    if (insets.left + insets.right + insets.top + insets.bottom > 0.5) {
-        return insets;
-    }
     UIWindowScene *scene = self.cardWindow.windowScene;
     for (UIWindow *window in scene.windows) {
         if (window == self.cardWindow || window == self.wheelWindow ||
@@ -527,10 +688,21 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
             continue;
         }
         UIEdgeInsets candidate = window.safeAreaInsets;
-        if (candidate.left + candidate.right + candidate.top + candidate.bottom >
-            insets.left + insets.right + insets.top + insets.bottom) {
-            insets = candidate;
-        }
+        insets.top = MAX(insets.top, candidate.top);
+        insets.left = MAX(insets.left, candidate.left);
+        insets.bottom = MAX(insets.bottom, candidate.bottom);
+        insets.right = MAX(insets.right, candidate.right);
+    }
+    if (UIInterfaceOrientationIsLandscape(
+            FLMLActiveInterfaceOrientation())) {
+        // A portrait-stale SpringBoard Scene reports the notch as top inset.
+        // Convert it to a conservative symmetric lateral exclusion so either
+        // physical landscape direction remains clear of the sensor housing.
+        CGFloat lateral = MAX(insets.top, MAX(insets.left, insets.right));
+        insets = UIEdgeInsetsMake(MIN(insets.top, 16.0),
+                                  lateral,
+                                  insets.bottom,
+                                  lateral);
     }
     return insets;
 }
@@ -572,7 +744,9 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 - (UILongPressGestureRecognizer *)cornerRecognizerWithAction:(SEL)action
                                                    duration:(NSTimeInterval)duration {
     UILongPressGestureRecognizer *recognizer =
-        [[UILongPressGestureRecognizer alloc] initWithTarget:self action:action];
+        [[FLMLandscapeCornerGestureRecognizer alloc]
+            initWithTarget:self
+                    action:action];
     recognizer.delegate = self;
     recognizer.minimumPressDuration = duration;
     recognizer.allowableMovement = CGFLOAT_MAX;
@@ -712,9 +886,6 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.localCornerGesture =
         [self cornerRecognizerWithAction:@selector(handleCornerGesture:)
                                 duration:0.12];
-    [root addGestureRecognizer:self.localCornerGuard];
-    [root addGestureRecognizer:self.localCornerGesture];
-
     self.hotspotWindow = [self windowWithClass:[FLMLandscapeHotspotWindow class]
                                          frame:bounds];
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
@@ -722,14 +893,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.hotspotWindow.rootViewController =
         [self newRootControllerWithLayoutCallback:NO];
     self.hotspotWindow.hidden = YES;
+    // Always keep an in-window pair as a fallback. A private system-manager
+    // registration can succeed yet receive no callbacks on some iOS builds.
+    [self.hotspotWindow.rootViewController.view
+        addGestureRecognizer:self.localCornerGuard];
+    [self.hotspotWindow.rootViewController.view
+        addGestureRecognizer:self.localCornerGesture];
 
     self.usesSystemGestureManager = [self registerGlobalGestures];
-    if (!self.usesSystemGestureManager) {
-        [self.hotspotWindow.rootViewController.view
-            addGestureRecognizer:self.globalCornerGuard];
-        [self.hotspotWindow.rootViewController.view
-            addGestureRecognizer:self.globalCornerGesture];
-    }
 }
 
 - (BOOL)registerGlobalGestures {
@@ -815,17 +986,27 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)refreshGestureAvailability {
     BOOL landscape = [self isLandscapeActive];
-    BOOL canSummon = self.enabled && landscape &&
-                     self.itemIdentifiers.count > 0 &&
-                     !FLMDeviceIsLocked();
-    self.globalCornerGuard.enabled = canSummon && !self.wheelPinned;
-    self.globalCornerGesture.enabled = canSummon && !self.wheelPinned;
+    BOOL configured = self.enabled && self.itemIdentifiers.count > 0 &&
+                      !self.wheelPinned;
+    BOOL canSummon = configured && landscape && !FLMDeviceIsLocked();
+    // Never disable the cross-Scene recognizers merely because SpringBoard's
+    // own Scene is portrait. They must remain alive so each new touch can
+    // evaluate the current physical orientation at the delegate boundary.
+    self.globalCornerGuard.enabled = configured;
+    self.globalCornerGesture.enabled = configured;
     self.localCornerGuard.enabled = canSummon && !self.wheelPinned;
     self.localCornerGesture.enabled = canSummon && !self.wheelPinned;
-    self.hotspotWindow.hotspotsEnabled = canSummon &&
-                                         !self.usesSystemGestureManager &&
-                                         !self.wheelPinned;
+    self.hotspotWindow.hotspotsEnabled = canSummon && !self.wheelPinned;
     self.hotspotWindow.hidden = !self.hotspotWindow.hotspotsEnabled;
+    FLMEnqueueDiagnosticLine(
+        @"landscape gesture-route configured=%d active=%d orientation=%ld bounds=%@ system=%d globalEnabled=%d hotspot=%d",
+        configured,
+        landscape,
+        (long)FLMLActiveInterfaceOrientation(),
+        NSStringFromCGRect([self displayBounds]),
+        self.usesSystemGestureManager,
+        self.globalCornerGesture.enabled,
+        self.hotspotWindow.hotspotsEnabled);
 }
 
 - (void)rootLayoutDidChange {
@@ -855,7 +1036,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(
         @"landscape orientation-update active=%d orientation=%ld bounds=%@ safe=%@ epoch=%lu reason=%@ state=%lu",
         landscape,
-        (long)self.cardWindow.windowScene.interfaceOrientation,
+        (long)FLMLActiveInterfaceOrientation(),
         NSStringFromCGRect([self displayBounds]),
         NSStringFromUIEdgeInsets([self resolvedSafeAreaInsets]),
         (unsigned long)self.orientationEpoch,
@@ -1129,22 +1310,95 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         gestureWindow == self.wheelWindow) {
         return [gesture locationInView:gestureWindow.rootViewController.view];
     }
-    CGPoint raw = [gesture locationInView:nil];
-    UIScreen *screen = self.cardWindow.windowScene.screen ?: [UIScreen mainScreen];
-    UIWindow *targetWindow = self.cardWindow ?: self.hotspotWindow;
-    CGPoint fixedCandidate =
-        [screen.fixedCoordinateSpace convertPoint:raw
-                                toCoordinateSpace:targetWindow];
-    CGRect expanded = CGRectInset(targetWindow.bounds, -2.0, -2.0);
-    if (CGRectContainsPoint(expanded, fixedCandidate)) {
-        return fixedCandidate;
+    return FLMLVisualPointFromRawPoint([gesture locationInView:nil]);
+}
+
+- (CGPoint)visualPointForTouch:(UITouch *)touch
+                       gesture:(UIGestureRecognizer *)gesture {
+    UIWindow *gestureWindow = gesture.view.window;
+    if (gestureWindow == self.cardWindow ||
+        gestureWindow == self.hotspotWindow ||
+        gestureWindow == self.wheelWindow) {
+        return [touch locationInView:gestureWindow.rootViewController.view];
     }
-    CGPoint currentCandidate =
-        [screen.coordinateSpace convertPoint:raw
-                           toCoordinateSpace:targetWindow];
-    return CGRectContainsPoint(expanded, currentCandidate)
-               ? currentCandidate
-               : raw;
+    return FLMLVisualPointFromRawPoint([touch locationInView:nil]);
+}
+
+- (CGPoint)initialVisualPointForCornerGesture:
+    (UIGestureRecognizer *)gesture {
+    UIWindow *gestureWindow = gesture.view.window;
+    if (gestureWindow == self.cardWindow ||
+        gestureWindow == self.hotspotWindow) {
+        return [self visualPointForGesture:gesture];
+    }
+    if ([gesture isKindOfClass:
+                     [FLMLandscapeCornerGestureRecognizer class]]) {
+        FLMLandscapeCornerGestureRecognizer *cornerGesture =
+            (FLMLandscapeCornerGestureRecognizer *)gesture;
+        if (cornerGesture.flmlHasFirstRawPoint) {
+            return FLMLVisualPointFromRawPoint(
+                cornerGesture.flmlFirstRawPoint);
+        }
+    }
+    return [self visualPointForGesture:gesture];
+}
+
+- (BOOL)isCornerRecognizer:(UIGestureRecognizer *)gesture {
+    return gesture == self.globalCornerGuard ||
+           gesture == self.globalCornerGesture ||
+           gesture == self.localCornerGuard ||
+           gesture == self.localCornerGesture;
+}
+
+- (BOOL)isOpeningCornerRecognizer:(UIGestureRecognizer *)gesture {
+    return gesture == self.globalCornerGesture ||
+           gesture == self.localCornerGesture;
+}
+
+- (BOOL)primeCornerContextForGesture:(UIGestureRecognizer *)gesture
+                               point:(CGPoint)point {
+    BOOL fromRight = NO;
+    BOOL accepted = FLMLPointInsideCornerTrigger(point,
+                                                 [self displayBounds],
+                                                 self.cornerTriggerSize,
+                                                 &fromRight);
+    if (accepted && [self isOpeningCornerRecognizer:gesture]) {
+        self.presentingFromRight = fromRight;
+        self.cornerStartPoint = point;
+    }
+    return accepted;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:
+    (UIGestureRecognizer *)gestureRecognizer {
+    if ([self isCornerRecognizer:gestureRecognizer]) {
+        if (![self isLandscapeActive] || !self.enabled || self.wheelPinned ||
+            self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
+            return NO;
+        }
+        CGPoint point =
+            [self initialVisualPointForCornerGesture:gestureRecognizer];
+        BOOL accepted = [self primeCornerContextForGesture:gestureRecognizer
+                                                     point:point];
+        if (accepted) {
+            [self updateWindowFrames];
+            FLMEnqueueDiagnosticLine(
+                @"landscape wheel-entry accepted phase=should-begin route=%@ point={%.1f,%.1f} orientation=%ld bounds=%@",
+                gestureRecognizer.view.window == self.hotspotWindow
+                    ? @"hotspot"
+                    : @"system",
+                point.x,
+                point.y,
+                (long)FLMLActiveInterfaceOrientation(),
+                NSStringFromCGRect([self displayBounds]));
+        }
+        return accepted;
+    }
+    if (gestureRecognizer == self.globalModalGesture) {
+        return self.wheelPinned && [self isLandscapeActive] &&
+               !FLMDeviceIsLocked();
+    }
+    return YES;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -1152,27 +1406,15 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     if (![self isLandscapeActive] || !self.enabled || FLMDeviceIsLocked()) {
         return NO;
     }
-    CGPoint point = [self visualPointForGesture:gestureRecognizer];
-    BOOL cornerRecognizer =
-        gestureRecognizer == self.globalCornerGuard ||
-        gestureRecognizer == self.globalCornerGesture ||
-        gestureRecognizer == self.localCornerGuard ||
-        gestureRecognizer == self.localCornerGesture;
-    if (cornerRecognizer) {
+    CGPoint point = [self visualPointForTouch:touch gesture:gestureRecognizer];
+    if ([self isCornerRecognizer:gestureRecognizer]) {
         if (self.wheelPinned || self.itemIdentifiers.count == 0) {
             return NO;
         }
-        BOOL fromRight = NO;
-        BOOL accepted = FLMLPointInsideCornerTrigger(point,
-                                                     [self displayBounds],
-                                                     self.cornerTriggerSize,
-                                                     &fromRight);
-        if (accepted &&
-            (gestureRecognizer == self.globalCornerGesture ||
-             gestureRecognizer == self.localCornerGesture)) {
-            self.presentingFromRight = fromRight;
-            self.cornerStartPoint = point;
-            self.wheelGestureActive = NO;
+        BOOL accepted = [self primeCornerContextForGesture:gestureRecognizer
+                                                     point:point];
+        if (accepted) {
+            [self updateWindowFrames];
         }
         return accepted;
     }
@@ -1241,7 +1483,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
             @"landscape wheel-guard point={%.1f,%.1f} orientation=%ld safe=%@",
             point.x,
             point.y,
-            (long)self.cardWindow.windowScene.interfaceOrientation,
+            (long)FLMLActiveInterfaceOrientation(),
             NSStringFromCGRect([self safeRect]));
     }
 }
@@ -1257,6 +1499,13 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 - (void)handleCornerGesture:(UILongPressGestureRecognizer *)gesture {
     if (![self isLandscapeActive]) {
         return;
+    }
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        CGPoint initial = [self initialVisualPointForCornerGesture:gesture];
+        if (![self primeCornerContextForGesture:gesture point:initial]) {
+            return;
+        }
+        [self updateWindowFrames];
     }
     CGPoint point = [self visualPointForGesture:gesture];
     switch (gesture.state) {
@@ -1314,6 +1563,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     if (![self isLandscapeActive] || self.itemIdentifiers.count == 0) {
         return;
     }
+    [self updateWindowFrames];
     FLMQuiescePortraitControllerForLandscape();
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
@@ -1637,7 +1887,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         identifier,
         (unsigned long)generation,
         NSStringFromCGRect(self.cardContainer.frame),
-        (long)self.cardWindow.windowScene.interfaceOrientation,
+        (long)FLMLActiveInterfaceOrientation(),
         NSStringFromCGRect([self safeRect]));
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(0.03 * NSEC_PER_SEC)),
@@ -2498,7 +2748,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(
         @"landscape fullscreen-handoff app=%@ policy=ios-normal orientation=%ld",
         identifier,
-        (long)self.cardWindow.windowScene.interfaceOrientation);
+        (long)FLMLActiveInterfaceOrientation());
 }
 
 - (void)backgroundScene:(id)scene {
@@ -2522,7 +2772,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         if ([mutableSettings respondsToSelector:
                                  @selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:
-                                 self.cardWindow.windowScene.interfaceOrientation];
+                                 FLMLActiveInterfaceOrientation()];
         }
         if ([mutableSettings respondsToSelector:@selector(setForeground:)]) {
             [mutableSettings setForeground:NO];
@@ -3086,7 +3336,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         NSStringFromCGRect(CGRectIntersection(self.cardContainer.frame, frame)),
         avoidance,
         CGRectGetWidth(self.cardContainer.frame) / FLMLLogicalWidth,
-        (long)self.cardWindow.windowScene.interfaceOrientation);
+        (long)FLMLActiveInterfaceOrientation());
 }
 
 - (void)keyboardFrameWillChange:(NSNotification *)notification {
@@ -3111,7 +3361,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         NSStringFromCGRect(converted),
         visible,
         NSStringFromCGRect(self.cardWindow.bounds),
-        (long)self.cardWindow.windowScene.interfaceOrientation);
+        (long)FLMLActiveInterfaceOrientation());
     if (visible) {
         [self applyKeyboardFrame:converted visible:YES];
     } else {
