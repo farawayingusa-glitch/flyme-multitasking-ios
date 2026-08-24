@@ -236,4 +236,15 @@ require_source "BOOL touchesQuiescent ="
 require_source "!self.floatingDockBarrierTouchActive"
 require_source "touchesQuiescent=1 recognizerState=%ld"
 reject_source "floatingDockContentRecognizerReset"
+
+# Dock content stays physically blocked, but a genuinely new touch is allowed
+# to interrupt entry/snap/resize settling and take over the visible card. The
+# initiating centered-handle stream remains protected by its timestamp cutoff.
+require_source "FLMFloatingDockControlTransitionEntry"
+require_source "FLMFloatingDockControlTransitionSnap"
+require_source "FLMFloatingDockControlTransitionResize"
+require_source "canTakeOverFloatingDockControlAtPoint:"
+require_source "dock-entry-begin generation=%lu contentBlocked=1 control=drag"
+require_source "dock-control-takeover kind=%@"
+require_source "controlTakeover=1 kind=%@"
 echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"

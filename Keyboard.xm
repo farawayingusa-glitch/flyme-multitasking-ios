@@ -22,12 +22,12 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v49"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v49"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v50"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v50"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF149ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF249ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 49ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF150ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF250ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 50ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
