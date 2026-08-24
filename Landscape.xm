@@ -17,6 +17,10 @@ static const CGFloat FLMLLogicalHeight = 844.0;
 static const CGFloat FLMLDefaultCenteredWidth = 315.0;
 static const CGFloat FLMLDefaultTopCrop = 37.0;
 static const CGFloat FLMLDefaultBottomCrop = 19.0;
+// Landscape sizing is intentionally independent from the portrait card
+// preferences. Zero preserves the exact pre-slider landscape frame; 100
+// expands that frame until its top and bottom touch the physical display.
+static const CGFloat FLMLDefaultCardExpansion = 0.0;
 static const CGFloat FLMLDefaultDockWidth = 156.0;
 static const CGFloat FLMLDefaultWheelRadius = 202.0;
 static const CGFloat FLMLDefaultWheelIconSize = 56.0;
@@ -437,6 +441,28 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 
 @end
 
+// The keyboard host already publishes frames in the physical display space.
+// Keeping its forwarding root fixed prevents a portrait-stale SpringBoard
+// Scene from applying a second rotation after the host has been reparented.
+@interface FLMLandscapeKeyboardRootViewController : UIViewController
+@end
+
+@implementation FLMLandscapeKeyboardRootViewController
+
+- (BOOL)prefersStatusBarHidden {
+    return YES;
+}
+
+- (BOOL)shouldAutorotate {
+    return NO;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskAll;
+}
+
+@end
+
 @interface FLMLandscapeOverlayWindow : UIWindow
 @end
 
@@ -624,6 +650,7 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 @property(nonatomic, assign) CGFloat centeredCardWidth;
 @property(nonatomic, assign) CGFloat centeredTopCrop;
 @property(nonatomic, assign) CGFloat centeredBottomCrop;
+@property(nonatomic, assign) CGFloat landscapeCardExpansion;
 @property(nonatomic, assign) CGFloat centeredDockSwipeThreshold;
 @property(nonatomic, assign) FLMLCardState cardState;
 @property(nonatomic, assign) BOOL dockedOnRight;
@@ -657,6 +684,8 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 @property(nonatomic, assign) NSUInteger keyboardSessionGeneration;
 @property(nonatomic, assign) BOOL keyboardVisible;
 @property(nonatomic, assign) CGRect keyboardFrame;
+@property(nonatomic, assign) CGFloat keyboardMaximumVisibleHeight;
+@property(nonatomic, assign) CGFloat lastLandscapeKeyboardHeight;
 @property(nonatomic, assign) CGRect pendingKeyboardFrame;
 @property(nonatomic, assign) BOOL keyboardFramePending;
 @property(nonatomic, weak) UIView *keyboardLayerHostView;
@@ -683,6 +712,7 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 - (void)keyboardLayerHostView:(UIView *)hostView
             didUpdateForScene:(id _Nullable)scene
             sessionGeneration:(NSUInteger)sessionGeneration;
+- (void)restoreKeyboardLayerHost;
 @end
 
 static void FLMLPreferencesChanged(CFNotificationCenterRef center,
@@ -708,6 +738,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         self.cardState = FLMLCardStateInactive;
         self.keyboardFrame = CGRectNull;
         self.pendingKeyboardFrame = CGRectNull;
+        self.lastLandscapeKeyboardHeight = 293.0;
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             NULL,
@@ -1032,9 +1063,8 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     id radiusValue = FLMCopyPreference(@"wheelRadius");
     id iconValue = FLMCopyPreference(@"wheelIconSize");
     id triggerValue = FLMCopyPreference(@"cornerTriggerSizeV2");
-    id widthValue = FLMCopyPreference(@"centeredCardWidth");
-    id topCropValue = FLMCopyPreference(@"centeredCardTopCrop");
-    id bottomCropValue = FLMCopyPreference(@"centeredCardBottomCrop");
+    id landscapeExpansionValue =
+        FLMCopyPreference(@"landscapeCardExpansion");
     id swipeValue = FLMCopyPreference(@"centeredDockSwipeThreshold");
 
     self.enabled = [enabledValue isKindOfClass:[NSNumber class]] &&
@@ -1063,20 +1093,17 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                        MIN(96.0,
                                            [triggerValue doubleValue]))
                                  : FLMLDefaultCornerTriggerSize;
-    self.centeredCardWidth = [widthValue isKindOfClass:[NSNumber class]]
-                                 ? MAX(240.0,
-                                       MIN(360.0,
-                                           [widthValue doubleValue]))
-                                 : FLMLDefaultCenteredWidth;
-    self.centeredTopCrop = [topCropValue isKindOfClass:[NSNumber class]]
-                               ? MAX(0.0,
-                                     MIN(260.0,
-                                         [topCropValue doubleValue]))
-                               : FLMLDefaultTopCrop;
-    self.centeredBottomCrop =
-        [bottomCropValue isKindOfClass:[NSNumber class]]
-            ? MAX(0.0, MIN(260.0, [bottomCropValue doubleValue]))
-            : FLMLDefaultBottomCrop;
+    // These values define the established pre-slider landscape card baseline.
+    // Do not read the similarly named portrait preferences here: landscape
+    // expansion has its own setting and cannot react to portrait adjustments.
+    self.centeredCardWidth = FLMLDefaultCenteredWidth;
+    self.centeredTopCrop = FLMLDefaultTopCrop;
+    self.centeredBottomCrop = FLMLDefaultBottomCrop;
+    self.landscapeCardExpansion =
+        [landscapeExpansionValue isKindOfClass:[NSNumber class]]
+            ? MAX(0.0,
+                  MIN(100.0, [landscapeExpansionValue doubleValue]))
+            : FLMLDefaultCardExpansion;
     self.centeredDockSwipeThreshold =
         [swipeValue isKindOfClass:[NSNumber class]]
             ? MAX(8.0, MIN(120.0, [swipeValue doubleValue]))
@@ -1222,6 +1249,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 
 - (CGRect)operationFrame {
     CGRect safe = [self safeRect];
+    CGRect physical = [self displayBounds];
     CGFloat configuredWidth = MAX(240.0, self.centeredCardWidth);
     CGFloat baseScale = configuredWidth / FLMLLogicalWidth;
     CGFloat baseHeight = FLMLLogicalHeight * baseScale -
@@ -1239,7 +1267,23 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     CGFloat y = CGRectGetMidY(safe) - height * 0.5;
     y = MAX(CGRectGetMinY(safe) + FLMLCardVerticalMargin,
             MIN(CGRectGetMaxY(safe) - FLMLCardVerticalMargin - height, y));
-    return CGRectIntegral(CGRectMake(x, y, width, height));
+    CGRect baseline = CGRectMake(x, y, width, height);
+    CGFloat expansion = MAX(0.0, MIN(1.0,
+        self.landscapeCardExpansion / 100.0));
+    CGFloat physicalHeight = CGRectGetHeight(physical);
+    if (expansion <= 0.0 || physicalHeight <= height + 0.5) {
+        return CGRectIntegral(baseline);
+    }
+    CGFloat fullWidth = width * physicalHeight / MAX(1.0, height);
+    CGRect fullHeightFrame = CGRectMake(
+        x,
+        CGRectGetMinY(physical),
+        fullWidth,
+        physicalHeight);
+    CGRect expanded = FLMLInterpolateRect(baseline,
+                                          fullHeightFrame,
+                                          expansion);
+    return CGRectIntegral(expanded);
 }
 
 - (CGRect)dockFrameOnRight:(BOOL)onRight
@@ -1367,12 +1411,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                                    CGRectGetHeight(self.cardContainer.frame),
                                    cardActive);
     FLMEnqueueDiagnosticLine(
-        @"landscape content-layout state=%lu logical={390.0,844.0} card=%@ scale=%.6f cropOffset=%.2f safe=%@",
+        @"landscape content-layout state=%lu logical={390.0,844.0} card=%@ scale=%.6f cropOffset=%.2f expansion=%.0f safe=%@ physical=%@",
         (unsigned long)self.cardState,
         NSStringFromCGRect(self.cardContainer.frame),
         scale,
         cropOffset,
-        NSStringFromCGRect([self safeRect]));
+        self.landscapeCardExpansion,
+        NSStringFromCGRect([self safeRect]),
+        NSStringFromCGRect([self displayBounds]));
 }
 
 - (void)setCardFrameWithoutAnimation:(CGRect)frame {
@@ -1889,19 +1935,35 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     CGRect visualBounds = [self displayBounds];
     UIEdgeInsets safeInsets = [self resolvedSafeAreaInsets];
     CGFloat centerMargin = self.wheelIconSize * 0.5 + 6.0;
-    CGFloat startAngle = -82.0 * (CGFloat)M_PI / 180.0;
-    CGFloat endAngle = -10.0 * (CGFloat)M_PI / 180.0;
+    CGFloat preferredStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
+    CGFloat preferredEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
     CGPoint anchor =
         CGPointMake(fromRight ? CGRectGetMaxX(visualBounds) - 4.0
                               : CGRectGetMinX(visualBounds) + 4.0,
                     CGRectGetMaxY(visualBounds) - 4.0);
-    CGFloat horizontalRoom =
-        CGRectGetWidth(visualBounds) - 4.0 - centerMargin;
-    CGFloat verticalRoom =
-        CGRectGetHeight(visualBounds) - 4.0 - centerMargin;
-    CGFloat maximumRadius = MIN(horizontalRoom / MAX(0.05, cos(endAngle)),
-                                verticalRoom /
-                                    MAX(0.05, fabs(sin(startAngle))));
+    // Build one safe center rectangle first, then solve a common angular
+    // interval for every ring. Independent per-icon clamping shortens only
+    // the first/last gap; solving the arc itself keeps every chord equal.
+    CGFloat minimumX = CGRectGetMinX(visualBounds) + centerMargin +
+                       MAX(0.0, safeInsets.left);
+    CGFloat maximumX = CGRectGetMaxX(visualBounds) - centerMargin -
+                       MAX(0.0, safeInsets.right);
+    CGFloat minimumY = CGRectGetMinY(visualBounds) + centerMargin +
+                       MAX(0.0, safeInsets.top);
+    CGFloat maximumY = CGRectGetMaxY(visualBounds) - centerMargin -
+                       MAX(0.0, safeInsets.bottom);
+    if (maximumX < minimumX || maximumY < minimumY) {
+        minimumX = CGRectGetMinX(visualBounds) + centerMargin;
+        maximumX = CGRectGetMaxX(visualBounds) - centerMargin;
+        minimumY = CGRectGetMinY(visualBounds) + centerMargin;
+        maximumY = CGRectGetMaxY(visualBounds) - centerMargin;
+    }
+    CGFloat maximumInward = fromRight ? anchor.x - minimumX
+                                      : maximumX - anchor.x;
+    CGFloat maximumLift = anchor.y - minimumY;
+    CGFloat maximumRadius = MIN(
+        maximumInward / MAX(0.05, cos(preferredEndAngle)),
+        maximumLift / MAX(0.05, fabs(sin(preferredStartAngle))));
     maximumRadius = MAX(120.0, maximumRadius);
     NSArray<NSNumber *> *ringCounts =
         [self wheelRingCountsForCount:self.itemIdentifiers.count];
@@ -1924,32 +1986,65 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 
     NSMutableArray *views = [NSMutableArray array];
     NSMutableArray<NSString *> *centers = [NSMutableArray array];
-    CGFloat minimumX = CGRectGetMinX(visualBounds) + centerMargin +
-                       MAX(0.0, safeInsets.left);
-    CGFloat maximumX = CGRectGetMaxX(visualBounds) - centerMargin -
-                       MAX(0.0, safeInsets.right);
-    if (maximumX < minimumX) {
-        minimumX = CGRectGetMinX(visualBounds) + centerMargin;
-        maximumX = CGRectGetMaxX(visualBounds) - centerMargin;
-    }
-    CGFloat minimumY = CGRectGetMinY(visualBounds) + centerMargin +
-                       MIN(16.0, MAX(0.0, safeInsets.top));
-    CGFloat maximumY = CGRectGetMaxY(visualBounds) - centerMargin;
+    NSMutableArray<NSString *> *ringGeometry = [NSMutableArray array];
     NSUInteger itemIndex = 0;
     for (NSUInteger ringIndex = 0; ringIndex < ringCounts.count; ringIndex++) {
         NSUInteger count = ringCounts[ringIndex].unsignedIntegerValue;
         CGFloat radius = firstRadius + ringIndex * spacing;
+        CGFloat minimumInward =
+            fromRight ? anchor.x - maximumX : minimumX - anchor.x;
+        CGFloat minimumLift = anchor.y - maximumY;
+        CGFloat startAngle = preferredStartAngle;
+        CGFloat endAngle = preferredEndAngle;
+        if (minimumInward > 0.0) {
+            CGFloat ratio = MIN(1.0, minimumInward / MAX(1.0, radius));
+            startAngle = MAX(startAngle, -acos(ratio));
+        }
+        if (maximumLift > 0.0 && maximumLift < radius) {
+            startAngle = MAX(startAngle,
+                             -asin(MAX(0.0, maximumLift / radius)));
+        }
+        if (minimumLift > 0.0) {
+            CGFloat ratio = MIN(1.0, minimumLift / MAX(1.0, radius));
+            endAngle = MIN(endAngle, -asin(ratio));
+        }
+        if (maximumInward > 0.0 && maximumInward < radius) {
+            endAngle = MIN(endAngle,
+                           -acos(MAX(0.0, maximumInward / radius)));
+        }
+        BOOL usesEqualArc = endAngle - startAngle >=
+                            4.0 * (CGFloat)M_PI / 180.0;
+        CGPoint previousCenter = CGPointZero;
+        CGFloat equalGap = 0.0;
         for (NSUInteger position = 0; position < count; position++) {
             CGFloat fraction = count == 1
                                    ? 0.5
                                    : (CGFloat)position / (CGFloat)(count - 1);
-            CGFloat angle = startAngle + (endAngle - startAngle) * fraction;
-            CGFloat horizontal = radius * cos(angle);
-            CGPoint center = CGPointMake(fromRight ? anchor.x - horizontal
-                                                   : anchor.x + horizontal,
-                                         anchor.y + radius * sin(angle));
-            center.x = MAX(minimumX, MIN(maximumX, center.x));
-            center.y = MAX(minimumY, MIN(maximumY, center.y));
+            CGPoint center = CGPointZero;
+            if (usesEqualArc) {
+                CGFloat angle = startAngle +
+                                (endAngle - startAngle) * fraction;
+                CGFloat horizontal = radius * cos(angle);
+                center = CGPointMake(fromRight ? anchor.x - horizontal
+                                               : anchor.x + horizontal,
+                                     anchor.y + radius * sin(angle));
+            } else {
+                // Extremely narrow safe regions still receive deterministic
+                // equal spacing instead of several independently clamped
+                // icons occupying the same point.
+                CGFloat nearX = fromRight ? maximumX : minimumX;
+                CGFloat farX = fromRight
+                                   ? MAX(minimumX, maximumX - radius * 0.72)
+                                   : MIN(maximumX, minimumX + radius * 0.72);
+                center = CGPointMake(nearX + (farX - nearX) * fraction,
+                                     minimumY +
+                                         (maximumY - minimumY) * fraction);
+            }
+            if (position > 0) {
+                equalGap = hypot(center.x - previousCenter.x,
+                                 center.y - previousCenter.y);
+            }
+            previousCenter = center;
             NSString *identifier = self.itemIdentifiers[itemIndex++];
             FLMLandscapeWheelItemView *item =
                 [[FLMLandscapeWheelItemView alloc]
@@ -1979,6 +2074,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
             [self.wheelContainer addSubview:item];
             [views addObject:item];
         }
+        [ringGeometry addObject:[NSString stringWithFormat:
+                                 @"%lu:r%.1f/a%.1f..%.1f/g%.1f/%@",
+                                 (unsigned long)ringIndex,
+                                 radius,
+                                 startAngle * 180.0 / (CGFloat)M_PI,
+                                 endAngle * 180.0 / (CGFloat)M_PI,
+                                 equalGap,
+                                 usesEqualArc ? @"arc" : @"line"]];
     }
     self.itemViews = views;
     self.wheelWindow.hidden = NO;
@@ -1999,14 +2102,18 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                          completion:nil];
     }];
     FLMEnqueueDiagnosticLine(
-        @"landscape wheel-present side=%@ bounds=%@ safeInsets=%@ anchor={%.1f,%.1f} radius=%.1f rings=%lu centers=[%@] windowFrame=%@ windowBounds=%@ root=%@ sessionOrientation=%ld screen=%@ device=%ld",
+        @"landscape wheel-present side=%@ bounds=%@ safeInsets=%@ safeCenters=%@ anchor={%.1f,%.1f} radius=%.1f rings=[%@] centers=[%@] windowFrame=%@ windowBounds=%@ root=%@ sessionOrientation=%ld screen=%@ device=%ld",
         fromRight ? @"right" : @"left",
         NSStringFromCGRect(visualBounds),
         NSStringFromUIEdgeInsets(safeInsets),
+        NSStringFromCGRect(CGRectMake(minimumX,
+                                      minimumY,
+                                      maximumX - minimumX,
+                                      maximumY - minimumY)),
         anchor.x,
         anchor.y,
         firstRadius,
-        (unsigned long)ringCounts.count,
+        [ringGeometry componentsJoinedByString:@","],
         [centers componentsJoinedByString:@","],
         NSStringFromCGRect(self.wheelWindow.frame),
         NSStringFromCGRect(self.wheelWindow.bounds),
@@ -2369,6 +2476,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     }
     self.keyboardSessionGeneration = 0x10000ULL |
                                      self.keyboardSessionCounter;
+    self.keyboardMaximumVisibleHeight = 0.0;
     FLMPublishKeyboardState(self.identifier,
                             self.scene,
                             self.keyboardSessionGeneration);
@@ -2406,6 +2514,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.keyboardSessionGeneration = 0;
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
+    self.keyboardMaximumVisibleHeight = 0.0;
     self.keyboardFramePending = NO;
     self.pendingKeyboardFrame = CGRectNull;
     [self discardKeyboardLayerHost];
@@ -2437,12 +2546,14 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                      completion:nil];
     FLMPrewarmApplicationIdentifier(identifier);
     FLMEnqueueDiagnosticLine(
-        @"landscape card-open app=%@ generation=%lu frame=%@ orientation=%ld safe=%@",
+        @"landscape card-open app=%@ generation=%lu frame=%@ expansion=%.0f orientation=%ld safe=%@ physical=%@",
         identifier,
         (unsigned long)generation,
         NSStringFromCGRect(self.cardContainer.frame),
+        self.landscapeCardExpansion,
         (long)FLMLActiveInterfaceOrientation(),
-        NSStringFromCGRect([self safeRect]));
+        NSStringFromCGRect([self safeRect]),
+        NSStringFromCGRect([self displayBounds]));
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(0.03 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -3490,7 +3601,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     if (self.keyboardWindow && self.keyboardWindow.windowScene != targetScene) {
-        [self discardKeyboardLayerHost];
+        [self restoreKeyboardLayerHost];
         self.keyboardWindow.hidden = YES;
         self.keyboardWindow.rootViewController = nil;
         self.keyboardWindow = nil;
@@ -3503,12 +3614,27 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         self.keyboardWindow.opaque = NO;
         self.keyboardWindow.userInteractionEnabled = YES;
         self.keyboardWindow.keyboardInteractionFrame = CGRectNull;
-        self.keyboardWindow.rootViewController =
-            [self newRootControllerWithLayoutCallback:NO];
+        FLMLandscapeKeyboardRootViewController *rootController =
+            [[FLMLandscapeKeyboardRootViewController alloc] init];
+        rootController.view.backgroundColor = [UIColor clearColor];
+        rootController.view.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        rootController.view.clipsToBounds = NO;
+        self.keyboardWindow.rootViewController = rootController;
+        SEL autorotationSelector = NSSelectorFromString(
+            @"setAutorotates:forceUpdateInterfaceOrientation:");
+        if ([self.keyboardWindow respondsToSelector:autorotationSelector]) {
+            ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(
+                self.keyboardWindow,
+                autorotationSelector,
+                NO,
+                NO);
+        }
         self.keyboardWindow.hidden = YES;
     }
     self.keyboardWindow.frame = [self displayBounds];
     self.keyboardWindow.rootViewController.view.frame = self.keyboardWindow.bounds;
+    self.keyboardWindow.rootViewController.view.bounds = self.keyboardWindow.bounds;
     self.keyboardWindow.windowLevel = self.cardWindow.windowLevel + 1.0;
 }
 
@@ -3720,7 +3846,13 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     }
     if (hostView != self.keyboardLayerHostView ||
         self.keyboardHostSessionGeneration != sessionGeneration) {
-        [self discardKeyboardLayerHost];
+        if (self.keyboardLayerHostView) {
+            if (self.keyboardHostSessionGeneration == sessionGeneration) {
+                [self restoreKeyboardLayerHost];
+            } else {
+                [self discardKeyboardLayerHost];
+            }
+        }
         UIView *originalSuperview = hostView.superview;
         self.keyboardOriginalSuperview = originalSuperview;
         self.keyboardOriginalSubviewIndex =
@@ -3747,6 +3879,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         hostView.transform = CGAffineTransformIdentity;
         hostView.frame = forwardingRoot.bounds;
     }
+    [forwardingRoot bringSubviewToFront:hostView];
     [hostView setNeedsLayout];
     [hostView layoutIfNeeded];
     if (self.keyboardVisible) {
@@ -3761,21 +3894,60 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         [self applyKeyboardFrame:pending visible:YES];
     }
     FLMEnqueueDiagnosticLine(
-        @"landscape keyboard-host paired host=%p session=%lu frame=%@ key=%d",
+        @"landscape keyboard-host paired host=%p session=%lu frame=%@ window=%@ root=%@ hidden=%d alpha=%.2f key=%d",
         (__bridge void *)hostView,
         (unsigned long)sessionGeneration,
         NSStringFromCGRect(hostView.frame),
+        NSStringFromCGRect(self.keyboardWindow.frame),
+        NSStringFromCGRect(forwardingRoot.bounds),
+        hostView.hidden,
+        hostView.alpha,
         self.keyboardWindow.isKeyWindow);
 }
 
 - (void)deactivateKeyboardWindow {
     BOOL wasKey = self.keyboardWindow.isKeyWindow;
     self.keyboardWindow.keyboardInteractionFrame = CGRectNull;
-    self.keyboardWindow.hidden = YES;
     if (wasKey && self.cardState == FLMLCardStateOperation &&
         !self.cardWindow.hidden) {
         [self.cardWindow makeKeyWindow];
     }
+    self.keyboardWindow.hidden = YES;
+}
+
+- (void)restoreKeyboardLayerHost {
+    UIView *host = self.keyboardLayerHostView;
+    UIView *originalSuperview = self.keyboardOriginalSuperview;
+    if (host) {
+        @try {
+            [host removeFromSuperview];
+            host.transform = self.keyboardOriginalTransform;
+            host.frame = self.keyboardOriginalFrame;
+            host.autoresizingMask = self.keyboardOriginalAutoresizingMask;
+            host.translatesAutoresizingMaskIntoConstraints =
+                self.keyboardOriginalTranslatesAutoresizingMask;
+            if (originalSuperview) {
+                NSInteger index = self.keyboardOriginalSubviewIndex;
+                if (index >= 0 &&
+                    index <= (NSInteger)originalSuperview.subviews.count) {
+                    [originalSuperview insertSubview:host
+                                              atIndex:(NSUInteger)index];
+                } else {
+                    [originalSuperview addSubview:host];
+                }
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    self.keyboardLayerHostView = nil;
+    self.keyboardOriginalSuperview = nil;
+    self.keyboardOriginalSubviewIndex = NSNotFound;
+    self.keyboardHostSessionGeneration = 0;
+    [self deactivateKeyboardWindow];
+    FLMEnqueueDiagnosticLine(
+        @"landscape keyboard-host restore host=%p originalSuperview=%p",
+        (__bridge void *)host,
+        (__bridge void *)originalSuperview);
 }
 
 - (void)discardKeyboardLayerHost {
@@ -3789,18 +3961,32 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.keyboardOriginalSubviewIndex = NSNotFound;
     self.keyboardHostSessionGeneration = 0;
     [self deactivateKeyboardWindow];
+    FLMEnqueueDiagnosticLine(@"landscape keyboard-host discard host=%p",
+                             (__bridge void *)host);
 }
 
 - (CGRect)convertedKeyboardFrameFromScreenFrame:(CGRect)screenFrame {
     UIScreen *screen = self.cardWindow.windowScene.screen ?: [UIScreen mainScreen];
     CGRect bounds = self.cardWindow.bounds;
+    CGRect direct = CGRectStandardize(screenFrame);
+    // UIKit on the tested landscape route already reports a physical
+    // full-width frame. Preserve it even while it is animating just below the
+    // display; converting that off-screen frame through a portrait-stale
+    // coordinateSpace rotates it into a false on-screen keyboard.
+    CGFloat widthTolerance = MAX(3.0, CGRectGetWidth(bounds) * 0.06);
+    BOOL directSpansPhysicalWidth =
+        fabs(CGRectGetWidth(direct) - CGRectGetWidth(bounds)) <=
+            widthTolerance &&
+        fabs(CGRectGetMinX(direct) - CGRectGetMinX(bounds)) <= 12.0;
+    if (directSpansPhysicalWidth) {
+        return direct;
+    }
     CGRect current = [screen.coordinateSpace
         convertRect:screenFrame
   toCoordinateSpace:self.cardWindow];
     CGRect fixed = [screen.fixedCoordinateSpace
         convertRect:screenFrame
   toCoordinateSpace:self.cardWindow];
-    CGRect direct = screenFrame;
     CGRect candidates[] = {current, fixed, direct};
     CGRect best = CGRectNull;
     CGFloat bestScore = -CGFLOAT_MAX;
@@ -3819,7 +4005,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                         bottomDistance * 20.0;
         if (score > bestScore) {
             bestScore = score;
-            best = intersection;
+            best = CGRectStandardize(candidates[index]);
         }
     }
     return best;
@@ -3908,31 +4094,59 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     }
     CGRect raw = value.CGRectValue;
     CGRect converted = [self convertedKeyboardFrameFromScreenFrame:raw];
+    CGRect bounds = self.cardWindow.bounds;
+    CGRect intersection = CGRectIntersection(bounds, converted);
     BOOL visible = !CGRectIsNull(converted) && !CGRectIsEmpty(converted) &&
-                   CGRectGetHeight(converted) > 40.0 &&
-                   CGRectGetWidth(converted) > 100.0 &&
-                   CGRectGetMinY(converted) <
-                       CGRectGetMaxY(self.cardWindow.bounds) - 1.0;
+                   !CGRectIsNull(intersection) &&
+                   !CGRectIsEmpty(intersection) &&
+                   CGRectGetHeight(intersection) > 40.0 &&
+                   CGRectGetWidth(intersection) > 100.0 &&
+                   CGRectGetMinY(converted) < CGRectGetMaxY(bounds) - 1.0;
+    CGRect normalized = CGRectNull;
+    if (visible) {
+        CGFloat reportedHeight = CGRectGetHeight(converted);
+        if (reportedHeight >= 160.0) {
+            self.lastLandscapeKeyboardHeight = reportedHeight;
+        } else {
+            reportedHeight = self.lastLandscapeKeyboardHeight;
+        }
+        reportedHeight = MIN(CGRectGetHeight(bounds),
+                             MAX(160.0, reportedHeight));
+        self.keyboardMaximumVisibleHeight =
+            MAX(self.keyboardMaximumVisibleHeight, reportedHeight);
+        CGFloat stableHeight = self.keyboardMaximumVisibleHeight;
+        normalized = CGRectMake(CGRectGetMinX(bounds),
+                                CGRectGetMaxY(bounds) - stableHeight,
+                                CGRectGetWidth(bounds),
+                                stableHeight);
+    }
     FLMEnqueueDiagnosticLine(
-        @"landscape keyboard-notification raw=%@ converted=%@ visible=%d bounds=%@ orientation=%ld",
+        @"landscape keyboard-notification raw=%@ converted=%@ normalized=%@ visible=%d bounds=%@ stableHeight=%.2f orientation=%ld",
         NSStringFromCGRect(raw),
         NSStringFromCGRect(converted),
+        NSStringFromCGRect(normalized),
         visible,
-        NSStringFromCGRect(self.cardWindow.bounds),
+        NSStringFromCGRect(bounds),
+        self.keyboardMaximumVisibleHeight,
         (long)FLMLActiveInterfaceOrientation());
     if (visible) {
-        [self applyKeyboardFrame:converted visible:YES];
+        [self applyKeyboardFrame:normalized visible:YES];
     } else {
-        // Interactive dismissal may finish with only a frame-change
-        // notification. Clear the forwarding window immediately instead of
-        // depending on UIKeyboardDidHideNotification arriving afterwards.
-        [self applyKeyboardFrame:CGRectNull visible:NO];
+        // WillChangeFrame begins an interactive dismissal. Preserve the
+        // native host, key route, and stable touch envelope until DidHide;
+        // otherwise the off-screen transition frame tears down a keyboard
+        // that is still handling the current touch.
+        FLMEnqueueDiagnosticLine(
+            @"landscape keyboard-frame pending-hide stableHeight=%.2f session=%lu",
+            self.keyboardMaximumVisibleHeight,
+            (unsigned long)self.keyboardSessionGeneration);
     }
 }
 
 - (void)keyboardDidHide:(NSNotification *)notification {
     (void)notification;
     if (self.keyboardSessionGeneration != 0) {
+        self.keyboardMaximumVisibleHeight = 0.0;
         [self applyKeyboardFrame:CGRectNull visible:NO];
     }
 }
@@ -3961,6 +4175,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardState(nil, nil, 0);
     self.keyboardVisible = NO;
     self.keyboardFrame = CGRectNull;
+    self.keyboardMaximumVisibleHeight = 0.0;
     self.cardWindow.keyboardPassThroughFrame = CGRectNull;
     [self deactivateKeyboardWindow];
     FLMEnqueueDiagnosticLine(

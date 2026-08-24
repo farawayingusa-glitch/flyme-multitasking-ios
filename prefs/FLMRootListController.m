@@ -256,6 +256,7 @@ static NSString *FLMNameForIdentifier(
 @property(nonatomic, strong) UIButton *defaultButton;
 @property(nonatomic, strong) UISlider *slider;
 @property(nonatomic, copy) NSString *preferenceKey;
+@property(nonatomic, copy) NSString *valueSuffix;
 @property(nonatomic, assign) CGFloat minimumValue;
 @property(nonatomic, assign) CGFloat maximumValue;
 @property(nonatomic, assign) CGFloat defaultValue;
@@ -286,6 +287,11 @@ static NSString *FLMNameForIdentifier(
         self.detailTextLabel.hidden = YES;
 
         _preferenceKey = [[specifier propertyForKey:@"preferenceKey"] copy];
+        NSString *configuredSuffix =
+            [specifier propertyForKey:@"valueSuffix"];
+        _valueSuffix = [configuredSuffix isKindOfClass:[NSString class]]
+                           ? [configuredSuffix copy]
+                           : @"pt";
         _minimumValue = [[specifier propertyForKey:@"minimumValue"] doubleValue];
         _maximumValue = [[specifier propertyForKey:@"maximumValue"] doubleValue];
         _defaultValue = [[specifier propertyForKey:@"defaultValue"] doubleValue];
@@ -383,8 +389,9 @@ static NSString *FLMNameForIdentifier(
 }
 
 - (void)updateValueLabel {
-    NSString *text = [NSString stringWithFormat:@"%ld pt",
-                      (long)lround([self normalizedValue:self.slider.value])];
+    NSString *text = [NSString stringWithFormat:@"%ld %@",
+                      (long)lround([self normalizedValue:self.slider.value]),
+                      self.valueSuffix ?: @"pt"];
     [self.valueButton setTitle:text forState:UIControlStateNormal];
 }
 
@@ -453,7 +460,9 @@ static NSString *FLMNameForIdentifier(
         [NSString stringWithFormat:@"%ld", (long)lround(self.valueBeforeEditing)];
     UIAlertController *alert =
         [UIAlertController alertControllerWithTitle:self.settingTitleLabel.text
-                                             message:@"请输入数值（pt）"
+                                             message:[NSString stringWithFormat:
+                                                          @"请输入数值（%@）",
+                                                          self.valueSuffix ?: @"pt"]
                                       preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.text = initialText;

@@ -130,6 +130,36 @@
         </dict>
         <dict>
             <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>仅作用于横屏。0% 是当前横屏卡片尺寸；点“默认”恢复到该尺寸，100% 时卡片恰好贴住物理屏幕的上下边缘。</string>
+            <key>label</key>
+            <string>横屏卡片尺寸（独立）</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSStaticTextCell</string>
+            <key>cellClass</key>
+            <string>FLMWheelSliderCell</string>
+            <key>defaultValue</key>
+            <real>0</real>
+            <key>height</key>
+            <real>92</real>
+            <key>inputStep</key>
+            <real>1</real>
+            <key>label</key>
+            <string>横屏卡片放大幅度</string>
+            <key>maximumValue</key>
+            <real>100</real>
+            <key>minimumValue</key>
+            <real>0</real>
+            <key>preferenceKey</key>
+            <string>landscapeCardExpansion</string>
+            <key>valueSuffix</key>
+            <string>%</string>
+        </dict>
+        <dict>
+            <key>cell</key>
             <string>PSStaticTextCell</string>
             <key>cellClass</key>
             <string>FLMWheelSliderCell</string>
