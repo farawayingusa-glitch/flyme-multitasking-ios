@@ -55,7 +55,9 @@ require_literal "$landscape" "CGRectGetMinX(safe) + FLMLCardSideMargin"
 require_literal "$landscape" "@interface FLMLandscapeCornerGestureRecognizer"
 require_literal "$landscape" "self.globalCornerGesture.enabled = configured;"
 require_literal "$landscape" "self.hotspotWindow.hotspotsEnabled = canSummon"
-require_literal "$landscape" "[self initialVisualPointForCornerGesture:gestureRecognizer]"
+require_literal "$landscape" "FLMLRawCoordinateModeFixedPortrait"
+require_literal "$landscape" "FLMLRawCoordinateModeCurrent"
+require_literal "$landscape" "resolveAndPrimeGlobalCornerGesture"
 
 # Interaction invariants: left/right hide symmetry, exact-center-left snap,
 # dock tap returning to left operation mode, and normal iOS fullscreen launch.

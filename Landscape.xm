@@ -218,6 +218,16 @@ static UIInterfaceOrientation FLMLActiveInterfaceOrientation(void) {
         return physical;
     }
 
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    if (CGRectGetWidth(screenBounds) > CGRectGetHeight(screenBounds)) {
+        if (!UIInterfaceOrientationIsLandscape(
+                FLMLLastKnownInterfaceOrientation)) {
+            FLMLLastKnownInterfaceOrientation =
+                UIInterfaceOrientationLandscapeRight;
+        }
+        return FLMLLastKnownInterfaceOrientation;
+    }
+
     // Face-up/face-down/unknown must not revert a landscape session to the
     // stale portrait orientation exposed by SpringBoard's home Scene.
     if (UIInterfaceOrientationIsLandscape(
@@ -235,7 +245,7 @@ static CGRect FLMLPhysicalDisplayBounds(void) {
     BOOL targetLandscape = UIInterfaceOrientationIsLandscape(
         FLMLActiveInterfaceOrientation());
     BOOL boundsLandscape = CGRectGetWidth(bounds) > CGRectGetHeight(bounds);
-    if (targetLandscape != boundsLandscape) {
+    if (targetLandscape && !boundsLandscape) {
         bounds.size = CGSizeMake(bounds.size.height, bounds.size.width);
     }
     return CGRectMake(0.0,
@@ -264,12 +274,27 @@ static CGPoint FLMLVisualPointFromRawPoint(CGPoint rawPoint) {
     return rawPoint;
 }
 
+typedef NS_ENUM(NSInteger, FLMLRawCoordinateMode) {
+    FLMLRawCoordinateModeUnknown = 0,
+    FLMLRawCoordinateModeFixedPortrait,
+    FLMLRawCoordinateModeCurrent,
+};
+
+static CGPoint FLMLVisualPointForRawCoordinateMode(
+    CGPoint rawPoint,
+    FLMLRawCoordinateMode mode) {
+    return mode == FLMLRawCoordinateModeCurrent
+               ? rawPoint
+               : FLMLVisualPointFromRawPoint(rawPoint);
+}
+
 // The system gesture manager is an arbitration boundary, not a regular view
 // hierarchy.  Match the proven portrait recognizer contract so the bottom
 // system gesture cannot prevent the landscape corner stream before it begins.
 @interface FLMLandscapeCornerGestureRecognizer : UILongPressGestureRecognizer
 @property(nonatomic, assign) CGPoint flmlFirstRawPoint;
 @property(nonatomic, assign) BOOL flmlHasFirstRawPoint;
+@property(nonatomic, assign) FLMLRawCoordinateMode flmlRawCoordinateMode;
 @end
 
 @implementation FLMLandscapeCornerGestureRecognizer
@@ -287,6 +312,7 @@ static CGPoint FLMLVisualPointFromRawPoint(CGPoint rawPoint) {
     [super reset];
     self.flmlFirstRawPoint = CGPointZero;
     self.flmlHasFirstRawPoint = NO;
+    self.flmlRawCoordinateMode = FLMLRawCoordinateModeUnknown;
 }
 
 - (BOOL)canBePreventedByGestureRecognizer:
@@ -1310,7 +1336,19 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         gestureWindow == self.wheelWindow) {
         return [gesture locationInView:gestureWindow.rootViewController.view];
     }
-    return FLMLVisualPointFromRawPoint([gesture locationInView:nil]);
+    CGPoint raw = [gesture locationInView:nil];
+    FLMLRawCoordinateMode mode = FLMLRawCoordinateModeFixedPortrait;
+    if ([gesture isKindOfClass:
+                     [FLMLandscapeCornerGestureRecognizer class]]) {
+        FLMLandscapeCornerGestureRecognizer *cornerGesture =
+            (FLMLandscapeCornerGestureRecognizer *)gesture;
+        FLMLRawCoordinateMode resolved =
+            cornerGesture.flmlRawCoordinateMode;
+        if (resolved != FLMLRawCoordinateModeUnknown) {
+            mode = resolved;
+        }
+    }
+    return FLMLVisualPointForRawCoordinateMode(raw, mode);
 }
 
 - (CGPoint)visualPointForTouch:(UITouch *)touch
@@ -1321,26 +1359,19 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         gestureWindow == self.wheelWindow) {
         return [touch locationInView:gestureWindow.rootViewController.view];
     }
-    return FLMLVisualPointFromRawPoint([touch locationInView:nil]);
-}
-
-- (CGPoint)initialVisualPointForCornerGesture:
-    (UIGestureRecognizer *)gesture {
-    UIWindow *gestureWindow = gesture.view.window;
-    if (gestureWindow == self.cardWindow ||
-        gestureWindow == self.hotspotWindow) {
-        return [self visualPointForGesture:gesture];
-    }
+    CGPoint raw = [touch locationInView:nil];
+    FLMLRawCoordinateMode mode = FLMLRawCoordinateModeFixedPortrait;
     if ([gesture isKindOfClass:
                      [FLMLandscapeCornerGestureRecognizer class]]) {
         FLMLandscapeCornerGestureRecognizer *cornerGesture =
             (FLMLandscapeCornerGestureRecognizer *)gesture;
-        if (cornerGesture.flmlHasFirstRawPoint) {
-            return FLMLVisualPointFromRawPoint(
-                cornerGesture.flmlFirstRawPoint);
+        FLMLRawCoordinateMode resolved =
+            cornerGesture.flmlRawCoordinateMode;
+        if (resolved != FLMLRawCoordinateModeUnknown) {
+            mode = resolved;
         }
     }
-    return [self visualPointForGesture:gesture];
+    return FLMLVisualPointForRawCoordinateMode(raw, mode);
 }
 
 - (BOOL)isCornerRecognizer:(UIGestureRecognizer *)gesture {
@@ -1369,6 +1400,77 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     return accepted;
 }
 
+- (BOOL)resolveAndPrimeGlobalCornerGesture:(UIGestureRecognizer *)gesture
+                                  rawPoint:(CGPoint)rawPoint
+                             resolvedPoint:(CGPoint *)resolvedPoint {
+    FLMLandscapeCornerGestureRecognizer *cornerGesture =
+        [gesture isKindOfClass:
+                     [FLMLandscapeCornerGestureRecognizer class]]
+            ? (FLMLandscapeCornerGestureRecognizer *)gesture
+            : nil;
+    FLMLRawCoordinateMode lockedMode =
+        cornerGesture ? cornerGesture.flmlRawCoordinateMode
+                      : FLMLRawCoordinateModeUnknown;
+    FLMLRawCoordinateMode modes[] = {
+        FLMLRawCoordinateModeFixedPortrait,
+        FLMLRawCoordinateModeCurrent,
+    };
+    NSUInteger modeCount = sizeof(modes) / sizeof(modes[0]);
+    for (NSUInteger index = 0; index < modeCount; index++) {
+        FLMLRawCoordinateMode mode =
+            lockedMode != FLMLRawCoordinateModeUnknown
+                ? lockedMode
+                : modes[index];
+        CGPoint candidate =
+            FLMLVisualPointForRawCoordinateMode(rawPoint, mode);
+        if (![self primeCornerContextForGesture:gesture point:candidate]) {
+            if (lockedMode != FLMLRawCoordinateModeUnknown) {
+                break;
+            }
+            continue;
+        }
+        if (cornerGesture) {
+            cornerGesture.flmlRawCoordinateMode = mode;
+        }
+        if (resolvedPoint) {
+            *resolvedPoint = candidate;
+        }
+        return YES;
+    }
+    return NO;
+}
+
+- (BOOL)resolveAndPrimeCornerGesture:(UIGestureRecognizer *)gesture
+                               touch:(UITouch * _Nullable)touch
+                       resolvedPoint:(CGPoint *)resolvedPoint {
+    UIWindow *gestureWindow = gesture.view.window;
+    if (gestureWindow == self.cardWindow ||
+        gestureWindow == self.hotspotWindow) {
+        CGPoint point = touch
+                            ? [touch locationInView:
+                                         gestureWindow.rootViewController.view]
+                            : [gesture locationInView:
+                                           gestureWindow.rootViewController.view];
+        BOOL accepted = [self primeCornerContextForGesture:gesture point:point];
+        if (accepted && resolvedPoint) {
+            *resolvedPoint = point;
+        }
+        return accepted;
+    }
+    FLMLandscapeCornerGestureRecognizer *cornerGesture =
+        [gesture isKindOfClass:
+                     [FLMLandscapeCornerGestureRecognizer class]]
+            ? (FLMLandscapeCornerGestureRecognizer *)gesture
+            : nil;
+    CGPoint raw = touch ? [touch locationInView:nil]
+                        : (cornerGesture.flmlHasFirstRawPoint
+                               ? cornerGesture.flmlFirstRawPoint
+                               : [gesture locationInView:nil]);
+    return [self resolveAndPrimeGlobalCornerGesture:gesture
+                                           rawPoint:raw
+                                      resolvedPoint:resolvedPoint];
+}
+
 - (BOOL)gestureRecognizerShouldBegin:
     (UIGestureRecognizer *)gestureRecognizer {
     if ([self isCornerRecognizer:gestureRecognizer]) {
@@ -1376,10 +1478,10 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
             self.itemIdentifiers.count == 0 || FLMDeviceIsLocked()) {
             return NO;
         }
-        CGPoint point =
-            [self initialVisualPointForCornerGesture:gestureRecognizer];
-        BOOL accepted = [self primeCornerContextForGesture:gestureRecognizer
-                                                     point:point];
+        CGPoint point = CGPointZero;
+        BOOL accepted = [self resolveAndPrimeCornerGesture:gestureRecognizer
+                                                     touch:nil
+                                             resolvedPoint:&point];
         if (accepted) {
             [self updateWindowFrames];
             FLMEnqueueDiagnosticLine(
@@ -1406,18 +1508,20 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     if (![self isLandscapeActive] || !self.enabled || FLMDeviceIsLocked()) {
         return NO;
     }
-    CGPoint point = [self visualPointForTouch:touch gesture:gestureRecognizer];
     if ([self isCornerRecognizer:gestureRecognizer]) {
         if (self.wheelPinned || self.itemIdentifiers.count == 0) {
             return NO;
         }
-        BOOL accepted = [self primeCornerContextForGesture:gestureRecognizer
-                                                     point:point];
+        CGPoint point = CGPointZero;
+        BOOL accepted = [self resolveAndPrimeCornerGesture:gestureRecognizer
+                                                     touch:touch
+                                             resolvedPoint:&point];
         if (accepted) {
             [self updateWindowFrames];
         }
         return accepted;
     }
+    CGPoint point = [self visualPointForTouch:touch gesture:gestureRecognizer];
     if (gestureRecognizer == self.globalModalGesture) {
         return self.wheelPinned;
     }
@@ -1501,8 +1605,10 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     if (gesture.state == UIGestureRecognizerStateBegan) {
-        CGPoint initial = [self initialVisualPointForCornerGesture:gesture];
-        if (![self primeCornerContextForGesture:gesture point:initial]) {
+        CGPoint initial = CGPointZero;
+        if (![self resolveAndPrimeCornerGesture:gesture
+                                          touch:nil
+                                  resolvedPoint:&initial]) {
             return;
         }
         [self updateWindowFrames];
