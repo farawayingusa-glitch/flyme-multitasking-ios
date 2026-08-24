@@ -68,6 +68,7 @@ require_literal "$landscape" "item.visualCenter = center;"
 require_literal "$landscape" "wheelVisualPointForLocalPoint"
 require_literal "$landscape" "self.globalModalGesture.enabled = NO;"
 require_literal "$landscape" "self.wheelTapGesture.enabled = YES;"
+require_literal "$landscape" "!self.wheelDismissInProgress"
 require_literal "$landscape" "landscape wheel-tap"
 
 # Interaction invariants: left/right hide symmetry, exact-center-left snap,

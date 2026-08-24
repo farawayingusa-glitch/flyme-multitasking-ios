@@ -569,6 +569,7 @@ static NSString *FLMLRawCoordinateModeName(FLMLRawCoordinateMode mode) {
 @property(nonatomic, assign) BOOL usesSystemGestureManager;
 @property(nonatomic, assign) BOOL wheelPinned;
 @property(nonatomic, assign) BOOL wheelGestureActive;
+@property(nonatomic, assign) BOOL wheelDismissInProgress;
 @property(nonatomic, assign) FLMLRawCoordinateMode wheelRawCoordinateMode;
 @property(nonatomic, assign) BOOL presentingFromRight;
 @property(nonatomic, assign) CGPoint cornerStartPoint;
@@ -1032,7 +1033,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
 - (void)refreshGestureAvailability {
     BOOL landscape = [self isLandscapeActive];
     BOOL configured = self.enabled && self.itemIdentifiers.count > 0 &&
-                      !self.wheelPinned;
+                      !self.wheelPinned && !self.wheelDismissInProgress;
     BOOL canSummon = configured && landscape && !FLMDeviceIsLocked();
     // Never disable the cross-Scene recognizers merely because SpringBoard's
     // own Scene is portrait. They must remain alive so each new touch can
@@ -1748,6 +1749,7 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     FLMQuiescePortraitControllerForLandscape();
     [self.itemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
     self.wheelPinned = NO;
+    self.wheelDismissInProgress = NO;
     self.wheelWindow.userInteractionEnabled = NO;
     self.hotspotWindow.hotspotsEnabled = NO;
     CGRect visualBounds = [self displayBounds];
@@ -1967,10 +1969,13 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
     self.highlightedItem = nil;
     self.wheelPinned = NO;
     self.wheelGestureActive = NO;
+    self.wheelDismissInProgress = YES;
     self.globalModalGesture.enabled = NO;
     self.wheelWindow.userInteractionEnabled = NO;
     [self refreshGestureAvailability];
     if (self.wheelWindow.hidden) {
+        self.wheelDismissInProgress = NO;
+        [self refreshGestureAvailability];
         if (identifier.length > 0) {
             [self activateIdentifier:identifier];
         }
@@ -1991,6 +1996,8 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
                          [self.itemViews makeObjectsPerformSelector:
                                              @selector(removeFromSuperview)];
                          self.itemViews = @[];
+                         self.wheelDismissInProgress = NO;
+                         [self refreshGestureAvailability];
                          if (identifier.length > 0) {
                              [self activateIdentifier:identifier];
                          }
