@@ -55,9 +55,20 @@ require_literal "$landscape" "CGRectGetMinX(safe) + FLMLCardSideMargin"
 require_literal "$landscape" "@interface FLMLandscapeCornerGestureRecognizer"
 require_literal "$landscape" "self.globalCornerGesture.enabled = configured;"
 require_literal "$landscape" "self.hotspotWindow.hotspotsEnabled = canSummon"
-require_literal "$landscape" "FLMLRawCoordinateModeFixedPortrait"
 require_literal "$landscape" "FLMLRawCoordinateModeCurrent"
+require_literal "$landscape" "FLMLRawCoordinateModeFixedLandscapeLeft"
+require_literal "$landscape" "FLMLRawCoordinateModeFixedLandscapeRight"
 require_literal "$landscape" "resolveAndPrimeGlobalCornerGesture"
+
+# Wheel geometry is anchored to the physical corners, then converted into the
+# wheel window's local space. Pinned taps stay window-local so the registered
+# system modal recognizer cannot dismiss a visible item before UIKit hits it.
+require_literal "$landscape" "CGRectGetMaxX(visualBounds) - 4.0"
+require_literal "$landscape" "item.visualCenter = center;"
+require_literal "$landscape" "wheelVisualPointForLocalPoint"
+require_literal "$landscape" "self.globalModalGesture.enabled = NO;"
+require_literal "$landscape" "self.wheelTapGesture.enabled = YES;"
+require_literal "$landscape" "landscape wheel-tap"
 
 # Interaction invariants: left/right hide symmetry, exact-center-left snap,
 # dock tap returning to left operation mode, and normal iOS fullscreen launch.
