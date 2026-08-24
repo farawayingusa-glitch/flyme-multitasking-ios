@@ -271,6 +271,9 @@ static CGRect FLMLInterpolateRect(CGRect from, CGRect to, CGFloat progress) {
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, strong) UIImageView *iconView;
 @property(nonatomic, assign) BOOL highlighted;
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                              image:(UIImage *)image
+                               size:(CGFloat)size;
 @end
 
 @implementation FLMLandscapeWheelItemView
@@ -449,10 +452,11 @@ static void FLMLPreferencesChanged(CFNotificationCenterRef center,
             FLYME_PREFERENCES_NOTIFICATION,
             NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
+        [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
         [[NSNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(orientationDidChange:)
-                   name:UIApplicationDidChangeStatusBarOrientationNotification
+                   name:UIDeviceOrientationDidChangeNotification
                  object:nil];
         [[NSNotificationCenter defaultCenter]
             addObserver:self
