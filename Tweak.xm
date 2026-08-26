@@ -1657,6 +1657,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)releaseFloatingKeyboardHostQuarantine:(UIView *)hostView
                                         reason:(NSString *)reason;
 - (void)releaseAllFloatingKeyboardHostQuarantinesForReason:(NSString *)reason;
+- (void)discardFloatingKeyboardHostQuarantine:(UIView *)hostView
+                                        reason:(NSString *)reason;
+- (void)discardAllFloatingKeyboardHostQuarantinesForReason:(NSString *)reason;
 - (void)restoreFloatingKeyboardLayerHost;
 - (void)discardFloatingKeyboardLayerHost;
 - (void)deactivateKeyboardForwardingWindow;
@@ -6956,6 +6959,39 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMSceneIdentifier(self.floatingScene) ?: @"<none>",
         self.floatingWindow.hidden, self.floatingDocked,
         (unsigned long)self.floatingLaunchState);
+    // A keyboard Scene can finish one last host transaction after the outside
+    // tap has started closing the card.  That callback must be hidden before
+    // the hosted application Scene is detached; otherwise UIKit retains it in
+    // the application hierarchy and restores it inside the next card.
+    if (hostView && self.floatingCloseInProgress) {
+        id closingScene = self.floatingClosingScene ?: self.floatingScene;
+        id owningScene = nil;
+        @try {
+            owningScene = [hostView valueForKey:@"_owningScene"];
+        } @catch (__unused NSException *exception) {
+        }
+        NSString *closingIdentifier = FLMSceneIdentifier(closingScene);
+        NSString *owningIdentifier = FLMSceneIdentifier(owningScene);
+        NSString *updatedIdentifier = FLMSceneIdentifier(scene);
+        BOOL closingSceneMatches = closingScene &&
+            (owningScene == closingScene || scene == closingScene ||
+             (closingIdentifier.length > 0 &&
+              ([closingIdentifier isEqualToString:owningIdentifier] ||
+               [closingIdentifier isEqualToString:updatedIdentifier])));
+        if (closingSceneMatches) {
+            if (hostView != self.floatingKeyboardLayerHostView) {
+                [self quarantineFloatingKeyboardHost:hostView
+                                   sessionGeneration:sessionGeneration
+                                               reason:@"closing-transaction"];
+            }
+            FLMEnqueueDiagnosticLine(
+                @"sb host-update quarantined=closing-transaction host=%p session=%lu active=%p scene=%@",
+                (__bridge void *)hostView, (unsigned long)sessionGeneration,
+                (__bridge void *)self.floatingKeyboardLayerHostView,
+                closingIdentifier ?: @"<none>");
+            return;
+        }
+    }
     if (!hostView || sessionGeneration == 0 ||
         sessionGeneration != self.floatingKeyboardSessionGeneration ||
         self.floatingWindow.hidden || self.floatingDocked ||
@@ -7154,7 +7190,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     UIView *previousHost = self.floatingKeyboardRejectedHostView;
     if (previousHost && previousHost != hostView) {
-        [self releaseFloatingKeyboardHostQuarantine:previousHost
+        [self discardFloatingKeyboardHostQuarantine:previousHost
                                               reason:@"replaced"];
     }
     BOOL newlyQuarantined = self.floatingKeyboardRejectedHostView != hostView;
@@ -7196,6 +7232,33 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *hostView = self.floatingKeyboardRejectedHostView;
     if (hostView) {
         [self releaseFloatingKeyboardHostQuarantine:hostView reason:reason];
+    } else {
+        self.floatingKeyboardRejectedHostWasHidden = NO;
+    }
+}
+
+- (void)discardFloatingKeyboardHostQuarantine:(UIView *)hostView
+                                        reason:(NSString *)reason {
+    if (!hostView || hostView != self.floatingKeyboardRejectedHostView) {
+        return;
+    }
+    UIView *previousSuperview = hostView.superview;
+    self.floatingKeyboardRejectedHostView = nil;
+    self.floatingKeyboardRejectedHostWasHidden = NO;
+    @try {
+        [hostView removeFromSuperview];
+    } @catch (__unused NSException *exception) {
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb host-quarantine-discard host=%p reason=%@ previousSuperview=%p",
+        (__bridge void *)hostView, reason ?: @"<none>",
+        (__bridge void *)previousSuperview);
+}
+
+- (void)discardAllFloatingKeyboardHostQuarantinesForReason:(NSString *)reason {
+    UIView *hostView = self.floatingKeyboardRejectedHostView;
+    if (hostView) {
+        [self discardFloatingKeyboardHostQuarantine:hostView reason:reason];
     } else {
         self.floatingKeyboardRejectedHostWasHidden = NO;
     }
@@ -7701,7 +7764,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(@"sb notification=%@ did-hide",
                              notification.name);
     [self applyKeyboardFrame:CGRectNull visible:NO];
-    [self releaseAllFloatingKeyboardHostQuarantinesForReason:@"keyboard-did-hide"];
+    BOOL centeredCardSessionActive =
+        !self.floatingWindow.hidden && !self.floatingDocked &&
+        !self.floatingCloseInProgress &&
+        self.floatingLaunchState == FLMFloatingLaunchStateAttached &&
+        self.floatingKeyboardSessionGeneration != 0 &&
+        self.floatingScene && self.floatingIdentifier.length > 0;
+    if (centeredCardSessionActive) {
+        [self releaseAllFloatingKeyboardHostQuarantinesForReason:
+                  @"keyboard-did-hide-active-card"];
+    } else {
+        [self discardAllFloatingKeyboardHostQuarantinesForReason:
+                  @"keyboard-did-hide-inactive-card"];
+    }
     [self finalizeKeyboardDismissalProtection];
 }
 
@@ -8901,7 +8976,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self.floatingQueuedFullscreenIdentifier copy];
     self.floatingQueuedFullscreenIdentifier = nil;
     self.floatingWindow.hidden = YES;
-    [self releaseAllFloatingKeyboardHostQuarantinesForReason:@"centered-close"];
+    // The kept-alive application can preserve its first responder, but no
+    // keyboard compositor host from the retired card session may survive into
+    // the next presenter. UIKit will create a correctly paired host when input
+    // is requested again.
+    [self discardAllFloatingKeyboardHostQuarantinesForReason:@"centered-close"];
+    [self discardFloatingKeyboardLayerHost];
     [self updateFloatingDockTouchGate];
     self.floatingLaunchState = FLMFloatingLaunchStateIdle;
     self.floatingDimView.alpha = 1.0;
