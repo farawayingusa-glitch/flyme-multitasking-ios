@@ -34,7 +34,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.44"
+#define FLMLogBuildString @"Stable build 0.9.44"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1549,6 +1549,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, strong) FLMKeyboardForwardingWindow *keyboardForwardingWindow;
 @property(nonatomic, weak) UIView *floatingKeyboardLayerHostView;
 @property(nonatomic, weak) UIView *floatingKeyboardRejectedHostView;
+@property(nonatomic, assign) BOOL floatingKeyboardRejectedHostWasHidden;
 @property(nonatomic, strong) UIView *floatingKeyboardOriginalSuperview;
 @property(nonatomic, assign) NSInteger floatingKeyboardOriginalSubviewIndex;
 @property(nonatomic, assign) CGRect floatingKeyboardOriginalFrame;
@@ -1650,6 +1651,12 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (BOOL)floatingApplicationHostReadyForKeyboardRoute;
 - (void)flushDeferredFloatingKeyboardHostIfReady;
 - (void)flushPendingFloatingKeyboardFrameIfReady;
+- (void)quarantineFloatingKeyboardHost:(UIView *)hostView
+                     sessionGeneration:(NSUInteger)sessionGeneration
+                                 reason:(NSString *)reason;
+- (void)releaseFloatingKeyboardHostQuarantine:(UIView *)hostView
+                                        reason:(NSString *)reason;
+- (void)releaseAllFloatingKeyboardHostQuarantinesForReason:(NSString *)reason;
 - (void)restoreFloatingKeyboardLayerHost;
 - (void)discardFloatingKeyboardLayerHost;
 - (void)deactivateKeyboardForwardingWindow;
@@ -5526,6 +5533,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // the identical full-screen cover without a second visible animation.
     [UIView performWithoutAnimation:^{
         self.floatingWindow.hidden = YES;
+        [self releaseAllFloatingKeyboardHostQuarantinesForReason:@"fullscreen-handoff"];
         [self updateFloatingDockTouchGate];
         [cover removeFromSuperview];
         self.floatingContainer.alpha = 1.0;
@@ -6984,42 +6992,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                  [pairedValue boolValue];
     } @catch (__unused NSException *exception) {
     }
-    // A native keyboard host is not safe to reparent until UIKit has supplied
-    // the keyboard Scene and its preferred host identity. In 0.8.59 two host
-    // objects arrived for one session; accepting both made them alternately
-    // steal the forwarding window and occasionally exposed the keyboard in
-    // the card's own hierarchy.
-    if (!paired || !keyboardScene || !preferredHostIdentity) {
-        if (hostView == self.floatingKeyboardLayerHostView) {
-            FLMEnqueueDiagnosticLine(
-                @"sb host-update ignored=unpaired-current host=%p session=%lu",
-                (__bridge void *)hostView,
-                (unsigned long)sessionGeneration);
-        } else {
-            self.floatingKeyboardDeferredHostView = hostView;
-            self.floatingKeyboardDeferredScene = scene;
-            self.floatingKeyboardDeferredSessionGeneration = sessionGeneration;
-            FLMEnqueueDiagnosticLine(
-                @"sb host-deferred waiting=pairing host=%p session=%lu keyboardScene=%@ preferred=%p",
-                (__bridge void *)hostView,
-                (unsigned long)sessionGeneration,
-                FLMSceneIdentifier(keyboardScene) ?: @"<none>",
-                (__bridge void *)preferredHostIdentity);
-        }
-        return;
-    }
-    if (self.floatingKeyboardLayerHostView &&
-        hostView != self.floatingKeyboardLayerHostView &&
-        self.floatingKeyboardHostSessionGeneration == sessionGeneration) {
-        // Keep one native host for the lifetime of a keyboard session. The
-        // alternate host is a UIKit compositor callback, not a new route.
-        FLMEnqueueDiagnosticLine(
-            @"sb host-update rejected=alternate-host active=%p incoming=%p session=%lu",
-            (__bridge void *)self.floatingKeyboardLayerHostView,
-            (__bridge void *)hostView,
-            (unsigned long)sessionGeneration);
-        return;
-    }
     NSString *targetIdentifier = FLMSceneIdentifier(self.floatingScene);
     NSString *owningIdentifier = FLMSceneIdentifier(owningScene);
     NSString *updatedIdentifier = FLMSceneIdentifier(scene);
@@ -7043,7 +7015,48 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             updatedIdentifier ?: @"<none>");
         return;
     }
-
+    // A native keyboard host is not safe to reparent until UIKit has supplied
+    // the keyboard Scene and its preferred host identity. In 0.8.59 two host
+    // objects arrived for one session; accepting both made them alternately
+    // steal the forwarding window and occasionally exposed the keyboard in
+    // the card's own hierarchy.
+    if (!paired || !keyboardScene || !preferredHostIdentity) {
+        if (hostView == self.floatingKeyboardLayerHostView) {
+            FLMEnqueueDiagnosticLine(
+                @"sb host-update ignored=unpaired-current host=%p session=%lu",
+                (__bridge void *)hostView,
+                (unsigned long)sessionGeneration);
+        } else {
+            [self quarantineFloatingKeyboardHost:hostView
+                               sessionGeneration:sessionGeneration
+                                           reason:@"waiting-pairing"];
+            self.floatingKeyboardDeferredHostView = hostView;
+            self.floatingKeyboardDeferredScene = scene;
+            self.floatingKeyboardDeferredSessionGeneration = sessionGeneration;
+            FLMEnqueueDiagnosticLine(
+                @"sb host-deferred waiting=pairing host=%p session=%lu keyboardScene=%@ preferred=%p",
+                (__bridge void *)hostView,
+                (unsigned long)sessionGeneration,
+                FLMSceneIdentifier(keyboardScene) ?: @"<none>",
+                (__bridge void *)preferredHostIdentity);
+        }
+        return;
+    }
+    if (self.floatingKeyboardLayerHostView &&
+        hostView != self.floatingKeyboardLayerHostView &&
+        self.floatingKeyboardHostSessionGeneration == sessionGeneration) {
+        // Keep one native host for the lifetime of a keyboard session. The
+        // alternate host is a UIKit compositor callback, not a new route.
+        [self quarantineFloatingKeyboardHost:hostView
+                           sessionGeneration:sessionGeneration
+                                       reason:@"alternate-host"];
+        FLMEnqueueDiagnosticLine(
+            @"sb host-update rejected=alternate-host active=%p incoming=%p session=%lu",
+            (__bridge void *)self.floatingKeyboardLayerHostView,
+            (__bridge void *)hostView,
+            (unsigned long)sessionGeneration);
+        return;
+    }
     if (paired && keyboardScene && preferredHostIdentity) {
         [self propagateFloatingKeyboardScenePairing:keyboardScene
                               preferredHostIdentity:preferredHostIdentity
@@ -7057,6 +7070,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         FLMEnqueueDiagnosticLine(@"sb host-update rejected=no-forwarding-root");
         return;
     }
+
+    // A host can first arrive as the unpaired duplicate and then become the
+    // selected host in a later UIKit transaction. Restore its original
+    // visibility before moving it to the forwarding window.
+    [self releaseFloatingKeyboardHostQuarantine:hostView
+                                          reason:@"selected-host"];
 
     if (hostView != self.floatingKeyboardLayerHostView ||
         self.floatingKeyboardHostSessionGeneration != sessionGeneration) {
@@ -7125,6 +7144,61 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(
         @"sb forwarding-deactivate wasKey=%d cardHidden=%d docked=%d",
         wasKey, self.floatingWindow.hidden, self.floatingDocked);
+}
+
+- (void)quarantineFloatingKeyboardHost:(UIView *)hostView
+                     sessionGeneration:(NSUInteger)sessionGeneration
+                                 reason:(NSString *)reason {
+    if (!hostView || hostView == self.floatingKeyboardLayerHostView) {
+        return;
+    }
+    UIView *previousHost = self.floatingKeyboardRejectedHostView;
+    if (previousHost && previousHost != hostView) {
+        [self releaseFloatingKeyboardHostQuarantine:previousHost
+                                              reason:@"replaced"];
+    }
+    BOOL newlyQuarantined = self.floatingKeyboardRejectedHostView != hostView;
+    if (newlyQuarantined) {
+        self.floatingKeyboardRejectedHostWasHidden = hostView.hidden;
+        self.floatingKeyboardRejectedHostView = hostView;
+    }
+    @try {
+        hostView.hidden = YES;
+    } @catch (__unused NSException *exception) {
+    }
+    if (newlyQuarantined) {
+        FLMEnqueueDiagnosticLine(
+            @"sb host-quarantine host=%p session=%lu reason=%@ originallyHidden=%d superview=%p",
+            (__bridge void *)hostView, (unsigned long)sessionGeneration,
+            reason ?: @"<none>", self.floatingKeyboardRejectedHostWasHidden,
+            (__bridge void *)hostView.superview);
+    }
+}
+
+- (void)releaseFloatingKeyboardHostQuarantine:(UIView *)hostView
+                                        reason:(NSString *)reason {
+    if (!hostView || hostView != self.floatingKeyboardRejectedHostView) {
+        return;
+    }
+    BOOL originallyHidden = self.floatingKeyboardRejectedHostWasHidden;
+    @try {
+        hostView.hidden = originallyHidden;
+    } @catch (__unused NSException *exception) {
+    }
+    self.floatingKeyboardRejectedHostView = nil;
+    self.floatingKeyboardRejectedHostWasHidden = NO;
+    FLMEnqueueDiagnosticLine(
+        @"sb host-quarantine-release host=%p reason=%@ restoredHidden=%d",
+        (__bridge void *)hostView, reason ?: @"<none>", originallyHidden);
+}
+
+- (void)releaseAllFloatingKeyboardHostQuarantinesForReason:(NSString *)reason {
+    UIView *hostView = self.floatingKeyboardRejectedHostView;
+    if (hostView) {
+        [self releaseFloatingKeyboardHostQuarantine:hostView reason:reason];
+    } else {
+        self.floatingKeyboardRejectedHostWasHidden = NO;
+    }
 }
 
 - (void)restoreFloatingKeyboardLayerHost {
@@ -7627,6 +7701,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMEnqueueDiagnosticLine(@"sb notification=%@ did-hide",
                              notification.name);
     [self applyKeyboardFrame:CGRectNull visible:NO];
+    [self releaseAllFloatingKeyboardHostQuarantinesForReason:@"keyboard-did-hide"];
     [self finalizeKeyboardDismissalProtection];
 }
 
@@ -8826,6 +8901,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self.floatingQueuedFullscreenIdentifier copy];
     self.floatingQueuedFullscreenIdentifier = nil;
     self.floatingWindow.hidden = YES;
+    [self releaseAllFloatingKeyboardHostQuarantinesForReason:@"centered-close"];
     [self updateFloatingDockTouchGate];
     self.floatingLaunchState = FLMFloatingLaunchStateIdle;
     self.floatingDimView.alpha = 1.0;
