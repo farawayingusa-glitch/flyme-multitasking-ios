@@ -189,6 +189,11 @@ require_source 'reason:@"selected-host"'
 require_source 'ForReason:@"centered-close"'
 require_source '@"keyboard-did-hide-active-card"'
 require_source '@"keyboard-did-hide-inactive-card"'
+require_source "floatingKeyboardReopenGuardIdentifier"
+require_source "sb reopen-keyboard-guard armed"
+require_source "sb reopen-keyboard-guard observed=visible-frame"
+require_source "sb launch-cover hold=stale-keyboard"
+require_source '@"did-hide"'
 
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
@@ -231,14 +236,17 @@ require_source "!self.floatingDockBarrierTouchActive"
 require_source "touchesQuiescent=1 recognizerState=%ld"
 reject_source "floatingDockContentRecognizerReset"
 
-# Dock content stays physically blocked, but a genuinely new touch is allowed
-# to interrupt entry/snap/resize settling and take over the visible card. The
-# initiating centered-handle stream remains protected by its timestamp cutoff.
+# Dock content stays physically blocked throughout entry/snap/resize settling.
+# Once settled, drag the live container at a canonical aspect ratio; a raster
+# snapshot or presentation-layer takeover can stretch a remote IOSurface.
 require_source "FLMFloatingDockControlTransitionEntry"
 require_source "FLMFloatingDockControlTransitionSnap"
 require_source "FLMFloatingDockControlTransitionResize"
-require_source "canTakeOverFloatingDockControlAtPoint:"
-require_source "dock-entry-begin generation=%lu contentBlocked=1 control=drag"
-require_source "dock-control-takeover kind=%@"
-require_source "controlTakeover=1 kind=%@"
+require_source "lockFloatingDockGeometryForDrag"
+require_source "sb dock-drag geometry-locked"
+require_source "transport=live-layer"
+require_source "transitionTakeover=disabled"
+reject_source "floatingDockDragSnapshot"
+reject_source "dock-control-takeover"
+reject_source "canTakeOverFloatingDockControlAtPoint:"
 echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
