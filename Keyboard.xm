@@ -137,6 +137,13 @@ static uint64_t FLMPackKeyboardDismissAckState(
            ((uint64_t)pid & 0xFFFFULL);
 }
 
+static uint64_t FLMPackKeyboardDismissRequestState(
+    uint64_t sessionGeneration,
+    uint64_t requestGeneration) {
+    return ((sessionGeneration & 0xFFFFFFFFULL) << 32) |
+           (requestGeneration & 0xFFFFFFFFULL);
+}
+
 static void FLMUnpackKeyboardDismissRequestState(
     uint64_t state,
     uint64_t *sessionGeneration,
