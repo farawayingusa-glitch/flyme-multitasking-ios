@@ -991,7 +991,7 @@ static void FLMHandleKeyboardDismissRequest(void) {
 
     if (requestedSession == 0 || requestGeneration == 0 ||
         requestedSession != FLMKeyboardSessionGeneration) {
-        FLMEnqueueDiagnosticLine(
+        NSLog(
             @"app dismiss-request rejected=stale-session bundle=%@ session=%llu currentSession=%llu sessionGeneration=%llu requestGeneration=%llu",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)requestedSession,
@@ -1003,7 +1003,7 @@ static void FLMHandleKeyboardDismissRequest(void) {
         return;
     }
     if (!FLMHasTargetApplicationScene()) {
-        FLMEnqueueDiagnosticLine(
+        NSLog(
             @"app dismiss-request rejected=wrong-target bundle=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)FLMKeyboardTargetSceneHash,
@@ -1024,7 +1024,7 @@ static void FLMHandleKeyboardDismissRequest(void) {
     if (result == FLMKeyboardDismissResultFailed) {
         FLMKeyboardDismissRetryScheduled = YES;
         FLMKeyboardDismissRetryState = requestState;
-        FLMEnqueueDiagnosticLine(
+        NSLog(
             @"app dismiss-request retry-scheduled bundle=%@ session=%llu sessionGeneration=%llu requestGeneration=%llu delay=0.22",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)requestedSession,
