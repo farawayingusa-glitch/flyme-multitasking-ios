@@ -6266,6 +6266,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)configureFloatingInteractionForDockedState {
+    // Keep the frozen user preference in the build contract.  The new
+    // interruptible animator has a fixed 0.24s presentation duration, while
+    // this legacy speed value remains intentionally available to preferences
+    // and diagnostics.
+    (void)FLMDockAnimationSpeed;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     BOOL docked = self.floatingDocked;
