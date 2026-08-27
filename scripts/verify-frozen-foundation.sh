@@ -107,6 +107,17 @@ for marker in \
     "floatingKeyboardCloseContext" \
     "dismissRequestGeneration" \
     "dismissAckGeneration" \
+    "route-publish once=1" \
+    "sb close-intent begin" \
+    "sb close-intent ignored=pending-close" \
+    "dock-state-publish once=1 presentationMode=Docked" \
+    "dock-displaylink-config" \
+    "renderFrames" \
+    "missedVsync" \
+    "effectiveFPS" \
+    "dock-presentation geometry-suppressed=1" \
+    "dock-snap-complete transition=position-only" \
+    "contentViewportCommitted" \
     "DockControlOverlay" \
     "dock-transition-takeover" \
     "UIViewPropertyAnimator" \
@@ -179,6 +190,12 @@ for marker in \
 done
 
 for marker in \
+    "wrong-target" \
+    "centered-close no-op"; do
+    reject_source "$marker"
+done
+
+for marker in \
     "%hook UITextEffectsWindow" \
     "keyboardScreenReferenceSize" \
     "%hook _UIRemoteKeyboards" \
@@ -189,6 +206,21 @@ for marker in \
     "FLMPublishKeyboardAppLifecycleStage" \
     "FLMDiagnosticEventAdapterCtor" \
     "FLMDiagnosticEventAdapterReady" \
+    "FLMKeyboardLastRouteGeneration" \
+    "FLMKeyboardLastGeometryGeneration" \
+    "FLMKeyboardLastDismissGeneration" \
+    "FLMKeyboardLastProcessedSession" \
+    "FLMKeyboardTransportOnceToken" \
+    "dispatch_once(&FLMKeyboardTransportOnceToken, ^{" \
+    "route-applied" \
+    "process-ready-once" \
+    "application dismiss-request received count=1" \
+    "target-validation result=process-match" \
+    "responder-resign begin" \
+    "responder-resign end" \
+    "scene-fallback-success" \
+    "stale-generation" \
+    "wrong-process" \
     "FLMApplicationProcessIdentityFlags" \
     "FLMIsExplicitWeChatAdapterProcess" \
     "FLMContentLogicalViewportSize" \
@@ -300,4 +332,4 @@ reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "Stable build 0.9.47 wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.48 wheel gesture, global Scene routing, full-screen Scene/crop presentation, deduplicated keyboard transport, launch recovery, hidden dock, and card foundation verified"
