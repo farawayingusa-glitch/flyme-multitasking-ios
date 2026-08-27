@@ -100,12 +100,24 @@ for marker in \
     "updateFloatingFullscreenSnapshotForProgress" \
     "floatingFullscreenProgress" \
     "CGFloat handleWidth = visibleHandleWidth + 40.0;" \
-    "keyboardPassThroughFrame"; do
+    "keyboardPassThroughFrame" \
+    "FLMKeyboardHitTestSlop" \
+    "CGRectIntersection(bounds, self.floatingKeyboardFrame)" \
+    "FLMKeyboardCloseContext" \
+    "floatingKeyboardCloseContext" \
+    "dismissRequestGeneration" \
+    "dismissAckGeneration" \
+    "DockControlOverlay" \
+    "dock-transition-takeover" \
+    "UIViewPropertyAnimator" \
+    "floatingDockTransitionAnimator" \
+    "route-kept=1" \
+    "transitionTakeover=enabled"; do
     require_source "$marker"
 done
 
 for marker in \
-    "FLMFloatingKeyboardDismissTimeout = 0.90;" \
+    "FLMFloatingKeyboardDismissTimeout = 1.90;" \
     "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
     "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
     "FLMFloatingKeyboardCloseStateAwaitingAdapter" \
@@ -281,8 +293,11 @@ require_source "FLMFloatingDockControlTransitionResize"
 require_source "lockFloatingDockGeometryForDrag"
 require_source "sb dock-drag geometry-locked"
 require_source "transport=live-layer"
-require_source "transitionTakeover=disabled"
+require_source "transitionTakeover=enabled"
+reject_source "transitionTakeover=disabled"
+reject_source "FLMKeyboardAccessoryProtectionHeight"
+reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.47 wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"

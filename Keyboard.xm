@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
 #import <notify.h>
+#import <sys/stat.h>
 #import <unistd.h>
 
 #import "FLMDiagnostics.h"
@@ -26,7 +27,7 @@
 #define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v50"
 #define FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-request-v1"
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-ack-v1"
-#define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
+#define FLYME_KEYBOARD_SHARED_STATE_VERSION 3
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF150ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF250ULL
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 50ULL
@@ -60,6 +61,8 @@ static int FLMKeyboardDismissRequestToken = -1;
 static int FLMKeyboardDismissAckToken = -1;
 static BOOL FLMKeyboardDismissRetryScheduled = NO;
 static uint64_t FLMKeyboardDismissRetryState = 0;
+static uint64_t FLMKeyboardLastHandledDismissState = 0;
+static BOOL FLMKeyboardLastHandledDismissTerminal = NO;
 static BOOL FLMKeyboardHooksInstalled = NO;
 static BOOL FLMKeyboardRouteObserversInstalled = NO;
 static BOOL FLMContentViewportAdapterApplying = NO;
@@ -212,6 +215,60 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
     return version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION
                ? state
                : nil;
+}
+
+static void FLMPublishKeyboardDismissAckToSharedState(
+    uint64_t sessionGeneration,
+    uint64_t requestGeneration,
+    pid_t pid,
+    FLMKeyboardDismissResult result) {
+    if (sessionGeneration == 0 || requestGeneration == 0 || pid <= 1) {
+        return;
+    }
+    NSString *path = nil;
+    NSDictionary *existing =
+        [NSDictionary dictionaryWithContentsOfFile:FLMKeyboardSharedStatePath];
+    if ([existing isKindOfClass:[NSDictionary class]]) {
+        path = FLMKeyboardSharedStatePath;
+    } else {
+        existing = [NSDictionary dictionaryWithContentsOfFile:
+                                             FLMKeyboardSharedStateRootlessPath];
+        if ([existing isKindOfClass:[NSDictionary class]]) {
+            path = FLMKeyboardSharedStateRootlessPath;
+        }
+    }
+    if (!path || ![existing isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    NSMutableDictionary *state = [existing mutableCopy];
+    state[@"version"] = @3;
+    state[@"dismissAckGeneration"] = @(requestGeneration);
+    state[@"dismissAckSession"] = @(sessionGeneration);
+    state[@"dismissAckPID"] = @(pid);
+    state[@"dismissAckResult"] = @(result);
+    state[@"updatedAt"] = @([[NSDate date] timeIntervalSince1970]);
+    NSError *serializationError = nil;
+    NSData *data = [NSPropertyListSerialization
+        dataWithPropertyList:state
+                      format:NSPropertyListBinaryFormat_v1_0
+                     options:0
+                       error:&serializationError];
+    NSError *writeError = nil;
+    BOOL wrote = data && !serializationError &&
+                 [data writeToFile:path
+                           options:NSDataWritingAtomic
+                             error:&writeError];
+    if (wrote) {
+        chmod(path.fileSystemRepresentation, 0644);
+        notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);
+    }
+    NSLog(@"[FlymeKeyboard] dismiss-ack shared-state write=%d path=%@ sessionGeneration=%llu requestGeneration=%llu pid=%d result=%@ error=%@",
+          wrote, path ?: @"<none>",
+          (unsigned long long)sessionGeneration,
+          (unsigned long long)requestGeneration,
+          pid,
+          FLMKeyboardDismissResultName(result),
+          writeError.localizedDescription ?: serializationError.localizedDescription ?: @"<none>");
 }
 
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
@@ -916,6 +973,12 @@ static void FLMSendKeyboardDismissAck(uint64_t sessionGeneration,
     if (sessionGeneration == 0 || requestGeneration == 0) {
         return;
     }
+    // The plist/notify shared-state route is authoritative. Publish it even
+    // when the optional Darwin compatibility token cannot be registered.
+    FLMPublishKeyboardDismissAckToSharedState(
+        sessionGeneration, requestGeneration, getpid(), result);
+    uint64_t ackState = FLMPackKeyboardDismissAckState(
+        sessionGeneration, requestGeneration, getpid(), result);
     if (FLMKeyboardDismissAckToken < 0 &&
         notify_register_check(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION,
                               &FLMKeyboardDismissAckToken) !=
@@ -927,8 +990,6 @@ static void FLMSendKeyboardDismissAck(uint64_t sessionGeneration,
               FLMKeyboardDismissResultName(result));
         return;
     }
-    uint64_t ackState = FLMPackKeyboardDismissAckState(
-        sessionGeneration, requestGeneration, getpid(), result);
     notify_set_state(FLMKeyboardDismissAckToken, ackState);
     FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
                               FLMDiagnosticEventDismissAck,
@@ -951,19 +1012,42 @@ static void FLMHandleKeyboardDismissRequest(void) {
         });
         return;
     }
-    if (FLMKeyboardDismissRequestToken < 0) {
-        return;
-    }
+    NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    BOOL sharedRequest =
+        [sharedState[@"dismissRequestGeneration"] isKindOfClass:[NSNumber class]] &&
+        [sharedState[@"dismissSession"] isKindOfClass:[NSNumber class]] &&
+        [sharedState[@"dismissSessionGeneration"] isKindOfClass:[NSNumber class]] &&
+        [sharedState[@"dismissRequestGeneration"] unsignedLongLongValue] != 0;
     uint64_t requestState = 0;
-    if (notify_get_state(FLMKeyboardDismissRequestToken, &requestState) !=
-            NOTIFY_STATUS_OK ||
-        requestState == 0) {
-        return;
-    }
     uint64_t requestedSession = 0;
     uint64_t requestGeneration = 0;
-    FLMUnpackKeyboardDismissRequestState(requestState, &requestedSession,
-                                         &requestGeneration);
+    uint64_t requestedSessionGeneration = 0;
+    uint64_t requestedSceneHash = 0;
+    uint64_t requestedBundleHash = 0;
+    if (sharedRequest) {
+        requestedSession =
+            [sharedState[@"dismissSession"] unsignedLongLongValue];
+        requestedSessionGeneration =
+            [sharedState[@"dismissSessionGeneration"] unsignedLongLongValue];
+        requestGeneration =
+            [sharedState[@"dismissRequestGeneration"] unsignedLongLongValue];
+        requestedSceneHash =
+            [sharedState[@"dismissSceneHash"] unsignedLongLongValue];
+        requestedBundleHash =
+            [sharedState[@"dismissBundleHash"] unsignedLongLongValue];
+        requestState = FLMPackKeyboardDismissRequestState(
+            requestedSession, requestGeneration);
+    } else {
+        if (FLMKeyboardDismissRequestToken < 0 ||
+            notify_get_state(FLMKeyboardDismissRequestToken, &requestState) !=
+                NOTIFY_STATUS_OK ||
+            requestState == 0) {
+            return;
+        }
+        FLMUnpackKeyboardDismissRequestState(requestState, &requestedSession,
+                                             &requestGeneration);
+        requestedSessionGeneration = requestedSession;
+    }
     FLMReloadKeyboardRoute();
 
     NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
@@ -978,79 +1062,97 @@ static void FLMHandleKeyboardDismissRequest(void) {
 
     FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
                               FLMDiagnosticEventDismissRequest,
-                              requestedSession,
+                              requestedSessionGeneration,
                               (uint16_t)(requestGeneration & 0xFFFFULL),
                               (uint16_t)(FLMKeyboardTargetSceneHash & 0xFFFFULL));
-    NSLog(@"[FlymeKeyboard] dismiss-request received pid=%d bundle=%@ process=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu state=0x%016llx",
+    NSLog(@"[FlymeKeyboard] dismiss-request received pid=%d bundle=%@ process=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu state=0x%016llx sharedState=%d",
           getpid(), bundleIdentifier ?: @"<none>", processName ?: @"<none>",
           (unsigned long long)FLMKeyboardTargetSceneHash,
           (unsigned long long)requestedSession,
-          (unsigned long long)requestedSession,
+          (unsigned long long)requestedSessionGeneration,
           (unsigned long long)requestGeneration,
-          (unsigned long long)requestState);
+          (unsigned long long)requestState,
+          sharedRequest);
 
     if (requestedSession == 0 || requestGeneration == 0 ||
-        requestedSession != FLMKeyboardSessionGeneration) {
+        requestedSessionGeneration == 0 ||
+        requestedSession != FLMKeyboardSessionGeneration ||
+        requestedSessionGeneration != FLMKeyboardSessionGeneration) {
         NSLog(
             @"app dismiss-request rejected=stale-session bundle=%@ session=%llu currentSession=%llu sessionGeneration=%llu requestGeneration=%llu",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)requestedSession,
             (unsigned long long)FLMKeyboardSessionGeneration,
-            (unsigned long long)requestedSession,
+            (unsigned long long)requestedSessionGeneration,
             (unsigned long long)requestGeneration);
         FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
                                   FLMKeyboardDismissResultStaleSession);
         return;
     }
-    if (!FLMHasTargetApplicationScene()) {
+    uint64_t currentBundleHash = FLMIdentifierHash(bundleIdentifier);
+    if (!FLMHasTargetApplicationScene() ||
+        (sharedRequest &&
+         (requestedSceneHash == 0 ||
+          requestedSceneHash != FLMKeyboardTargetSceneHash ||
+          requestedBundleHash == 0 || requestedBundleHash != currentBundleHash))) {
         NSLog(
-            @"app dismiss-request rejected=wrong-target bundle=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu",
+            @"app dismiss-request rejected=wrong-target bundle=%@ sceneHash=0x%016llx requestedSceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)FLMKeyboardTargetSceneHash,
+            (unsigned long long)requestedSceneHash,
             (unsigned long long)requestedSession,
-            (unsigned long long)requestedSession,
+            (unsigned long long)requestedSessionGeneration,
             (unsigned long long)requestGeneration);
         FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
                                   FLMKeyboardDismissResultWrongTarget);
         return;
     }
 
+    if (FLMKeyboardLastHandledDismissTerminal &&
+        FLMKeyboardLastHandledDismissState == requestState) {
+        return;
+    }
     if (FLMKeyboardDismissRetryScheduled &&
         FLMKeyboardDismissRetryState == requestState) {
         return;
     }
     FLMKeyboardDismissResult result = FLMResignTargetApplicationResponder(
-        requestedSession, requestGeneration);
+        requestedSessionGeneration, requestGeneration);
     if (result == FLMKeyboardDismissResultFailed) {
         FLMKeyboardDismissRetryScheduled = YES;
         FLMKeyboardDismissRetryState = requestState;
         NSLog(
-            @"app dismiss-request retry-scheduled bundle=%@ session=%llu sessionGeneration=%llu requestGeneration=%llu delay=0.22",
+            @"app dismiss-request retry-scheduled bundle=%@ session=%llu sessionGeneration=%llu requestGeneration=%llu delay=0.08",
             bundleIdentifier ?: @"<none>",
             (unsigned long long)requestedSession,
-            (unsigned long long)requestedSession,
+            (unsigned long long)requestedSessionGeneration,
             (unsigned long long)requestGeneration);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.22 * NSEC_PER_SEC)),
+                                     (int64_t)(0.08 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             FLMKeyboardDismissRetryScheduled = NO;
             FLMKeyboardDismissRetryState = 0;
             FLMReloadKeyboardRoute();
             if (!FLMKeyboardTargetApplication ||
-                FLMKeyboardSessionGeneration != requestedSession) {
+                FLMKeyboardSessionGeneration != requestedSessionGeneration) {
                 FLMSendKeyboardDismissAck(
                     requestedSession, requestGeneration,
                     FLMKeyboardDismissResultStaleSession);
                 return;
             }
             FLMKeyboardDismissResult retryResult =
-                FLMResignTargetApplicationResponder(requestedSession,
+                FLMResignTargetApplicationResponder(requestedSessionGeneration,
                                                     requestGeneration);
+            FLMKeyboardLastHandledDismissState = requestState;
+            FLMKeyboardLastHandledDismissTerminal =
+                retryResult != FLMKeyboardDismissResultFailed;
             FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
                                       retryResult);
         });
         return;
     }
+    FLMKeyboardLastHandledDismissState = requestState;
+    FLMKeyboardLastHandledDismissTerminal = YES;
     FLMSendKeyboardDismissAck(requestedSession, requestGeneration, result);
 }
 
@@ -1619,6 +1721,10 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
 
 static void FLMHandleKeyboardRouteNotification(void) {
     FLMReloadKeyboardRoute();
+    // Shared-state delivery is the reliable request wake-up. The Darwin
+    // request notification is retained for compatibility, but this path also
+    // works when its delivery races the atomic plist replacement.
+    FLMHandleKeyboardDismissRequest();
     if (!FLMKeyboardHooksInstalled && FLMIsEligibleApplicationProcess() &&
         FLMKeyboardTargetApplication) {
         // UIKit may load this generic adapter before SpringBoard publishes
