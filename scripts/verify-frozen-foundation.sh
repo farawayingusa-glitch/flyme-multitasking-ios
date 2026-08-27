@@ -215,7 +215,8 @@ require_source "sb host-quarantine-discard host="
 require_source "sb host-update quarantined=closing-transaction"
 require_source 'reason:@"waiting-pairing"'
 require_source 'reason:@"selected-host"'
-require_source 'ForReason:@"centered-close"'
+require_source 'discardAllFloatingKeyboardHostQuarantinesForReason:'
+require_source '@"centered-close"'
 require_source '@"keyboard-did-hide-active-card"'
 require_source '@"keyboard-did-hide-inactive-card"'
 require_source '@"did-hide"'
