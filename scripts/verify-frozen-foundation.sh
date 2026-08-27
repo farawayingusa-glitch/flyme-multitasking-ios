@@ -219,7 +219,7 @@ require_source 'discardAllFloatingKeyboardHostQuarantinesForReason:'
 require_source '@"centered-close"'
 require_source '@"keyboard-did-hide-active-card"'
 require_source '@"keyboard-did-hide-inactive-card"'
-require_source '@"did-hide"'
+require_source 'case FLMDiagnosticEventDidHide: return "did-hide";'
 
 for marker in \
     "floatingKeyboardReopenGuardIdentifier" \
