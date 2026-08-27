@@ -85,8 +85,6 @@ foreach ($Removed in @(
     '%hook NSNotificationCenter',
     'FLYME_KEYBOARD_FRAME_NOTIFICATION',
     'FLYME_KEYBOARD_ROUTE_ACK_NOTIFICATION',
-    'FLYME_KEYBOARD_DISMISS_NOTIFICATION',
-    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION',
     'additionalSafeAreaInsets',
     'FLMApplyApplicationKeyboardSafeArea',
     'FLMCorrectKeyboardNotificationUserInfo',
@@ -121,14 +119,25 @@ foreach ($Marker in @(
     '%hook _UIRemoteKeyboards',
     'intersectionHeightForWindowScene:',
     'FLMExternalKeyboardAvoidanceHeight',
-    'FLMEndPreviousApplicationKeyboardSession',
     'FLMDiagnosticEventIntersection'
 )) {
     Require-Text $KeyboardSource $Marker
 }
-Require-Text $KeyboardSource 'FLMSuppressRestoredApplicationResponder'
-Require-Text $KeyboardSource 'startingTargetSession'
+foreach ($Marker in @(
+    'FLMHandleKeyboardDismissRequest',
+    'FLMResignTargetApplicationResponder',
+    'FLMSendKeyboardDismissAck',
+    'FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION',
+    'FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION',
+    'sendAction:@selector(resignFirstResponder)',
+    '[window endEditing:YES]',
+    'adapter-ctor',
+    'adapter-ready'
+)) {
+    Require-Text $KeyboardSource $Marker
+}
 Require-Text $KeyboardSource 'FLMApplicationProcessIdentityFlags'
+Require-Text $KeyboardSource 'FLMIsExplicitWeChatAdapterProcess'
 Require-Text $KeyboardSource 'FLMProcessIsApplicationClient'
 Require-Text $KeyboardSource 'FLMContentLogicalViewportSize'
 Require-Text $KeyboardSource 'FLMPhysicalCardSize'
@@ -152,6 +161,19 @@ Require-Text $Source 'NSPropertyListBinaryFormat_v1_0'
 Require-Text $Source '@"version": @2'
 Require-Text $Source 'notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);'
 Require-Text $Source 'FLMKeyboardAppAdapterReadyForIdentifier'
+Require-Text $Source 'FLMPublishKeyboardDismissRequest'
+Require-Text $Source 'beginKeyboardCoordinatedCloseWithToken'
+Require-Text $Source 'handleApplicationDismissAck'
+Require-Text $Source 'handleKeyboardSettlementForCloseToken'
+Require-Text $Source 'commitCoordinatedCloseForToken'
+Require-Text $Source 'abortCoordinatedCloseForToken'
+Require-Text $Source 'FLMFloatingKeyboardCloseStateAwaitingAdapter'
+Require-Text $Source 'FLMFloatingKeyboardCloseStateAwaitingKeyboardSettlement'
+Require-Text $Source 'FLMFloatingKeyboardCloseStateFinalizing'
+Require-Text $Source 'FLMFloatingKeyboardDismissTimeout = 0.90;'
+Require-Text $Source 'sb coordinated-close commit'
+Require-Text $Source 'sb coordinated-close abort'
+Require-Text $Source 'sb keyboard-settlement frame-hidden'
 Require-Text $Source 'adapterReady=%d adapterPID=%d'
 Require-Text $Source 'filter=target-bundle target-gated'
 Require-Text $Source 'floatingCloseInProgress'
@@ -196,6 +218,15 @@ Require-Text $Source 'effectiveDockedPresentationWidth'
 Require-Text $KeyboardSource 'BOOL shouldApply = NO;'
 Require-Text $KeyboardSource 'if (currentHash == FLMKeyboardTargetSceneHash)'
 Require-Text $Source 'sb host-update rejected=alternate-host'
+foreach ($Removed in @(
+    'floatingKeyboardReopenGuardIdentifier',
+    'sb reopen-keyboard-guard',
+    'stale-keyboard',
+    'FLMFloatingKeyboardReopenObservationDelay',
+    'FLMFloatingKeyboardReopenGuardTimeout'
+)) {
+    Reject-Text $Source $Removed
+}
 Reject-Text $Source 'content-scale policy=card-fit'
 Reject-Text $Source 'content-scale policy=card-1to1'
 Reject-Text $Source 'scene-card commit-request'
@@ -205,7 +236,7 @@ Reject-Text $Source 'FLMVirtualViewportScale'
 Reject-Text $Source '0.50 * NSEC_PER_SEC'
 Require-Text $KeyboardFilter '<key>Bundles</key>'
 Require-Text $KeyboardFilter '<string>com.apple.UIKit</string>'
-Reject-Text $KeyboardFilter 'com.tencent.xin'
+Require-Text $KeyboardFilter '<string>com.tencent.xin</string>'
 Reject-Text $KeyboardFilter '<key>Executables</key>'
 Reject-Text $KeyboardFilter '<key>Classes</key>'
 Write-Output 'scene lifecycle, full-screen crop presentation, single-host keyboard route, bounded launch recovery, and hidden-dock interaction verified'

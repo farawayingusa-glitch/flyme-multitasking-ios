@@ -69,8 +69,9 @@ fi
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
 grep -q "com.apple.UIKit" "$keyboard_filter"
-if grep -Eq "com.tencent.xin|UIApplication|Executables|Classes" "$keyboard_filter"; then
-    echo "keyboard adapter must use generic UIKit injection with in-process target gating" >&2
+grep -q "com.tencent.xin" "$keyboard_filter"
+if grep -Eq "UIApplication|Executables|Classes" "$keyboard_filter"; then
+    echo "keyboard adapter must use UIKit plus the explicit WeChat target" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -93,10 +94,12 @@ python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtim
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
 strings "$keyboard" | grep -q "keyboard-app-ctor-v50"
 strings "$keyboard" | grep -q "keyboard-app-ready-v50"
+strings "$keyboard" | grep -q "keyboard-dismiss-request-v1"
+strings "$keyboard" | grep -q "keyboard-dismiss-ack-v1"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.9.45" "$workspace/control/control"
+grep -qx "Version: 0.9.46" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "generic" "$workspace/control/postinst"

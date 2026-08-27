@@ -105,6 +105,27 @@ for marker in \
 done
 
 for marker in \
+    "FLMFloatingKeyboardDismissTimeout = 0.90;" \
+    "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
+    "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
+    "FLMFloatingKeyboardCloseStateAwaitingAdapter" \
+    "FLMFloatingKeyboardCloseStateAwaitingKeyboardSettlement" \
+    "FLMFloatingKeyboardCloseStateFinalizing" \
+    "beginKeyboardCoordinatedCloseWithToken" \
+    "handleApplicationDismissAck" \
+    "handleKeyboardSettlementForCloseToken" \
+    "commitCoordinatedCloseForToken" \
+    "abortCoordinatedCloseForToken" \
+    "FLMPublishKeyboardDismissRequest" \
+    "FLMKeyboardAppAdapterReadyForIdentifier" \
+    "FLMKeyboardDismissResultSuccess" \
+    "sb keyboard-settlement frame-hidden" \
+    "sb coordinated-close commit" \
+    "sb coordinated-close abort"; do
+    require_source "$marker"
+done
+
+for marker in \
     "FLMCenteredCardHeight" \
     "selectedCardHeight / uniformScale" \
     "logicalHeight = cardHeight / uniformScale" \
@@ -151,16 +172,24 @@ for marker in \
     "%hook _UIRemoteKeyboards" \
     "intersectionHeightForWindowScene:" \
     "FLMExternalKeyboardAvoidanceHeight" \
-    "FLMEndPreviousApplicationKeyboardSession" \
     "FLMDiagnosticEventIntersection" \
     "FLMReadKeyboardSharedState" \
     "FLMPublishKeyboardAppLifecycleStage" \
     "FLMDiagnosticEventAdapterCtor" \
     "FLMDiagnosticEventAdapterReady" \
     "FLMApplicationProcessIdentityFlags" \
+    "FLMIsExplicitWeChatAdapterProcess" \
     "FLMContentLogicalViewportSize" \
     "FLMPhysicalCardSize" \
     "FLMHandleKeyboardRouteNotification" \
+    "FLMHandleKeyboardDismissRequest" \
+    "FLMResignTargetApplicationResponder" \
+    "FLMSendKeyboardDismissAck" \
+    "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
+    "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
+    "sendAction:@selector(resignFirstResponder)" \
+    "FLMSceneMatchesKeyboardRoute" \
+    "[window endEditing:YES]" \
     "FLMReloadContentViewportSelection" \
     "BOOL shouldApply = NO;" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
@@ -189,18 +218,24 @@ require_source 'reason:@"selected-host"'
 require_source 'ForReason:@"centered-close"'
 require_source '@"keyboard-did-hide-active-card"'
 require_source '@"keyboard-did-hide-inactive-card"'
-require_source "floatingKeyboardReopenGuardIdentifier"
-require_source "sb reopen-keyboard-guard armed"
-require_source "sb reopen-keyboard-guard observed=visible-frame"
-require_source "sb launch-cover hold=stale-keyboard"
 require_source '@"did-hide"'
+
+for marker in \
+    "floatingKeyboardReopenGuardIdentifier" \
+    "sb reopen-keyboard-guard" \
+    "stale-keyboard" \
+    "FLMFloatingKeyboardReopenObservationDelay" \
+    "FLMFloatingKeyboardReopenGuardTimeout"; do
+    reject_source "$marker"
+done
 
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
 grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
-if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard filter must remain generic UIKit injection" >&2
+grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
+if grep -Eq '<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard filter must use UIKit plus the explicit WeChat target" >&2
     exit 1
 fi
 

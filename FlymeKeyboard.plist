@@ -8,12 +8,14 @@
         <array>
             <!--
                  UIKit is the smallest available static injection scope that
-                 can reach an arbitrary wheel-selected application. The
-                 current wheel target is not knowable to this plist filter;
-                 Keyboard.xm therefore applies the exact shared bundle-hash
-                 gate before installing any functional hooks.
+                 UIKit remains the system keyboard-host entry point. WeChat
+                 is explicit so its main process receives the app-side
+                 responder-dismiss adapter at process startup; Keyboard.xm
+                 still applies the exact shared bundle-hash gate before any
+                 functional route work.
             -->
             <string>com.apple.UIKit</string>
+            <string>com.tencent.xin</string>
         </array>
     </dict>
 </dict>

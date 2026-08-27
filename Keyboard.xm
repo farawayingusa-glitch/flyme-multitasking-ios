@@ -24,6 +24,8 @@
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
 #define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v50"
 #define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v50"
+#define FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-request-v1"
+#define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-ack-v1"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF150ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF250ULL
@@ -54,6 +56,10 @@ static CGFloat FLMKeyboardCardBottom = 0.0;
 static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static int FLMKeyboardAppCtorToken = -1;
 static int FLMKeyboardAppReadyToken = -1;
+static int FLMKeyboardDismissRequestToken = -1;
+static int FLMKeyboardDismissAckToken = -1;
+static BOOL FLMKeyboardDismissRetryScheduled = NO;
+static uint64_t FLMKeyboardDismissRetryState = 0;
 static BOOL FLMKeyboardHooksInstalled = NO;
 static BOOL FLMKeyboardRouteObserversInstalled = NO;
 static BOOL FLMContentViewportAdapterApplying = NO;
@@ -97,6 +103,7 @@ static BOOL FLMContentViewportUsesSharedCardSize = NO;
 static void FLMInstallRemoteKeyboardGeometryIfAvailable(void);
 static void FLMReloadKeyboardAvoidance(void);
 static void FLMReloadKeyboardCardGeometry(void);
+static void FLMReloadKeyboardRoute(void);
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState);
 static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
@@ -105,6 +112,56 @@ static void FLMUpdateContentViewportAdapter(void);
 static void FLMInstallInputGeometryDiagnosticsIfNeeded(void);
 static void FLMCaptureInputGeometryForNotification(NSNotification *notification,
                                                     BOOL allowRetry);
+static uint64_t FLMIdentifierHash(NSString *identifier);
+static void FLMHandleKeyboardDismissRequest(void);
+
+typedef NS_ENUM(uint8_t, FLMKeyboardDismissResult) {
+    FLMKeyboardDismissResultSuccess = 1,
+    FLMKeyboardDismissResultNoResponder = 2,
+    FLMKeyboardDismissResultFailed = 3,
+    FLMKeyboardDismissResultStaleSession = 4,
+    FLMKeyboardDismissResultWrongTarget = 5,
+};
+
+static uint64_t FLMPackKeyboardDismissAckState(
+    uint64_t sessionGeneration,
+    uint64_t requestGeneration,
+    pid_t pid,
+    FLMKeyboardDismissResult result) {
+    return ((uint64_t)result << 56) |
+           ((sessionGeneration & 0xFFFFFFULL) << 32) |
+           ((requestGeneration & 0xFFFFULL) << 16) |
+           ((uint64_t)pid & 0xFFFFULL);
+}
+
+static void FLMUnpackKeyboardDismissRequestState(
+    uint64_t state,
+    uint64_t *sessionGeneration,
+    uint64_t *requestGeneration) {
+    if (sessionGeneration) {
+        *sessionGeneration = (state >> 32) & 0xFFFFFFFFULL;
+    }
+    if (requestGeneration) {
+        *requestGeneration = state & 0xFFFFFFFFULL;
+    }
+}
+
+static NSString *FLMKeyboardDismissResultName(FLMKeyboardDismissResult result) {
+    switch (result) {
+        case FLMKeyboardDismissResultSuccess:
+            return @"success";
+        case FLMKeyboardDismissResultNoResponder:
+            return @"no-responder";
+        case FLMKeyboardDismissResultFailed:
+            return @"failed";
+        case FLMKeyboardDismissResultStaleSession:
+            return @"stale-session";
+        case FLMKeyboardDismissResultWrongTarget:
+            return @"wrong-target";
+        default:
+            return @"unknown";
+    }
+}
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -115,11 +172,26 @@ static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
         *token = -1;
         return;
     }
+    NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    NSString *processName = [NSProcessInfo processInfo].processName;
+    uint16_t bundleHash =
+        (uint16_t)(FLMIdentifierHash(bundleIdentifier) & 0xFFFFULL);
+    uint16_t processPID = (uint16_t)(getpid() & 0xFFFF);
     uint64_t state = (magic << 48) |
                      (FLYME_KEYBOARD_APP_ADAPTER_BUILD << 32) |
-                     (uint32_t)getpid();
+                     ((uint64_t)processPID << 16) |
+                     bundleHash;
     notify_set_state(*token, state);
     notify_post(notificationName);
+    if (event == FLMDiagnosticEventAdapterCtor) {
+        NSLog(@"[FlymeKeyboard] adapter-ctor pid=%d bundle=%@ process=%@ bundleHash=0x%04x",
+              getpid(), bundleIdentifier ?: @"<none>",
+              processName ?: @"<none>", bundleHash);
+    } else {
+        NSLog(@"[FlymeKeyboard] adapter-ready pid=%d bundle=%@ process=%@ bundleHash=0x%04x",
+              getpid(), bundleIdentifier ?: @"<none>",
+              processName ?: @"<none>", bundleHash);
+    }
     FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
                               event,
                               0,
@@ -233,6 +305,12 @@ static uint16_t FLMApplicationProcessIdentityFlags(void) {
 // a later route notification selects that app.
 static BOOL FLMIsEligibleApplicationProcess(void) {
     return (FLMApplicationProcessIdentityFlags() & 2U) != 0;
+}
+
+static BOOL FLMIsExplicitWeChatAdapterProcess(void) {
+    return FLMIsEligibleApplicationProcess() &&
+           [[NSBundle mainBundle].bundleIdentifier
+               isEqualToString:@"com.tencent.xin"];
 }
 
 static void FLMPublishKeyboardRawLoadDiagnostic(void) {
@@ -387,57 +465,6 @@ static void FLMRefreshApplicationKeyboardLayout(void) {
     }
 }
 
-static void FLMEndPreviousApplicationKeyboardSession(uint64_t generation) {
-    if (generation == 0) {
-        return;
-    }
-    NSUInteger endedWindows = 0;
-    @try {
-        [[UIApplication sharedApplication]
-            sendAction:@selector(resignFirstResponder)
-                   to:nil
-                 from:nil
-             forEvent:nil];
-        for (UIScene *connectedScene in
-             [UIApplication sharedApplication].connectedScenes) {
-            if (![connectedScene isKindOfClass:[UIWindowScene class]]) {
-                continue;
-            }
-            for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
-                if ([window endEditing:YES]) {
-                    endedWindows += 1;
-                }
-            }
-        }
-    } @catch (__unused NSException *exception) {
-    }
-    FLMPublishDiagnosticEvent(
-        FLMDiagnosticRoleApplication,
-        FLMDiagnosticEventResponderResign,
-        generation,
-        FLMDiagnosticUnsignedValue(endedWindows),
-        0);
-}
-
-static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
-    if (generation == 0) {
-        return;
-    }
-    FLMEndPreviousApplicationKeyboardSession(generation);
-    // The hosted Scene may restore its saved first responder shortly after the
-    // route becomes active.  Clear exactly once after that restore window but
-    // before SpringBoard exposes the centered card for user interaction.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.22 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (!FLMKeyboardTargetApplication || !FLMKeyboardRouteActive ||
-            FLMKeyboardSessionGeneration != generation) {
-            return;
-        }
-        FLMEndPreviousApplicationKeyboardSession(generation);
-    });
-}
-
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
@@ -484,15 +511,6 @@ static void FLMReloadKeyboardRoute(void) {
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
 
-    BOOL startingTargetSession =
-        FLMKeyboardTargetApplication && sessionGeneration != 0 &&
-        (!previousTargetApplication || previousGeneration != sessionGeneration);
-    if (startingTargetSession) {
-        FLMSuppressRestoredApplicationResponder(sessionGeneration);
-    } else if (previousTargetApplication && previousGeneration != 0 &&
-               previousGeneration != sessionGeneration) {
-        FLMEndPreviousApplicationKeyboardSession(previousGeneration);
-    }
     if (FLMKeyboardTargetApplication) {
         FLMInstallRemoteKeyboardGeometryIfAvailable();
     }
@@ -800,6 +818,240 @@ static BOOL FLMFindInputResponderWindow(UIWindow **windowOut,
         return YES;
     }
     return NO;
+}
+
+static UIView *FLMFirstResponderInTargetScene(void) {
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+            !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            continue;
+        }
+        for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+            UIView *responder =
+                FLMFirstResponderInView(window.rootViewController.view);
+            if (responder) {
+                return responder;
+            }
+        }
+    }
+    return nil;
+}
+
+static BOOL FLMHasTargetApplicationScene(void) {
+    for (UIScene *connectedScene in
+         [UIApplication sharedApplication].connectedScenes) {
+        if ([connectedScene isKindOfClass:[UIWindowScene class]] &&
+            FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static FLMKeyboardDismissResult FLMResignTargetApplicationResponder(
+    uint64_t sessionGeneration,
+    uint64_t requestGeneration) {
+    UIView *beforeResponder = nil;
+    beforeResponder = FLMFirstResponderInTargetScene();
+    BOOL hadResponder = beforeResponder != nil;
+    NSUInteger endedWindows = 0;
+    BOOL cleanupThrew = NO;
+    @try {
+        // This is the application-wide UIKit action requested by the close
+        // transaction. The explicit window pass below is deliberately limited
+        // to the current routed Scene, so another connected Scene is never
+        // used as a keyboard-cleanup target.
+        [[UIApplication sharedApplication]
+            sendAction:@selector(resignFirstResponder)
+                   to:nil
+                 from:nil
+             forEvent:nil];
+        for (UIScene *connectedScene in
+             [UIApplication sharedApplication].connectedScenes) {
+            if (![connectedScene isKindOfClass:[UIWindowScene class]] ||
+                !FLMSceneMatchesKeyboardRoute((UIWindowScene *)connectedScene)) {
+                continue;
+            }
+            for (UIWindow *window in ((UIWindowScene *)connectedScene).windows) {
+                if ([window endEditing:YES]) {
+                    endedWindows += 1;
+                }
+            }
+        }
+    } @catch (__unused NSException *exception) {
+        cleanupThrew = YES;
+    }
+
+    UIView *afterResponder = nil;
+    afterResponder = FLMFirstResponderInTargetScene();
+    BOOL responderRemains = afterResponder != nil;
+    FLMKeyboardDismissResult result = responderRemains
+                                          ? FLMKeyboardDismissResultFailed
+                                      : cleanupThrew
+                                          ? FLMKeyboardDismissResultFailed
+                                      : hadResponder
+                                          ? FLMKeyboardDismissResultSuccess
+                                          : FLMKeyboardDismissResultNoResponder;
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventResponderResign,
+        sessionGeneration,
+        FLMDiagnosticUnsignedValue(endedWindows),
+        (uint16_t)(requestGeneration & 0xFFFFULL));
+    NSLog(@"[FlymeKeyboard] dismiss-resign session=%llu sessionGeneration=%llu requestGeneration=%llu before=%@ after=%@ endedWindows=%lu result=%@",
+          (unsigned long long)sessionGeneration,
+          (unsigned long long)sessionGeneration,
+          (unsigned long long)requestGeneration,
+          beforeResponder ? NSStringFromClass([beforeResponder class]) : @"<none>",
+          afterResponder ? NSStringFromClass([afterResponder class]) : @"<none>",
+          (unsigned long)endedWindows,
+          FLMKeyboardDismissResultName(result));
+    return result;
+}
+
+static void FLMSendKeyboardDismissAck(uint64_t sessionGeneration,
+                                      uint64_t requestGeneration,
+                                      FLMKeyboardDismissResult result) {
+    if (sessionGeneration == 0 || requestGeneration == 0) {
+        return;
+    }
+    if (FLMKeyboardDismissAckToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION,
+                              &FLMKeyboardDismissAckToken) !=
+            NOTIFY_STATUS_OK) {
+        NSLog(@"[FlymeKeyboard] dismiss-ack publish-failed session=%llu sessionGeneration=%llu requestGeneration=%llu result=%@",
+              (unsigned long long)sessionGeneration,
+              (unsigned long long)sessionGeneration,
+              (unsigned long long)requestGeneration,
+              FLMKeyboardDismissResultName(result));
+        return;
+    }
+    uint64_t ackState = FLMPackKeyboardDismissAckState(
+        sessionGeneration, requestGeneration, getpid(), result);
+    notify_set_state(FLMKeyboardDismissAckToken, ackState);
+    FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
+                              FLMDiagnosticEventDismissAck,
+                              sessionGeneration,
+                              (uint16_t)(requestGeneration & 0xFFFFULL),
+                              (uint16_t)result);
+    notify_post(FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION);
+    NSLog(@"[FlymeKeyboard] dismiss-ack session=%llu sessionGeneration=%llu requestGeneration=%llu pid=%d result=%@ state=0x%016llx",
+          (unsigned long long)sessionGeneration,
+          (unsigned long long)sessionGeneration,
+          (unsigned long long)requestGeneration,
+          getpid(), FLMKeyboardDismissResultName(result),
+          (unsigned long long)ackState);
+}
+
+static void FLMHandleKeyboardDismissRequest(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            FLMHandleKeyboardDismissRequest();
+        });
+        return;
+    }
+    if (FLMKeyboardDismissRequestToken < 0) {
+        return;
+    }
+    uint64_t requestState = 0;
+    if (notify_get_state(FLMKeyboardDismissRequestToken, &requestState) !=
+            NOTIFY_STATUS_OK ||
+        requestState == 0) {
+        return;
+    }
+    uint64_t requestedSession = 0;
+    uint64_t requestGeneration = 0;
+    FLMUnpackKeyboardDismissRequestState(requestState, &requestedSession,
+                                         &requestGeneration);
+    FLMReloadKeyboardRoute();
+
+    NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+    NSString *processName = [NSProcessInfo processInfo].processName;
+    if (!FLMIsEligibleApplicationProcess() || !FLMKeyboardRouteActive ||
+        !FLMKeyboardTargetApplication) {
+        // The dylib is intentionally loaded by the broad UIKit filter. A
+        // non-target process must stay silent; otherwise two apps could ack a
+        // request that was meant for the card's current Scene.
+        return;
+    }
+
+    FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
+                              FLMDiagnosticEventDismissRequest,
+                              requestedSession,
+                              (uint16_t)(requestGeneration & 0xFFFFULL),
+                              (uint16_t)(FLMKeyboardTargetSceneHash & 0xFFFFULL));
+    NSLog(@"[FlymeKeyboard] dismiss-request received pid=%d bundle=%@ process=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu state=0x%016llx",
+          getpid(), bundleIdentifier ?: @"<none>", processName ?: @"<none>",
+          (unsigned long long)FLMKeyboardTargetSceneHash,
+          (unsigned long long)requestedSession,
+          (unsigned long long)requestedSession,
+          (unsigned long long)requestGeneration,
+          (unsigned long long)requestState);
+
+    if (requestedSession == 0 || requestGeneration == 0 ||
+        requestedSession != FLMKeyboardSessionGeneration) {
+        FLMEnqueueDiagnosticLine(
+            @"app dismiss-request rejected=stale-session bundle=%@ session=%llu currentSession=%llu sessionGeneration=%llu requestGeneration=%llu",
+            bundleIdentifier ?: @"<none>",
+            (unsigned long long)requestedSession,
+            (unsigned long long)FLMKeyboardSessionGeneration,
+            (unsigned long long)requestedSession,
+            (unsigned long long)requestGeneration);
+        FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
+                                  FLMKeyboardDismissResultStaleSession);
+        return;
+    }
+    if (!FLMHasTargetApplicationScene()) {
+        FLMEnqueueDiagnosticLine(
+            @"app dismiss-request rejected=wrong-target bundle=%@ sceneHash=0x%016llx session=%llu sessionGeneration=%llu requestGeneration=%llu",
+            bundleIdentifier ?: @"<none>",
+            (unsigned long long)FLMKeyboardTargetSceneHash,
+            (unsigned long long)requestedSession,
+            (unsigned long long)requestedSession,
+            (unsigned long long)requestGeneration);
+        FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
+                                  FLMKeyboardDismissResultWrongTarget);
+        return;
+    }
+
+    if (FLMKeyboardDismissRetryScheduled &&
+        FLMKeyboardDismissRetryState == requestState) {
+        return;
+    }
+    FLMKeyboardDismissResult result = FLMResignTargetApplicationResponder(
+        requestedSession, requestGeneration);
+    if (result == FLMKeyboardDismissResultFailed) {
+        FLMKeyboardDismissRetryScheduled = YES;
+        FLMKeyboardDismissRetryState = requestState;
+        FLMEnqueueDiagnosticLine(
+            @"app dismiss-request retry-scheduled bundle=%@ session=%llu sessionGeneration=%llu requestGeneration=%llu delay=0.22",
+            bundleIdentifier ?: @"<none>",
+            (unsigned long long)requestedSession,
+            (unsigned long long)requestedSession,
+            (unsigned long long)requestGeneration);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.22 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            FLMKeyboardDismissRetryScheduled = NO;
+            FLMKeyboardDismissRetryState = 0;
+            FLMReloadKeyboardRoute();
+            if (!FLMKeyboardTargetApplication ||
+                FLMKeyboardSessionGeneration != requestedSession) {
+                FLMSendKeyboardDismissAck(
+                    requestedSession, requestGeneration,
+                    FLMKeyboardDismissResultStaleSession);
+                return;
+            }
+            FLMKeyboardDismissResult retryResult =
+                FLMResignTargetApplicationResponder(requestedSession,
+                                                    requestGeneration);
+            FLMSendKeyboardDismissAck(requestedSession, requestGeneration,
+                                      retryResult);
+        });
+        return;
+    }
+    FLMSendKeyboardDismissAck(requestedSession, requestGeneration, result);
 }
 
 static BOOL FLMRegisterInputDiagnosticTokens(void) {
@@ -1357,6 +1609,12 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                              ^(__unused int token) {
                                  FLMHandleKeyboardRouteNotification();
                              });
+    notify_register_dispatch(FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION,
+                             &FLMKeyboardDismissRequestToken,
+                             dispatch_get_main_queue(),
+                             ^(__unused int token) {
+                                 FLMHandleKeyboardDismissRequest();
+                             });
 }
 
 static void FLMHandleKeyboardRouteNotification(void) {
@@ -1372,16 +1630,18 @@ static void FLMHandleKeyboardRouteNotification(void) {
 
 static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
     if (FLMKeyboardHooksInstalled || !FLMIsEligibleApplicationProcess() ||
-        !FLMKeyboardTargetApplication) {
+        (!FLMKeyboardTargetApplication &&
+         !FLMIsExplicitWeChatAdapterProcess())) {
         return;
     }
     FLMKeyboardHooksInstalled = YES;
 
     // The two independent notify states make a failed device run
-    // unambiguous: no ctor token means no target-gated initialization; ctor
-    // without ready means initialization did not complete.  The raw-loaded
-    // diagnostic published before this function additionally distinguishes a
-    // missing injection from a constructor that ran before identity settled.
+    // unambiguous: no ctor token means the explicit WeChat/startup adapter did
+    // not load; ctor without ready means initialization did not complete. The
+    // raw-loaded diagnostic published before this function additionally
+    // distinguishes a missing injection from a constructor that ran before
+    // identity settled.
     FLMPublishKeyboardAppLifecycleStage(
         FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
         &FLMKeyboardAppCtorToken,
@@ -1399,6 +1659,11 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void) {
     // changes frames, constraints, insets or keyboard intersection returns.
     FLMInstallInputGeometryDiagnosticsIfNeeded();
     FLMReloadKeyboardRoute();
+    NSLog(@"[FlymeKeyboard] adapter-initialized-at-startup bundle=%@ process=%@ target=%d route=%d session=%llu",
+          [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
+          [NSProcessInfo processInfo].processName ?: @"<none>",
+          FLMKeyboardTargetApplication, FLMKeyboardRouteActive,
+          (unsigned long long)FLMKeyboardSessionGeneration);
     FLMPublishKeyboardAppLifecycleStage(
         FLYME_KEYBOARD_APP_READY_NOTIFICATION,
         &FLMKeyboardAppReadyToken,
@@ -1440,7 +1705,8 @@ static void FLMAttemptKeyboardInitialization(void) {
     // route gate.
     FLMRegisterKeyboardRouteObserversIfNeeded();
     FLMReloadKeyboardRoute();
-    if (!FLMKeyboardTargetApplication) {
+    if (!FLMKeyboardTargetApplication &&
+        !FLMIsExplicitWeChatAdapterProcess()) {
         FLMScheduleKeyboardIdentityRetry();
         return;
     }
