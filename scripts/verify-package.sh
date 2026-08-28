@@ -99,7 +99,7 @@ strings "$keyboard" | grep -q "keyboard-dismiss-ack-v1"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.9.50" "$workspace/control/control"
+grep -qx "Version: 0.9.51" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "generic" "$workspace/control/postinst"

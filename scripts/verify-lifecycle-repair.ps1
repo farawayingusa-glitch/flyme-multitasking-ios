@@ -21,7 +21,7 @@ function Reject-Text([string]$Path, [string]$Text) {
 
 # Scene launch and gesture foundations remain frozen.
 foreach ($Marker in @(
-    'FLMLogBuildString @"Stable build 0.9.50"',
+    'FLMLogBuildString @"Stable build 0.9.51"',
     'logger-ready build=%@ schema=26',
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.10',
@@ -163,7 +163,15 @@ Require-Text $KeyboardSource 'FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION'
 Require-Text $KeyboardSource 'FLMPublishKeyboardAppLifecycleStage'
 Require-Text $KeyboardSource 'FLMDiagnosticEventAdapterCtor'
 Require-Text $KeyboardSource 'FLMDiagnosticEventAdapterReady'
-Require-Text $KeyboardSource 'dispatch_once(&FLMKeyboardTransportOnceToken, ^{'
+Require-Text $KeyboardSource 'FLMProcessGlobalTransportBootstrap'
+Require-Text $KeyboardSource 'FLMKeyboardTransportChannelState'
+Require-Text $KeyboardSource 'FLMKeyboardTransportChannels'
+Require-Text $KeyboardSource 'FLMKeyboardTransportRetryDelays'
+Require-Text $KeyboardSource 'FLMEnsureKeyboardObserversRegistered'
+Require-Text $KeyboardSource 'FLMClaimKeyboardDismissGeneration'
+Require-Text $KeyboardSource 'keyboard-transport ready registered=%lu/7 pid=%d'
+Require-Text $KeyboardSource 'keyboard-transport retry-scheduled'
+Require-Text $KeyboardSource 'keyboard-transport failed registered=%lu/7'
 Require-Text $KeyboardSource 'FLMKeyboardLastRouteGeneration'
 Require-Text $KeyboardSource 'FLMKeyboardLastGeometryGeneration'
 Require-Text $KeyboardSource 'FLMKeyboardLastDismissGeneration'

@@ -31,12 +31,12 @@
 #define FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-ack-v1"
 #define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF150ULL
 #define FLYME_KEYBOARD_APP_READY_MAGIC 0xF250ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 50ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 51ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.50"
+#define FLMLogBuildString @"Stable build 0.9.51"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -436,6 +436,31 @@ static const NSTimeInterval FLMFloatingCloseFallbackDelay = 0.45;
 // frame settlement can commit earlier; the deadline only aborts a still-live
 // transaction after rechecking its immutable context and pending state.
 static const NSTimeInterval FLMFloatingKeyboardDismissTimeout = 1.90;
+
+typedef struct {
+    CGRect centeredFrame;
+    CGRect centeredBounds;
+    CGPoint centeredPosition;
+    CGFloat centeredContentScale;
+    CGFloat dockPresentationScale;
+    CGFloat screenScale;
+} FLMSessionCanonicalGeometry;
+
+static CGFloat FLMPixelAlignedValue(CGFloat value, CGFloat screenScale) {
+    if (!isfinite(value) || !isfinite(screenScale) || screenScale <= 0.0) {
+        return value;
+    }
+    return round(value * screenScale) / screenScale;
+}
+
+static CGRect FLMPixelAlignedRect(CGRect rect, CGFloat screenScale) {
+    return CGRectMake(FLMPixelAlignedValue(CGRectGetMinX(rect), screenScale),
+                      FLMPixelAlignedValue(CGRectGetMinY(rect), screenScale),
+                      MAX(0.0, FLMPixelAlignedValue(CGRectGetWidth(rect),
+                                                    screenScale)),
+                      MAX(0.0, FLMPixelAlignedValue(CGRectGetHeight(rect),
+                                                    screenScale)));
+}
 
 typedef NS_ENUM(uint8_t, FLMKeyboardDismissResult) {
     FLMKeyboardDismissResultSuccess = 1,
@@ -1567,6 +1592,11 @@ static CGFloat FLMUniformScaleFromTransform(CATransform3D transform) {
 @property(nonatomic, assign) CGFloat centeredCardBottomCrop;
 @property(nonatomic, assign) CGFloat centeredDockSwipeThreshold;
 @property(nonatomic, assign) CGFloat dockedShrinkAmount;
+@property(nonatomic, assign) FLMSessionCanonicalGeometry sessionCanonicalGeometry;
+@property(nonatomic, assign) BOOL sessionCanonicalGeometryValid;
+@property(nonatomic, assign) NSUInteger sessionCanonicalGeometrySession;
+@property(nonatomic, assign) NSTimeInterval floatingDockRestorePrepareTimestamp;
+@property(nonatomic, assign) NSUInteger floatingDockRestorePerformanceGeneration;
 @property(nonatomic, assign) CGPoint floatingHandleStartPoint;
 @property(nonatomic, assign) CGRect floatingHandleInitialContainerFrame;
 @property(nonatomic, assign) BOOL floatingHandleMoved;
@@ -1835,6 +1865,13 @@ static CGFloat FLMUniformScaleFromTransform(CATransform3D transform) {
 - (CGFloat)effectiveCenteredCardHeight;
 - (CGFloat)effectiveCenteredCardScaleX;
 - (CGFloat)effectiveCenteredCardScaleY;
+- (CGFloat)configuredCenteredCardWidth;
+- (CGFloat)configuredCenteredCardHeight;
+- (BOOL)ensureSessionCanonicalGeometry;
+- (void)invalidateSessionCanonicalGeometry;
+- (CGRect)sessionCanonicalCenteredFrame;
+- (CGRect)uncachedCenteredFloatingFrame;
+- (void)reassertSessionCanonicalCenteredModelGeometry;
 - (CGFloat)effectiveCenteredDockSwipeThreshold;
 - (CGFloat)effectiveDockedPresentationWidth;
 - (CGFloat)floatingDockPresentationScale;
@@ -4943,9 +4980,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CATransform3D presentationTransform = presentationLayer
                                                ? presentationLayer.transform
                                                : containerLayer.transform;
-    CGRect presentationBounds = presentationLayer
-                                    ? presentationLayer.bounds
-                                    : containerLayer.bounds;
     CGRect presentationFrame = [self floatingContainerPresentationFrame];
     if (CGRectIsNull(presentationFrame) || CGRectIsEmpty(presentationFrame)) {
         presentationFrame = self.floatingContainer.frame;
@@ -4970,10 +5004,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [containerLayer removeAllAnimations];
-    containerLayer.position = presentationPosition;
-    if (!CGRectIsEmpty(presentationBounds) && !CGRectIsNull(presentationBounds)) {
-        containerLayer.bounds = presentationBounds;
+    if ([self ensureSessionCanonicalGeometry]) {
+        containerLayer.bounds = self.sessionCanonicalGeometry.centeredBounds;
     }
+    containerLayer.position = presentationPosition;
     containerLayer.transform = presentationTransform;
     [CATransaction commit];
     self.floatingDockTransitionAnimator = nil;
@@ -5501,6 +5535,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (self.floatingDocked && !self.floatingDockHidden &&
             !self.floatingWindow.hidden) {
             [self cancelFloatingDockInputUpdates];
+            self.floatingDockRestorePrepareTimestamp = CACurrentMediaTime();
             FLMEnqueueDiagnosticLine(
                 @"sb dock-tap recognized movement=%.1f sourceFrame=%@ transition=%d",
                 movement, NSStringFromCGRect(sourceFrame), wasTransitioning);
@@ -6285,6 +6320,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         self.floatingKeyboardSessionGeneration =
             self.floatingKeyboardSessionCounter;
+        [self invalidateSessionCanonicalGeometry];
     }
     self.floatingLaunchGeneration += 1;
     NSUInteger generation = self.floatingLaunchGeneration;
@@ -6335,7 +6371,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     });
 }
 
-- (CGFloat)effectiveCenteredCardWidth {
+- (CGFloat)configuredCenteredCardWidth {
     CGFloat width = self.centeredCardWidth;
     if (width <= 0.0) {
         width = FLMCenteredCardWidth;
@@ -6344,8 +6380,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                MIN(FLMMaximumCenteredCardWidth, width));
 }
 
-- (CGFloat)effectiveCenteredCardHeight {
-    CGFloat width = [self effectiveCenteredCardWidth];
+- (CGFloat)configuredCenteredCardHeight {
+    CGFloat width = [self configuredCenteredCardWidth];
     CGFloat baseHeight = width * FLMVirtualViewportHeight /
                          FLMVirtualViewportWidth;
     CGFloat topCrop = MAX(FLMMinimumCenteredCardCrop,
@@ -6361,8 +6397,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     return MAX(240.0, MIN(780.0, height));
 }
 
+- (CGFloat)effectiveCenteredCardWidth {
+    if (self.sessionCanonicalGeometryValid &&
+        self.sessionCanonicalGeometrySession ==
+            self.floatingKeyboardSessionGeneration) {
+        return CGRectGetWidth(self.sessionCanonicalGeometry.centeredBounds);
+    }
+    return [self configuredCenteredCardWidth];
+}
+
+- (CGFloat)effectiveCenteredCardHeight {
+    if (self.sessionCanonicalGeometryValid &&
+        self.sessionCanonicalGeometrySession ==
+            self.floatingKeyboardSessionGeneration) {
+        return CGRectGetHeight(self.sessionCanonicalGeometry.centeredBounds);
+    }
+    return [self configuredCenteredCardHeight];
+}
+
 - (CGFloat)effectiveCenteredCardScaleX {
-    return [self effectiveCenteredCardWidth] / FLMVirtualViewportWidth;
+    if (self.sessionCanonicalGeometryValid &&
+        self.sessionCanonicalGeometrySession ==
+            self.floatingKeyboardSessionGeneration) {
+        return self.sessionCanonicalGeometry.centeredContentScale;
+    }
+    return [self configuredCenteredCardWidth] / FLMVirtualViewportWidth;
 }
 
 - (CGFloat)effectiveCenteredCardScaleY {
@@ -6393,8 +6452,104 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!isfinite(dockWidth) || dockWidth <= 0.0) {
         dockWidth = [self effectiveDockedPresentationWidth];
     }
+    // Keep the session snapshot as the source of the centered basis. A user
+    // resize may change dockWidth during the session, so the presentation
+    // ratio remains dynamic while never re-deriving the centered card from a
+    // transformed/presentation layer.
+    if (self.sessionCanonicalGeometryValid &&
+        self.sessionCanonicalGeometrySession ==
+            self.floatingKeyboardSessionGeneration) {
+        centeredWidth = CGRectGetWidth(
+            self.sessionCanonicalGeometry.centeredBounds);
+    }
     CGFloat scale = dockWidth / MAX(1.0, centeredWidth);
     return MAX(0.05, MIN(1.0, scale));
+}
+
+- (void)invalidateSessionCanonicalGeometry {
+    self.sessionCanonicalGeometryValid = NO;
+    self.sessionCanonicalGeometrySession = 0;
+    self.sessionCanonicalGeometry = (FLMSessionCanonicalGeometry){
+        CGRectZero, CGRectZero, CGPointZero, 0.0, 0.0, 0.0};
+}
+
+- (BOOL)ensureSessionCanonicalGeometry {
+    if (!self.floatingWindow || self.floatingKeyboardSessionGeneration == 0) {
+        return NO;
+    }
+    if (self.sessionCanonicalGeometryValid &&
+        self.sessionCanonicalGeometrySession ==
+            self.floatingKeyboardSessionGeneration) {
+        return YES;
+    }
+    CGRect rawFrame = [self uncachedCenteredFloatingFrame];
+    if (CGRectIsNull(rawFrame) || CGRectIsEmpty(rawFrame) ||
+        CGRectGetWidth(rawFrame) <= 0.5 || CGRectGetHeight(rawFrame) <= 0.5) {
+        return NO;
+    }
+    UIScreen *screen = self.floatingWindow.screen ?: [UIScreen mainScreen];
+    CGFloat screenScale = screen.scale;
+    if (!isfinite(screenScale) || screenScale <= 0.0) {
+        screenScale = 1.0;
+    }
+    CGRect centeredFrame = FLMPixelAlignedRect(rawFrame, screenScale);
+    CGFloat centeredWidth = CGRectGetWidth(centeredFrame);
+    CGFloat centeredHeight = CGRectGetHeight(centeredFrame);
+    if (centeredWidth <= 0.5 || centeredHeight <= 0.5) {
+        return NO;
+    }
+    CGFloat dockWidth = self.floatingDockWidth;
+    if (!isfinite(dockWidth) || dockWidth <= 0.0) {
+        dockWidth = [self effectiveDockedPresentationWidth];
+    }
+    dockWidth = MAX(FLMMinimumDockPresentationWidth,
+                    MIN(FLMMaximumDockWidth, dockWidth));
+    CGFloat dockScale = dockWidth / centeredWidth;
+    FLMSessionCanonicalGeometry geometry = {
+        centeredFrame,
+        CGRectMake(0.0, 0.0, centeredWidth, centeredHeight),
+        CGPointMake(FLMPixelAlignedValue(CGRectGetMidX(centeredFrame),
+                                         screenScale),
+                    FLMPixelAlignedValue(CGRectGetMidY(centeredFrame),
+                                         screenScale)),
+        centeredWidth / FLMVirtualViewportWidth,
+        MAX(0.05, MIN(1.0, dockScale)),
+        screenScale,
+    };
+    self.sessionCanonicalGeometry = geometry;
+    self.sessionCanonicalGeometrySession =
+        self.floatingKeyboardSessionGeneration;
+    self.sessionCanonicalGeometryValid = YES;
+    FLMEnqueueDiagnosticLine(
+        @"sb session-canonical-geometry session=%lu centeredFrame=%@ centeredBounds=%@ centeredPosition={%.4f,%.4f} centeredContentScale=%.6f dockPresentationScale=%.6f screenScale=%.2f source=user-preference+centered-policy",
+        (unsigned long)self.sessionCanonicalGeometrySession,
+        NSStringFromCGRect(geometry.centeredFrame),
+        NSStringFromCGRect(geometry.centeredBounds),
+        geometry.centeredPosition.x, geometry.centeredPosition.y,
+        geometry.centeredContentScale, geometry.dockPresentationScale,
+        geometry.screenScale);
+    return YES;
+}
+
+- (CGRect)sessionCanonicalCenteredFrame {
+    return [self ensureSessionCanonicalGeometry]
+               ? self.sessionCanonicalGeometry.centeredFrame
+               : CGRectNull;
+}
+
+- (void)reassertSessionCanonicalCenteredModelGeometry {
+    if (![self ensureSessionCanonicalGeometry] || !self.floatingContainer) {
+        return;
+    }
+    FLMSessionCanonicalGeometry geometry = self.sessionCanonicalGeometry;
+    CALayer *layer = self.floatingContainer.layer;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.floatingContainer.transform = CGAffineTransformIdentity;
+    layer.bounds = geometry.centeredBounds;
+    layer.position = geometry.centeredPosition;
+    layer.transform = CATransform3DIdentity;
+    [CATransaction commit];
 }
 
 - (CGRect)floatingContainerPresentationFrame {
@@ -6451,6 +6606,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGRect)centeredFloatingFrame {
+    if (self.floatingKeyboardSessionGeneration != 0 &&
+        [self ensureSessionCanonicalGeometry]) {
+        return self.sessionCanonicalGeometry.centeredFrame;
+    }
+    return [self uncachedCenteredFloatingFrame];
+}
+
+- (CGRect)uncachedCenteredFloatingFrame {
     CGRect bounds = self.floatingWindow.bounds;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
@@ -6659,16 +6822,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self layoutFloatingResizeHandle];
         return;
     }
+    BOOL canonicalReady = [self ensureSessionCanonicalGeometry];
+    BOOL canonicalModel = canonicalReady &&
+                          CGRectEqualToRect(
+                              self.floatingContainer.layer.bounds,
+                              self.sessionCanonicalGeometry.centeredBounds) &&
+                          CGPointEqualToPoint(
+                              self.floatingContainer.layer.position,
+                              self.sessionCanonicalGeometry.centeredPosition);
     if (CGAffineTransformIsIdentity(self.floatingContainer.transform) &&
-        CGAffineTransformIsIdentity(self.floatingContainer.layer.affineTransform)) {
+        CGAffineTransformIsIdentity(self.floatingContainer.layer.affineTransform) &&
+        (!canonicalReady || canonicalModel)) {
         return;
     }
     [UIView performWithoutAnimation:^{
+        [self reassertSessionCanonicalCenteredModelGeometry];
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.layer.transform = CATransform3DIdentity;
-        self.floatingContainer.frame = visualFrame;
         self.floatingDockShadowView.transform = CGAffineTransformIdentity;
-        self.floatingDockShadowView.frame = visualFrame;
+        CGRect canonicalFrame = [self sessionCanonicalCenteredFrame];
+        if (CGRectIsNull(canonicalFrame) || CGRectIsEmpty(canonicalFrame)) {
+            canonicalFrame = self.floatingContainer.frame;
+        }
+        self.floatingDockShadowView.frame = canonicalFrame;
         self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
         [self layoutFloatingHostView];
         [self layoutFloatingResizeHandle];
@@ -6953,7 +7129,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockReady = NO;
     if (self.floatingWindow.hidden || self.floatingDockHidden ||
         (!self.floatingDocked && !self.floatingDockTransitionActive)) {
+        self.floatingDockRestorePrepareTimestamp = 0.0;
         return;
+    }
+    NSTimeInterval restoreTapTimestamp =
+        self.floatingDockRestorePrepareTimestamp;
+    self.floatingDockRestorePrepareTimestamp = 0.0;
+    NSTimeInterval now = CACurrentMediaTime();
+    if (restoreTapTimestamp <= 0.0 || restoreTapTimestamp > now) {
+        restoreTapTimestamp = now;
     }
     CALayer *containerLayer = self.floatingContainer.layer;
     CALayer *presentationLayer = containerLayer.presentationLayer;
@@ -6967,17 +7151,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (CGRectIsNull(sourceFrame) || CGRectIsEmpty(sourceFrame)) {
         sourceFrame = self.floatingContainer.frame;
     }
-    CGRect target = [self centeredFloatingFrame];
-    CGPoint targetPosition = CGPointMake(CGRectGetMidX(target),
-                                         CGRectGetMidY(target));
+    BOOL canonicalReady = [self ensureSessionCanonicalGeometry];
+    FLMSessionCanonicalGeometry canonicalGeometry =
+        self.sessionCanonicalGeometry;
+    CGRect target = canonicalReady
+                        ? canonicalGeometry.centeredFrame
+                        : [self centeredFloatingFrame];
+    if (CGRectIsNull(target) || CGRectIsEmpty(target)) {
+        return;
+    }
+    CGPoint targetPosition = canonicalReady
+                                 ? canonicalGeometry.centeredPosition
+                                 : CGPointMake(CGRectGetMidX(target),
+                                               CGRectGetMidY(target));
+    CGFloat centeredContentScale = canonicalReady
+                                       ? canonicalGeometry.centeredContentScale
+                                       : [self effectiveCenteredCardScaleX];
+    if (!isfinite(centeredContentScale) || centeredContentScale <= 0.001) {
+        centeredContentScale = [self configuredCenteredCardWidth] /
+                               FLMVirtualViewportWidth;
+    }
     CGFloat sourceScale = CGRectGetWidth(sourceFrame) /
                           MAX(1.0, FLMVirtualViewportWidth);
     if (!isfinite(sourceScale) || sourceScale <= 0.001) {
         sourceScale = FLMUniformScaleFromTransform(sourceTransform);
-    }
-    CGFloat targetScale = [self effectiveCenteredCardScaleX];
-    if (!isfinite(targetScale) || targetScale <= 0.001) {
-        targetScale = 0.723077;
     }
     CGFloat sourceContainerScale =
         FLMUniformScaleFromTransform(sourceTransform);
@@ -6989,21 +7186,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     sourceContainerScale = MAX(0.05, MIN(1.0, sourceContainerScale));
     FLMEnqueueDiagnosticLine(
-        @"sb dock-restore begin sourcePosition={%.1f,%.1f} sourceScale=%.6f targetPosition={%.1f,%.1f} targetScale=%.6f containerScale=%.6f transition=%d presentation-only=1",
+        @"sb dock-restore begin sourcePosition={%.1f,%.1f} sourceScale=%.6f targetPosition={%.1f,%.1f} presentationTargetScale=1.000000 centeredContentScale=%.6f containerScale=%.6f transition=%d presentation-only=1 canonical=%d",
         sourcePosition.x,
         sourcePosition.y,
         sourceScale,
         targetPosition.x,
         targetPosition.y,
-        targetScale,
+        centeredContentScale,
         sourceContainerScale,
-        self.floatingDockTransitionActive);
+        self.floatingDockTransitionActive,
+        canonicalReady);
     FLMEnqueueDiagnosticLine(
         @"sb restore-content-scale stable=%.6f presentation-container-scale=%.6f remote-host-unchanged=1 scene-geometry-unchanged=1",
-        targetScale,
+        centeredContentScale,
         sourceContainerScale);
     NSUInteger restoreTransitionGeneration =
         ++self.floatingDockControlTransitionGeneration;
+    self.floatingDockRestorePerformanceGeneration =
+        restoreTransitionGeneration;
     self.floatingDockControlTransition =
         FLMFloatingDockControlTransitionRestore;
     self.floatingDockControlTargetFrame = target;
@@ -7011,9 +7211,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
     CGRect transitionEnvelope =
         FLMDockTransitionEnvelope(sourceFrame, target, bounds);
+    // The content barrier is armed as state only in Restore. The helper used
+    // by Dock entry/snap also updates the touch-gate window synchronously,
+    // which would pull layout work into this tap-to-CA critical section.
+    self.floatingDockContentTailProtected = YES;
     NSUInteger protectionGeneration =
-        [self armFloatingContentProtectionForDockTransitionFrame:
-                  transitionEnvelope];
+        ++self.floatingDockContentProtectionGeneration;
+    self.floatingDockContentTransitionCommitted = NO;
+    self.floatingDockContentProtectionFrame = transitionEnvelope;
     self.floatingDockTouchGateTransitionFrame = transitionEnvelope;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
@@ -7035,13 +7240,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockTransitionActive = YES;
     self.floatingResizeCenterReady = NO;
     self.floatingResizeHandle.hidden = YES;
-    [self updateFloatingDockTouchGate];
     self.floatingDockShadowView.hidden = YES;
     self.floatingDocked = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
-    [self setFloatingApplicationInputBlocked:YES];
-    [self restoreFloatingHandleInteraction];
+    self.floatingHostView.userInteractionEnabled = NO;
+    self.floatingDockInteractionShield.hidden = NO;
+    self.floatingDockInteractionShield.userInteractionEnabled = YES;
+    [self.floatingContainer bringSubviewToFront:self.floatingDockInteractionShield];
     self.floatingHandle.userInteractionEnabled = NO;
     self.floatingHandlePress.enabled = NO;
     self.floatingHandleTap.enabled = NO;
@@ -7053,11 +7259,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // unchanged; no scene-frame write or route republish belongs here.
     self.floatingDockPresentationMode =
         FLMFloatingDockPresentationModeCentered;
-    [self.floatingWindow makeKeyWindow];
     self.floatingHandle.hidden = NO;
+    self.floatingHandle.alpha = 1.0;
     // Freeze the current compositor state in the model before adding the
     // restore group. The remote Scene and host are not touched here; only the
     // outer PresentationContainer position and scale are animated.
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [containerLayer removeAllAnimations];
+    self.floatingContainer.transform = CGAffineTransformIdentity;
+    containerLayer.position = targetPosition;
+    containerLayer.transform = CATransform3DIdentity;
+    containerLayer.cornerRadius = 22.0;
+    containerLayer.borderWidth = 0.0;
+    [CATransaction commit];
     CABasicAnimation *positionAnimation =
         [CABasicAnimation animationWithKeyPath:@"position"];
     positionAnimation.fromValue = [NSValue valueWithCGPoint:sourcePosition];
@@ -7071,22 +7286,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     restoreAnimation.duration = 0.24;
     restoreAnimation.timingFunction =
         [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    [containerLayer removeAllAnimations];
-    containerLayer.position = targetPosition;
-    containerLayer.transform = CATransform3DIdentity;
-    containerLayer.cornerRadius = 22.0;
-    containerLayer.borderWidth = 0.0;
-    [CATransaction commit];
-    [UIView performWithoutAnimation:^{
-        self.floatingStatusLabel.frame = self.floatingContainer.bounds;
-        self.floatingLaunchCoverView.frame = self.floatingContainer.bounds;
-        self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
-    }];
+    NSTimeInterval prepareMs =
+        (CACurrentMediaTime() - restoreTapTimestamp) * 1000.0;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [CATransaction setCompletionBlock:^{
+        NSTimeInterval completionStart = CACurrentMediaTime();
         self.floatingDockTransitionAnimator = nil;
         if (restoreTransitionGeneration !=
                 self.floatingDockControlTransitionGeneration ||
@@ -7098,18 +7303,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
+        self.floatingContainer.transform = CGAffineTransformIdentity;
         containerLayer.position = targetPosition;
         containerLayer.transform = CATransform3DIdentity;
         containerLayer.cornerRadius = 22.0;
+        containerLayer.borderWidth = 0.0;
         [CATransaction commit];
-        [UIView performWithoutAnimation:^{
-            self.floatingContainer.layer.borderWidth = 0.0;
-            self.floatingDimView.alpha = 1.0;
-            self.floatingDockShadowView.alpha = 0.0;
-            self.floatingDockShadowView.frame = target;
-            self.floatingHandle.alpha = 1.0;
-            [self layoutFloatingHandleForCurrentContainer];
-        }];
+        self.floatingDimView.alpha = 1.0;
+        self.floatingDockShadowView.alpha = 0.0;
+        self.floatingDockShadowView.hidden = YES;
+        self.floatingHandle.hidden = NO;
+        self.floatingHandle.alpha = 1.0;
         self.floatingDockTransitionActive = NO;
         self.floatingDockControlTransition =
             FLMFloatingDockControlTransitionNone;
@@ -7117,24 +7321,60 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockTouchGateTransitionFrame = CGRectNull;
         self.floatingDockPresentationMode =
             FLMFloatingDockPresentationModeCentered;
-        [self configureFloatingInteractionForDockedState];
-        [self updateFloatingDockTouchGate];
         [self markFloatingContentProtectionAnimationCommitted:
                   protectionGeneration];
+        NSUInteger restoreSessionGeneration =
+            self.floatingKeyboardSessionGeneration;
+        BOOL deferredWorkScheduled = !self.floatingWindow.hidden;
+        if (deferredWorkScheduled) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (restoreTransitionGeneration !=
+                        self.floatingDockControlTransitionGeneration ||
+                    restoreSessionGeneration !=
+                        self.floatingKeyboardSessionGeneration ||
+                    self.floatingWindow.hidden ||
+                    self.floatingDockTransitionActive ||
+                    self.floatingDocked || self.floatingDockHidden) {
+                    return;
+                }
+                // Key-window, input-gate, handle geometry and any pending
+                // avoidance publication intentionally run one main-loop turn
+                // after the Restore render-server completion.
+                [self configureFloatingInteractionForDockedState];
+                [self layoutFloatingHandleForCurrentContainer];
+                if (self.floatingKeyboardAvoidancePublishDeferred) {
+                    [self flushFloatingKeyboardAvoidancePublishAfterDock];
+                }
+                FLMEnqueueDiagnosticLine(
+                    @"sb dock-restore deferred-work generation=%lu keyWindow=%d avoidanceDeferred=%d",
+                    (unsigned long)restoreTransitionGeneration,
+                    self.floatingWindow.isKeyWindow,
+                    self.floatingKeyboardAvoidancePublishDeferred);
+            });
+        }
+        NSTimeInterval completionMs =
+            (CACurrentMediaTime() - completionStart) * 1000.0;
         FLMEnqueueDiagnosticLine(
-            @"sb dock-restore complete transition=render-server docked=0 hidden=0 presentationMode=Centered sourcePosition={%.1f,%.1f} sourceScale=%.6f targetPosition={%.1f,%.1f} targetScale=%.6f containerScale=%.6f restore-content-scale-stable=%.6f remote-host-unchanged=1",
+            @"sb dock-restore-perf phase=completion prepareMs=%.3f completionMs=%.3f deferredWorkScheduled=%d generation=%lu",
+            prepareMs, completionMs, deferredWorkScheduled,
+            (unsigned long)restoreTransitionGeneration);
+        FLMEnqueueDiagnosticLine(
+            @"sb dock-restore complete transition=render-server docked=0 hidden=0 presentationMode=Centered sourcePosition={%.1f,%.1f} sourceScale=%.6f targetPosition={%.1f,%.1f} presentationTargetScale=1.000000 centeredContentScale=%.6f containerScale=%.6f restore-content-scale-stable=%.6f remote-host-unchanged=1 deferredWorkScheduled=%d",
             sourcePosition.x,
             sourcePosition.y,
             sourceScale,
             targetPosition.x,
             targetPosition.y,
-            targetScale,
+            centeredContentScale,
             sourceContainerScale,
-            targetScale);
-        [self flushFloatingKeyboardAvoidancePublishAfterDock];
+            centeredContentScale,
+            deferredWorkScheduled);
     }];
     [containerLayer addAnimation:restoreAnimation
                            forKey:@"flyme.dock.restore.presentation"];
+    FLMEnqueueDiagnosticLine(
+        @"sb dock-restore-perf phase=add prepareMs=%.3f completionMs=pending deferredWorkScheduled=pending generation=%lu",
+        prepareMs, (unsigned long)restoreTransitionGeneration);
     [CATransaction commit];
 }
 
@@ -7348,6 +7588,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
+    if (self.floatingKeyboardSessionGeneration != 0) {
+        [self ensureSessionCanonicalGeometry];
+    }
     CGRect targetFrame = [self centeredFloatingFrame];
     if (self.floatingDocked) {
         CGFloat verticalCenter = self.floatingDockVerticalCenter;
@@ -7379,8 +7622,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                           scale:[self floatingDockPresentationScale]];
         self.floatingContainer.layer.cornerRadius = 22.0;
     } else {
-        self.floatingContainer.transform = CGAffineTransformIdentity;
-        self.floatingContainer.frame = targetFrame;
+        if ([self ensureSessionCanonicalGeometry]) {
+            [self reassertSessionCanonicalCenteredModelGeometry];
+        } else {
+            self.floatingContainer.transform = CGAffineTransformIdentity;
+            self.floatingContainer.frame = targetFrame;
+        }
         self.floatingContainer.layer.cornerRadius = 22.0;
         [self layoutFloatingHostView];
     }
@@ -7404,7 +7651,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)layoutFloatingHandleForCurrentContainer {
     CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
-    CGRect containerFrame = [self floatingContainerPresentationFrame];
+    BOOL centeredInteraction =
+        !self.floatingDocked && !self.floatingDockHidden &&
+        !self.floatingDockTransitionActive &&
+        !self.floatingDockInputSessionActive &&
+        !self.floatingDockContentTailProtected;
+    CGRect containerFrame = centeredInteraction &&
+                                    [self ensureSessionCanonicalGeometry]
+                                ? self.sessionCanonicalGeometry.centeredFrame
+                                : [self floatingContainerPresentationFrame];
     CGFloat containerWidth = CGRectGetWidth(containerFrame);
     if (self.floatingDockHidden) {
         CGFloat handleWidth = 44.0;
@@ -7462,9 +7717,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // RemoteSceneHost is a fixed logical canvas for the entire centered-card
     // session. Dock is an outer PresentationContainer transform; it never
     // changes the host bounds, host transform, Scene frame, or viewport.
-    CGFloat remoteContentScale = [self effectiveCenteredCardScaleX];
+    BOOL canonicalReady = [self ensureSessionCanonicalGeometry];
+    CGFloat remoteContentScale = canonicalReady
+                                     ? self.sessionCanonicalGeometry
+                                           .centeredContentScale
+                                     : [self effectiveCenteredCardScaleX];
     if (!isfinite(remoteContentScale) || remoteContentScale <= 0.001) {
-        remoteContentScale = 0.723077;
+        remoteContentScale = [self configuredCenteredCardWidth] /
+                             FLMVirtualViewportWidth;
     }
     CGFloat uniformScale = remoteContentScale;
     CGFloat presentationContainerScale =
@@ -7473,7 +7733,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockTransitionActive) {
         presentationContainerScale = [self floatingDockPresentationScale];
     }
-    CGRect targetPhysicalCard = [self floatingContainerPresentationFrame];
+    CGRect targetPhysicalCard = canonicalReady
+                                    ? self.sessionCanonicalGeometry.centeredFrame
+                                    : [self centeredFloatingFrame];
+    if (self.floatingInteractiveFullscreenTransition) {
+        targetPhysicalCard = [self floatingContainerPresentationFrame];
+    }
     if (CGRectIsNull(targetPhysicalCard) || CGRectIsEmpty(targetPhysicalCard)) {
         targetPhysicalCard = [self centeredFloatingFrame];
     }
@@ -8484,6 +8749,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self deactivateKeyboardForwardingWindow];
         [self endFloatingKeyboardInteractionSession];
         self.floatingKeyboardMaximumVisibleHeight = 0.0;
+        [self invalidateSessionCanonicalGeometry];
         return;
     }
     [self.floatingHostView endEditing:YES];
@@ -8491,6 +8757,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMPublishKeyboardCardGeometry(endingSession, 0.0, 0.0, 0.0, 0.0, NO);
     [self clearFloatingKeyboardScenePairingForSession:endingSession];
     self.floatingKeyboardSessionGeneration = 0;
+    [self invalidateSessionCanonicalGeometry];
     FLMPublishKeyboardState(nil, nil, 0);
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
@@ -8543,8 +8810,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (BOOL)pointIsInsideFloatingInteractionDomain:(CGPoint)point {
-    CGRect contentFrame = CGRectInset([self floatingContainerPresentationFrame],
-                                      -2.0, -2.0);
+    BOOL centeredInteraction =
+        !self.floatingDocked && !self.floatingDockHidden &&
+        !self.floatingDockTransitionActive &&
+        !self.floatingDockInputSessionActive &&
+        !self.floatingDockContentTailProtected;
+    CGRect contentFrame = centeredInteraction &&
+                                  [self ensureSessionCanonicalGeometry]
+                              ? self.sessionCanonicalGeometry.centeredFrame
+                              : [self floatingContainerPresentationFrame];
+    contentFrame = CGRectInset(contentFrame, -2.0, -2.0);
     CGRect handleFrame = CGRectInset(self.floatingHandle.frame, -22.0, -20.0);
     if (CGRectContainsPoint(contentFrame, point) ||
         (!self.floatingHandle.hidden && CGRectContainsPoint(handleFrame, point))) {
@@ -8559,7 +8834,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (CGRectIsNull(frame) || CGRectGetHeight(frame) <= 1.0) {
         return 0.0;
     }
-    CGRect contentFrame = [self floatingContainerPresentationFrame];
+    BOOL centeredInteraction =
+        !self.floatingDocked && !self.floatingDockHidden &&
+        !self.floatingDockTransitionActive &&
+        !self.floatingDockInputSessionActive &&
+        !self.floatingDockContentTailProtected;
+    CGRect contentFrame = centeredInteraction &&
+                                  [self ensureSessionCanonicalGeometry]
+                              ? self.sessionCanonicalGeometry.centeredFrame
+                              : [self floatingContainerPresentationFrame];
     CGFloat physicalOverlap =
         MAX(0.0, CGRectGetMaxY(contentFrame) - CGRectGetMinY(frame));
     if (physicalOverlap <= 1.0) {
@@ -9696,6 +9979,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingKeyboardSessionGeneration =
         self.floatingKeyboardSessionCounter;
+    [self invalidateSessionCanonicalGeometry];
     self.floatingSceneGeometryCommitGeneration = generation;
     FLMEnqueueDiagnosticLine(
         @"sb centered-open app=%@ launchGen=%lu session=%lu prewarmed=%d previousHost=%p",

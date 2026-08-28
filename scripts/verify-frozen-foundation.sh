@@ -252,8 +252,15 @@ for marker in \
     "FLMKeyboardLastGeometryGeneration" \
     "FLMKeyboardLastDismissGeneration" \
     "FLMKeyboardLastProcessedSession" \
-    "FLMKeyboardTransportOnceToken" \
-    "dispatch_once(&FLMKeyboardTransportOnceToken, ^{" \
+    "FLMProcessGlobalTransportBootstrap" \
+    "FLMKeyboardTransportChannelState" \
+    "FLMKeyboardTransportChannels" \
+    "FLMKeyboardTransportRetryDelays" \
+    "FLMEnsureKeyboardObserversRegistered" \
+    "FLMClaimKeyboardDismissGeneration" \
+    "keyboard-transport ready registered=%lu/7 pid=%d" \
+    "keyboard-transport retry-scheduled" \
+    "keyboard-transport failed registered=%lu/7" \
     "route-applied" \
     "process-ready-once" \
     "application dismiss-request received count=1" \
@@ -374,4 +381,4 @@ reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "Stable build 0.9.50 wheel gesture, global keyboard route, fixed Remote Scene presentation scale, outer Dock presentation animation, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.51 wheel gesture, global keyboard transport, canonical Remote Scene presentation scale, outer Dock presentation animation, launch recovery, hidden dock, and card foundation verified"

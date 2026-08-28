@@ -1,8 +1,8 @@
-# flyme-multitasking — 稳定版0.9.50
+# flyme-multitasking — 稳定版0.9.51
 
 完全独立的 iOS 16 rootless 多任务插件工程。
 
-当前版本：`稳定版0.9.50`。
+当前版本：`稳定版0.9.51`。
 
 主要功能：
 
