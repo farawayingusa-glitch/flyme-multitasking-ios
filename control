@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - Stable build 0.9.49
-Description: Stable build 0.9.49 of the rootless iOS multitasking tweak, with Dock tap restore and native 120Hz live presentation.
+Name: Flyme Multitasking - Stable build 0.9.50
+Description: Stable build 0.9.50 of the rootless iOS multitasking tweak, with fixed Remote Scene presentation and reliable keyboard close transport.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.49
+Version: 0.9.50

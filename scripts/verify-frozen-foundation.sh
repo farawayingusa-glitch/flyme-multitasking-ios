@@ -92,7 +92,7 @@ for marker in \
     "floatingDockHidden" \
     "floatingDockHideGestureActive" \
     "floatingDockHideReady" \
-    "floatingDockHideInitialFrame = self.floatingContainer.frame" \
+    "floatingContainerPresentationFrame" \
     "if (clearHorizontalIntent)" \
     "finishFloatingDockHiddenGesture" \
     "triggerProgress" \
@@ -142,8 +142,14 @@ for marker in \
     "transform.scale" \
     "flyme.dock.restore.presentation" \
     "outer PresentationContainer" \
-    "FlymeRouteChanged." \
-    "fanout=bundle" \
+    "floatingDockPresentationScale" \
+    "FLYME_KEYBOARD_NOTIFICATION" \
+    "routeChannel=global fanout=global" \
+    "restore-content-scale stable=" \
+    "presentationContainerScale=" \
+    "remoteContentScale=" \
+    "session-fixed" \
+    "remote-host-unchanged=1" \
     "UIViewPropertyAnimator" \
     "floatingDockTransitionAnimator" \
     "route-kept=1" \
@@ -175,7 +181,12 @@ done
 for marker in \
     "tap-deferred" \
     "floatingDockTap" \
-    "handleFloatingDockTap"; do
+    "handleFloatingDockTap" \
+    "FLYME_KEYBOARD_ROUTE_CHANNEL_PREFIX" \
+    "FLMKeyboardRouteChannel" \
+    "FLMKeyboardRouteChannelName" \
+    "FlymeRouteChanged." \
+    "fanout=bundle"; do
     reject_source "$marker"
 done
 
@@ -363,4 +374,4 @@ reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "Stable build 0.9.49 wheel gesture, bundle-targeted route fanout, full-screen Scene/crop presentation, deduplicated keyboard transport, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.50 wheel gesture, global keyboard route, fixed Remote Scene presentation scale, outer Dock presentation animation, launch recovery, hidden dock, and card foundation verified"

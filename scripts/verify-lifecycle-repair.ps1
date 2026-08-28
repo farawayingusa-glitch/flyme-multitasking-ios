@@ -21,8 +21,8 @@ function Reject-Text([string]$Path, [string]$Text) {
 
 # Scene launch and gesture foundations remain frozen.
 foreach ($Marker in @(
-    'FLMLogBuildString @"Stable build 0.9.49"',
-    'logger-ready build=%@ schema=25',
+    'FLMLogBuildString @"Stable build 0.9.50"',
+    'logger-ready build=%@ schema=26',
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.10',
     'FLMFloatingSceneGenerationDelay = 0.75',
@@ -111,7 +111,12 @@ foreach ($Removed in @(
     'scene-virtual-viewport',
     'floatingSceneLogicalFrameMatchesVirtualViewport',
     'virtual-viewport-fit',
-    'virtual-viewport restore keyboard-session-restored'
+    'virtual-viewport restore keyboard-session-restored',
+    'FLYME_KEYBOARD_ROUTE_CHANNEL_PREFIX',
+    'FLMKeyboardRouteChannel',
+    'FLMKeyboardRouteChannelName',
+    'FlymeRouteChanged.',
+    'fanout=bundle'
 )) {
     Reject-Text $Source $Removed
 }
@@ -147,6 +152,7 @@ Require-Text $KeyboardSource 'FLMContentLogicalViewportSize'
 Require-Text $KeyboardSource 'FLMPhysicalCardSize'
 Require-Text $KeyboardSource 'FLMContentViewportAdapter'
 Require-Text $KeyboardSource 'FLMHandleKeyboardRouteNotification'
+Require-Text $KeyboardSource 'transport=global'
 Require-Text $KeyboardSource 'FLMReloadContentViewportSelection'
 Require-Text $KeyboardSource 'FLMProcessIsSpringBoardOrSystemAgent'
 Require-Text $KeyboardSource 'return MAX(originalHeight, mappedHeight);'
@@ -204,8 +210,15 @@ Require-Text $Source 'CAAnimationGroup'
 Require-Text $Source 'transform.scale'
 Require-Text $Source 'flyme.dock.restore.presentation'
 Require-Text $Source 'outer PresentationContainer'
-Require-Text $Source 'FlymeRouteChanged.'
-Require-Text $Source 'fanout=bundle'
+Require-Text $Source 'floatingDockPresentationScale'
+Require-Text $Source 'floatingContainerPresentationFrame'
+Require-Text $Source 'FLYME_KEYBOARD_NOTIFICATION'
+Require-Text $Source 'routeChannel=global fanout=global'
+Require-Text $Source 'restore-content-scale stable='
+Require-Text $Source 'presentationContainerScale='
+Require-Text $Source 'remoteContentScale='
+Require-Text $Source 'session-fixed'
+Require-Text $Source 'remote-host-unchanged=1'
 Require-Text $Source 'transitionTakeover=enabled'
 Require-Text $Source 'UIViewPropertyAnimator'
 Reject-Text $Source 'transitionTakeover=disabled'

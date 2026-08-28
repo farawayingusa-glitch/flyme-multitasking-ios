@@ -17,7 +17,7 @@
 // SpringBoard applies one uniform presentation scale and clips only the
 // explicitly selected top/bottom card crop; it never changes the app's
 // keyboard coordinate system to the card's physical bounds.
-#define FLYME_KEYBOARD_ROUTE_CHANNEL_PREFIX "com.codex.flymemultitasking.FlymeRouteChanged."
+#define FLYME_KEYBOARD_NOTIFICATION "com.codex.flymemultitasking.keyboard-state-changed"
 #define FLYME_KEYBOARD_SCENE_NOTIFICATION "com.codex.flymemultitasking.keyboard-scene-changed"
 #define FLYME_KEYBOARD_SESSION_NOTIFICATION "com.codex.flymemultitasking.keyboard-session-changed"
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
@@ -42,7 +42,6 @@ static BOOL FLMKeyboardTargetApplication = NO;
 static BOOL FLMKeyboardExtensionProcess = NO;
 static BOOL FLMRemoteKeyboardGeometryInstalled = NO;
 static int FLMKeyboardRouteToken = -1;
-static NSString *FLMKeyboardRouteChannel;
 static int FLMKeyboardSceneToken = -1;
 static int FLMKeyboardSessionToken = -1;
 static int FLMKeyboardAvoidanceToken = -1;
@@ -337,16 +336,6 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
-}
-
-static NSString *FLMKeyboardRouteChannelName(NSString *identifier) {
-    uint64_t bundleHash = FLMIdentifierHash(identifier);
-    if (bundleHash == 0) {
-        return nil;
-    }
-    return [NSString stringWithFormat:@"%s%016llx",
-                                      FLYME_KEYBOARD_ROUTE_CHANNEL_PREFIX,
-                                      (unsigned long long)bundleHash];
 }
 
 static BOOL FLMProcessIsKeyboardExtension(void) {
@@ -1933,31 +1922,27 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
     }
     dispatch_once(&FLMKeyboardTransportOnceToken, ^{
         BOOL registered = YES;
-        FLMKeyboardRouteChannel =
-            FLMKeyboardRouteChannelName([NSBundle mainBundle].bundleIdentifier);
-        BOOL routeRegistered =
-            FLMKeyboardRouteChannel.length > 0 &&
-            notify_register_dispatch(
-                FLMKeyboardRouteChannel.UTF8String,
-                &FLMKeyboardRouteToken,
-                dispatch_get_main_queue(),
-                ^(__unused int token) {
-                    FLMHandleKeyboardRouteNotification();
-                }) == NOTIFY_STATUS_OK;
-        registered = routeRegistered && registered;
-        // Scene/session tokens are retained as check-only compatibility state
-        // for older SpringBoard writers. The shared-state wake-up and the
-        // bundle-targeted route channel are the only dispatch paths.
-        if (notify_register_check(FLYME_KEYBOARD_SCENE_NOTIFICATION,
-                                  &FLMKeyboardSceneToken) != NOTIFY_STATUS_OK) {
-            FLMKeyboardSceneToken = -1;
-            registered = NO;
-        }
-        if (notify_register_check(FLYME_KEYBOARD_SESSION_NOTIFICATION,
-                                  &FLMKeyboardSessionToken) != NOTIFY_STATUS_OK) {
-            FLMKeyboardSessionToken = -1;
-            registered = NO;
-        }
+        registered = notify_register_dispatch(
+                         FLYME_KEYBOARD_NOTIFICATION,
+                         &FLMKeyboardRouteToken,
+                         dispatch_get_main_queue(),
+                         ^(__unused int token) {
+                             FLMHandleKeyboardRouteNotification();
+                         }) == NOTIFY_STATUS_OK && registered;
+        registered = notify_register_dispatch(
+                         FLYME_KEYBOARD_SCENE_NOTIFICATION,
+                         &FLMKeyboardSceneToken,
+                         dispatch_get_main_queue(),
+                         ^(__unused int token) {
+                             FLMHandleKeyboardRouteNotification();
+                         }) == NOTIFY_STATUS_OK && registered;
+        registered = notify_register_dispatch(
+                         FLYME_KEYBOARD_SESSION_NOTIFICATION,
+                         &FLMKeyboardSessionToken,
+                         dispatch_get_main_queue(),
+                         ^(__unused int token) {
+                             FLMHandleKeyboardRouteNotification();
+                         }) == NOTIFY_STATUS_OK && registered;
         registered = notify_register_dispatch(
                          FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
                          &FLMKeyboardAvoidanceToken,
@@ -1986,7 +1971,7 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
                          ^(__unused int token) {
                              FLMHandleKeyboardDismissRequest();
                          }) == NOTIFY_STATUS_OK && registered;
-        NSLog(@"[FlymeKeyboard] keyboard-transport registered-once=%d route=%d scene=%d session=%d avoidance=%d geometry=%d shared=%d dismiss=%d routeChannel=%@ fanout=bundle",
+        NSLog(@"[FlymeKeyboard] keyboard-transport registered-once=%d route=%d scene=%d session=%d avoidance=%d geometry=%d shared=%d dismiss=%d transport=global",
               registered,
               FLMKeyboardRouteToken >= 0,
               FLMKeyboardSceneToken >= 0,
@@ -1994,8 +1979,7 @@ static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
               FLMKeyboardAvoidanceToken >= 0,
               FLMKeyboardCardGeometryToken >= 0,
               FLMKeyboardSharedStateToken >= 0,
-              FLMKeyboardDismissRequestToken >= 0,
-              FLMKeyboardRouteChannel ?: @"<none>");
+              FLMKeyboardDismissRequestToken >= 0);
     });
 }
 
