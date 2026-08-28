@@ -6680,10 +6680,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect currentFrame = [self floatingContainerPresentationFrame];
     CGPoint currentCenter = CGPointMake(CGRectGetMidX(currentFrame),
                                         CGRectGetMidY(currentFrame));
-    CGRect canonicalFrame =
-        [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
-                                   width:self.floatingDockWidth
-                 preservingVerticalCenter:currentCenter.y];
     [UIView performWithoutAnimation:^{
         [self configureFloatingContainerForDockPresentationAtCenter:currentCenter
                                                                scale:[self floatingDockPresentationScale]];
