@@ -169,6 +169,8 @@ static uint64_t FLMIdentifierHash(NSString *identifier);
 static void FLMHandleKeyboardDismissRequest(void);
 static void FLMHandleKeyboardDismissRequestWithSharedState(
     NSDictionary *sharedState);
+static BOOL FLMClaimKeyboardDismissGeneration(uint64_t session,
+                                              uint64_t generation);
 
 typedef NS_ENUM(uint8_t, FLMKeyboardDismissResult) {
     FLMKeyboardDismissResultSuccess = 1,
