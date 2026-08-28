@@ -76,6 +76,7 @@ for marker in \
     "sb frame-apply rejected=inactive-session" \
     "sb session-end route-cleared" \
     "FLMPublishKeyboardState" \
+    "FLMPublishKeyboardDismissRequest" \
     "FLMPublishKeyboardAvoidance" \
     "FLMPublishKeyboardCardGeometry" \
     "FLMScheduleKeyboardSharedStateWrite" \
@@ -95,6 +96,8 @@ for marker in \
     "floatingDockHideInitialFrame = self.floatingContainer.frame" \
     "if (clearHorizontalIntent)" \
     "finishFloatingDockHiddenGesture" \
+    "displayLink.preferredFrameRateRange" \
+    "maximumFramesPerSecond" \
     "triggerProgress" \
     "floatingDockFeedbackSent" \
     "updateFloatingFullscreenSnapshotForProgress" \
@@ -176,6 +179,8 @@ for marker in \
     "FLMContentLogicalViewportSize" \
     "FLMPhysicalCardSize" \
     "FLMHandleKeyboardRouteNotification" \
+    "FLMHandleKeyboardDismissRequest" \
+    "FLMRegisterKeyboardDismissObserverIfNeeded" \
     "FLMReloadContentViewportSelection" \
     "BOOL shouldApply = NO;" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
@@ -200,8 +205,9 @@ grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
 grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
-if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard filter must remain generic UIKit injection" >&2
+grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
+if grep -Eq '<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard filter must remain bundle-scoped" >&2
     exit 1
 fi
 
@@ -228,4 +234,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.53 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, keyboard routing, launch recovery, hidden dock, and card foundation verified"

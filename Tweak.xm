@@ -25,16 +25,17 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v53"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v53"
+#define FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-request-reset-v1"
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF153ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF253ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 53ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"0.9.41"
+#define FLMLogBuildString @"Stable build 0.9.53 (0.9.41 reset)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1501,6 +1502,7 @@ static int FlymeKeyboardAvoidanceToken = -1;
 static int FlymeKeyboardCardGeometryToken = -1;
 static int FlymeKeyboardAppCtorToken = -1;
 static int FlymeKeyboardAppReadyToken = -1;
+static int FlymeKeyboardDismissRequestToken = -1;
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 static NSString *const FLMKeyboardSharedStateRootlessPath =
@@ -1798,6 +1800,39 @@ static void FLMPublishKeyboardState(NSString *identifier,
     if (identifier.length > 0 && sessionGeneration != 0) {
         FLMLogKeyboardAdapterHandshake(@"route-publish", identifier, NULL);
     }
+}
+
+static void FLMPublishKeyboardDismissRequest(NSString *identifier,
+                                             uint64_t sessionGeneration) {
+    if (identifier.length == 0 || sessionGeneration == 0) {
+        return;
+    }
+    if (FlymeKeyboardDismissRequestToken < 0 &&
+        notify_register_check(FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION,
+                              &FlymeKeyboardDismissRequestToken) !=
+            NOTIFY_STATUS_OK) {
+        FlymeKeyboardDismissRequestToken = -1;
+        FLMEnqueueDiagnosticLine(
+            @"sb dismiss-request publish-failed app=%@ session=%llu",
+            identifier, (unsigned long long)sessionGeneration);
+        return;
+    }
+
+    // A close request must not depend on the asynchronously written shared
+    // plist. Pack the target bundle hash and the current keyboard session into
+    // one Darwin notify state so the application can still validate the
+    // request if route-clear is delivered first on another channel.
+    uint64_t requestState =
+        ((sessionGeneration & 0xFFFFFFFFULL) << 32) |
+        (FLMIdentifierHash(identifier) & 0xFFFFFFFFULL);
+    int setStatus =
+        notify_set_state(FlymeKeyboardDismissRequestToken, requestState);
+    int postStatus =
+        notify_post(FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION);
+    FLMEnqueueDiagnosticLine(
+        @"sb dismiss-request app=%@ session=%llu state=0x%016llx set=%d post=%d",
+        identifier, (unsigned long long)sessionGeneration,
+        (unsigned long long)requestState, setStatus, postStatus);
 }
 
 static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
@@ -3471,12 +3506,30 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CADisplayLink *displayLink =
         [CADisplayLink displayLinkWithTarget:self
                                     selector:@selector(flushFloatingDockInputFrame:)];
+    NSInteger maximumFramesPerSecond = [UIScreen mainScreen].maximumFramesPerSecond;
+    if (maximumFramesPerSecond <= 0) {
+        maximumFramesPerSecond = 60;
+    }
     if ([displayLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
-        displayLink.preferredFramesPerSecond = 60;
+        displayLink.preferredFramesPerSecond = maximumFramesPerSecond;
+    }
+    if (@available(iOS 15.0, *)) {
+        // The old 0.9.41 path explicitly capped every interactive Dock frame
+        // at 60 Hz. Request the panel maximum as a fixed range while the
+        // gesture is active; iOS can still lower the physical refresh rate for
+        // thermal/power reasons, but Flyme no longer imposes a 60 Hz ceiling.
+        float requestedRate = (float)maximumFramesPerSecond;
+        displayLink.preferredFrameRateRange =
+            CAFrameRateRangeMake(requestedRate,
+                                 requestedRate,
+                                 requestedRate);
     }
     self.floatingDockInputDisplayLink = displayLink;
     [displayLink addToRunLoop:[NSRunLoop mainRunLoop]
                        forMode:NSRunLoopCommonModes];
+    FLMEnqueueDiagnosticLine(
+        @"sb dock-displaylink-config screenMaxFPS=%ld requestedFPS=%ld runLoop=common",
+        (long)maximumFramesPerSecond, (long)maximumFramesPerSecond);
 }
 
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink {
@@ -3872,7 +3925,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandle.frame =
             CGRectMake(handleX, handleY, handleWidth, handleHeight);
     }];
-    [self updateFloatingDockTouchGate];
+    // The current recognizer already owns this touch stream. Rebuilding a
+    // sibling window's hit-test geometry on every 120 Hz sample cannot affect
+    // the in-flight gesture and only adds main-thread work; the terminal
+    // settle path refreshes the gate once with final geometry.
 }
 
 - (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture {
@@ -7770,6 +7826,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (__bridge void *)self.floatingKeyboardLayerHostView,
         self.keyboardForwardingWindow.isKeyWindow,
         self.floatingQueuedIdentifier ?: @"<none>");
+    if (keepApplication && self.floatingIdentifier.length > 0 &&
+        self.floatingKeyboardSessionGeneration != 0) {
+        // Deliver the application-side responder cleanup while the retained
+        // Scene and presenter are still attached. The normal 0.24 s close
+        // animation supplies the grace window; no keyboard notification,
+        // overlay, or close-state timeout is introduced.
+        FLMPublishKeyboardDismissRequest(
+            self.floatingIdentifier,
+            self.floatingKeyboardSessionGeneration);
+    }
     [self endFloatingKeyboardSession];
     self.floatingLaunchGeneration += 1;
     self.floatingLaunchState = FLMFloatingLaunchStateClosing;

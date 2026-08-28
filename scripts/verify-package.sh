@@ -69,8 +69,9 @@ fi
 test -f "$keyboard_filter"
 grep -q "Bundles" "$keyboard_filter"
 grep -q "com.apple.UIKit" "$keyboard_filter"
-if grep -Eq "com.tencent.xin|UIApplication|Executables|Classes" "$keyboard_filter"; then
-    echo "keyboard adapter must use generic UIKit injection with in-process target gating" >&2
+grep -q "com.tencent.xin" "$keyboard_filter"
+if grep -Eq "UIApplication|Executables|Classes" "$keyboard_filter"; then
+    echo "keyboard adapter must remain bundle-scoped" >&2
     exit 1
 fi
 test ! -e "$workspace/root/var/jb/Library/MobileSubstrate/DynamicLibraries/FlymeKeyboardBootstrap.dylib"
@@ -91,12 +92,13 @@ preferences_arches="$(xcrun lipo -archs "$preferences")"
 # directly, then enforce the same non-CS_ADHOC flags as the working reference.
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$runtime"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$keyboard"
-strings "$keyboard" | grep -q "keyboard-app-ctor-v47"
-strings "$keyboard" | grep -q "keyboard-app-ready-v47"
+strings "$keyboard" | grep -q "keyboard-app-ctor-v53"
+strings "$keyboard" | grep -q "keyboard-app-ready-v53"
+strings "$keyboard" | grep -q "keyboard-dismiss-request-reset-v1"
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"
-grep -qx "Version: 0.9.41" "$workspace/control/control"
+grep -qx "Version: 0.9.53" "$workspace/control/control"
 grep -qx "Architecture: iphoneos-arm64" "$workspace/control/control"
 test -x "$workspace/control/postinst"
 grep -q "generic" "$workspace/control/postinst"
