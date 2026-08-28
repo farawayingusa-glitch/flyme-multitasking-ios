@@ -152,9 +152,6 @@ for marker in \
 done
 
 for marker in \
-    "tap-deferred" \
-    "floatingDockTap" \
-    "handleFloatingDockTap" \
     "FLMFloatingKeyboardDismissTimeout = 1.90;" \
     "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
     "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
@@ -173,6 +170,13 @@ for marker in \
     "sb coordinated-close commit" \
     "sb coordinated-close abort"; do
     require_source "$marker"
+done
+
+for marker in \
+    "tap-deferred" \
+    "floatingDockTap" \
+    "handleFloatingDockTap"; do
+    reject_source "$marker"
 done
 
 for marker in \
