@@ -112,6 +112,19 @@ for marker in \
     "sb close-intent ignored=pending-close" \
     "dock-state-publish once=1 presentationMode=Docked" \
     "dock-displaylink-config" \
+    "prepareFloatingDockDisplayLink" \
+    "setFloatingDockDisplayLinkActive" \
+    "CAFrameRateRangeMake" \
+    "preferredFrameRateRange" \
+    "NSRunLoopCommonModes" \
+    "runLoopMode=CommonModes" \
+    "paused=1" \
+    "screenMaxFPS=" \
+    "requestedMinFPS=" \
+    "requestedMaxFPS=" \
+    "requestedPreferredFPS=" \
+    "actualCallbackDelta:" \
+    "targetDelta:" \
     "renderFrames" \
     "missedVsync" \
     "effectiveFPS" \
@@ -120,6 +133,17 @@ for marker in \
     "contentViewportCommitted" \
     "DockControlOverlay" \
     "dock-transition-takeover" \
+    "presentationPosition=" \
+    "presentationScale=" \
+    "dock-tap recognized" \
+    "dock-restore begin" \
+    "dock-restore complete transition=render-server" \
+    "CAAnimationGroup" \
+    "transform.scale" \
+    "flyme.dock.restore.presentation" \
+    "outer PresentationContainer" \
+    "FlymeRouteChanged." \
+    "fanout=bundle" \
     "UIViewPropertyAnimator" \
     "floatingDockTransitionAnimator" \
     "route-kept=1" \
@@ -128,6 +152,9 @@ for marker in \
 done
 
 for marker in \
+    "tap-deferred" \
+    "floatingDockTap" \
+    "handleFloatingDockTap" \
     "FLMFloatingKeyboardDismissTimeout = 1.90;" \
     "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
     "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
@@ -332,4 +359,4 @@ reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "Stable build 0.9.48 wheel gesture, global Scene routing, full-screen Scene/crop presentation, deduplicated keyboard transport, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.49 wheel gesture, bundle-targeted route fanout, full-screen Scene/crop presentation, deduplicated keyboard transport, launch recovery, hidden dock, and card foundation verified"

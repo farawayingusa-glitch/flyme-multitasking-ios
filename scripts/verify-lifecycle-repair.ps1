@@ -21,6 +21,8 @@ function Reject-Text([string]$Path, [string]$Text) {
 
 # Scene launch and gesture foundations remain frozen.
 foreach ($Marker in @(
+    'FLMLogBuildString @"Stable build 0.9.49"',
+    'logger-ready build=%@ schema=25',
     'FLMFloatingLaunchTimeout = 6.5',
     'FLMFloatingSceneSettleDelay = 0.10',
     'FLMFloatingSceneGenerationDelay = 0.75',
@@ -77,6 +79,9 @@ foreach ($Marker in @(
 }
 
 foreach ($Removed in @(
+    'tap-deferred',
+    'floatingDockTap',
+    'handleFloatingDockTap',
     'applyFloatingKeyboardViewportAvoidance',
     'floatingKeyboardViewportApplied',
     'sb viewport committed',
@@ -190,6 +195,17 @@ Require-Text $Source 'dismissRequestGeneration'
 Require-Text $Source 'dismissAckGeneration'
 Require-Text $Source 'FLMKeyboardHitTestSlop'
 Require-Text $Source 'dock-transition-takeover'
+Require-Text $Source 'presentationPosition='
+Require-Text $Source 'presentationScale='
+Require-Text $Source 'dock-tap recognized'
+Require-Text $Source 'dock-restore begin'
+Require-Text $Source 'dock-restore complete transition=render-server'
+Require-Text $Source 'CAAnimationGroup'
+Require-Text $Source 'transform.scale'
+Require-Text $Source 'flyme.dock.restore.presentation'
+Require-Text $Source 'outer PresentationContainer'
+Require-Text $Source 'FlymeRouteChanged.'
+Require-Text $Source 'fanout=bundle'
 Require-Text $Source 'transitionTakeover=enabled'
 Require-Text $Source 'UIViewPropertyAnimator'
 Reject-Text $Source 'transitionTakeover=disabled'
@@ -207,6 +223,19 @@ Require-Text $Source 'sb close-intent begin'
 Require-Text $Source 'sb close-intent ignored=pending-close'
 Require-Text $Source 'route-publish once=1'
 Require-Text $Source 'dock-displaylink-config'
+Require-Text $Source 'prepareFloatingDockDisplayLink'
+Require-Text $Source 'setFloatingDockDisplayLinkActive'
+Require-Text $Source 'CAFrameRateRangeMake'
+Require-Text $Source 'preferredFrameRateRange'
+Require-Text $Source 'NSRunLoopCommonModes'
+Require-Text $Source 'runLoopMode=CommonModes'
+Require-Text $Source 'paused=1'
+Require-Text $Source 'screenMaxFPS='
+Require-Text $Source 'requestedMinFPS='
+Require-Text $Source 'requestedMaxFPS='
+Require-Text $Source 'requestedPreferredFPS='
+Require-Text $Source 'actualCallbackDelta:'
+Require-Text $Source 'targetDelta:'
 Require-Text $Source 'renderFrames'
 Require-Text $Source 'missedVsync'
 Require-Text $Source 'effectiveFPS'
