@@ -64,6 +64,13 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventInputSpacing = 23,
     FLMDiagnosticEventInputInsets = 24,
     FLMDiagnosticEventInputSampleCommit = 25,
+    FLMDiagnosticEventTransportRegister = 26,
+    FLMDiagnosticEventTransportReady = 27,
+    FLMDiagnosticEventTransportReceiveDismiss = 28,
+    FLMDiagnosticEventTransportReceiveRoute = 29,
+    FLMDiagnosticEventDismissClaim = 30,
+    FLMDiagnosticEventResponderActionBegin = 31,
+    FLMDiagnosticEventResponderActionComplete = 32,
 };
 
 static inline uint64_t FLMPackDiagnosticState(FLMDiagnosticRole role,

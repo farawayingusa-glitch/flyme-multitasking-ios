@@ -149,7 +149,7 @@ for marker in \
     "presentationContainerScale=" \
     "remoteContentScale=" \
     "session-fixed" \
-    "remote-host-unchanged=1" \
+    "remoteHostUnchanged=1" \
     "UIViewPropertyAnimator" \
     "floatingDockTransitionAnimator" \
     "route-kept=1" \
@@ -158,12 +158,18 @@ for marker in \
 done
 
 for marker in \
-    "FLMFloatingKeyboardDismissTimeout = 1.90;" \
+    "FLMFloatingKeyboardAppClaimTimeout = 0.70;" \
+    "FLMFloatingKeyboardSettlementTimeout = 1.50;" \
     "FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION" \
     "FLYME_KEYBOARD_DISMISS_ACK_NOTIFICATION" \
-    "FLMFloatingKeyboardCloseStateAwaitingAdapter" \
+    "FLMFloatingKeyboardCloseStateAwaitingAppClaim" \
     "FLMFloatingKeyboardCloseStateAwaitingKeyboardSettlement" \
-    "FLMFloatingKeyboardCloseStateFinalizing" \
+    "FLMFloatingKeyboardCloseStateCommit" \
+    "FLMFloatingKeyboardCloseStateAborted" \
+    "FLMKeyboardDismissAckPhaseClaimed" \
+    "floatingDockDisplayLinkCapped60" \
+    "FLMFloatingDockRendererModeDirectPan" \
+    "applyFloatingDockDirectPanPoint:" \
     "beginKeyboardCoordinatedCloseWithToken" \
     "handleApplicationDismissAck" \
     "handleKeyboardSettlementForCloseToken" \
@@ -258,9 +264,13 @@ for marker in \
     "FLMKeyboardTransportRetryDelays" \
     "FLMEnsureKeyboardObserversRegistered" \
     "FLMClaimKeyboardDismissGeneration" \
-    "keyboard-transport ready registered=%lu/7 pid=%d" \
-    "keyboard-transport retry-scheduled" \
-    "keyboard-transport failed registered=%lu/7" \
+    "FLMDiagnosticEventTransportRegister" \
+    "FLMDiagnosticEventTransportReady" \
+    "FLMDiagnosticEventTransportReceiveDismiss" \
+    "FLMDiagnosticEventTransportReceiveRoute" \
+    "FLMDiagnosticEventDismissClaim" \
+    "FLMDiagnosticEventResponderActionBegin" \
+    "FLMDiagnosticEventResponderActionComplete" \
     "route-applied" \
     "process-ready-once" \
     "application dismiss-request received count=1" \
@@ -290,6 +300,15 @@ for marker in \
         echo "missing native keyboard marker: $marker" >&2
         exit 1
     }
+done
+
+for marker in \
+    'NSLog(@"[FlymeKeyboard] keyboard-transport' \
+    'NSLog(@"[FlymeKeyboard] transport-recv'; do
+    if grep -Fq -- "$marker" "$keyboard_source"; then
+        echo "application transport diagnostic must use Remote Diagnostic Logger: $marker" >&2
+        exit 1
+    fi
 done
 
 for marker in \
@@ -381,4 +400,4 @@ reject_source "floatingKeyboardFrameFallback"
 reject_source "floatingDockDragSnapshot"
 reject_source "dock-control-takeover"
 reject_source "canTakeOverFloatingDockControlAtPoint:"
-echo "Stable build 0.9.51 wheel gesture, global keyboard transport, canonical Remote Scene presentation scale, outer Dock presentation animation, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.52 wheel gesture, global keyboard transport, causal keyboard dismissal, adaptive Dock presentation rendering, launch recovery, hidden dock, and card foundation verified"
