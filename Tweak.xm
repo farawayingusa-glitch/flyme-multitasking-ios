@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.53 (0.9.41 reset)"
+#define FLMLogBuildString @"Stable build 0.9.54 (0.9.41 reset)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1251,9 +1251,16 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL floatingDockHideReady;
 @property(nonatomic, assign) CGPoint floatingDockHideStartPoint;
 @property(nonatomic, assign) CGRect floatingDockHideInitialFrame;
+@property(nonatomic, assign) CGRect floatingDockHideInitialHandleFrame;
 @property(nonatomic, assign) CGPoint floatingHiddenBarDragStartPoint;
 @property(nonatomic, assign) CGRect floatingHiddenBarDragInitialFrame;
 @property(nonatomic, assign) BOOL floatingDockTransitionActive;
+@property(nonatomic, assign) BOOL floatingDockControlArmed;
+@property(nonatomic, assign) BOOL floatingDockEntrySettleActive;
+@property(nonatomic, assign) CGRect floatingDockEntryTargetFrame;
+@property(nonatomic, assign) CGRect floatingDockTouchCaptureFrame;
+@property(nonatomic, assign) NSUInteger floatingDockEntrySettleGeneration;
+@property(nonatomic, assign) BOOL floatingDockEntryControlTouchPending;
 @property(nonatomic, assign) CGFloat floatingDockWidth;
 @property(nonatomic, assign) CGFloat floatingDockVerticalCenter;
 @property(nonatomic, assign) CGPoint floatingDockDragStartPoint;
@@ -1387,6 +1394,9 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)cancelFloatingDockInputUpdates;
 - (void)applyFloatingDockInputPoint:(CGPoint)point;
 - (void)setFloatingDockRoutingSuppressed:(BOOL)suppressed;
+- (CGRect)floatingContainerPresentationFrame;
+- (CGFloat)floatingDockHiddenFractionForFrame:(CGRect)frame;
+- (void)finishFloatingDockEntryImmediatelyForControl;
 - (void)updateFloatingDockTouchGate;
 - (void)keyboardFrameWillChange:(NSNotification *)notification;
 - (void)keyboardDidHide:(NSNotification *)notification;
@@ -2608,23 +2618,42 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                !FLMDeviceIsLocked();
     }
     if (gestureRecognizer == self.floatingDockInputGesture) {
-        BOOL canBegin = (self.floatingDocked || self.floatingDockHidden) &&
+        BOOL entrySettleCanReceive =
+            self.floatingDockControlArmed &&
+            self.floatingDockEntrySettleActive;
+        BOOL entryControlTouch =
+            entrySettleCanReceive ||
+            self.floatingDockEntryControlTouchPending;
+        BOOL canBegin =
+            (self.floatingDocked || self.floatingDockHidden ||
+             entryControlTouch) &&
                         !self.floatingWindow.hidden &&
-                        !self.floatingDockTransitionActive &&
+                        (!self.floatingDockTransitionActive ||
+                         entryControlTouch) &&
                         !FLMDeviceIsLocked();
         if (canBegin) {
             CGPoint point =
                 FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]);
-            canBegin = self.floatingDockHidden
-                           ? (CGRectContainsPoint(self.floatingHandle.frame, point) ||
-                              CGRectContainsPoint(CGRectInset(self.floatingHandle.frame,
-                                                             -18.0,
-                                                             -18.0),
-                                                    point))
-                           : ([self floatingResizeControlContainsPoint:point] ||
-                              CGRectContainsPoint(self.floatingContainer.frame, point));
+            if (self.floatingDockHidden) {
+                canBegin =
+                    CGRectContainsPoint(self.floatingHandle.frame, point) ||
+                    CGRectContainsPoint(CGRectInset(self.floatingHandle.frame,
+                                                    -18.0,
+                                                    -18.0),
+                                        point);
+            } else if (entryControlTouch) {
+                canBegin = CGRectContainsPoint(
+                    CGRectInset([self floatingContainerPresentationFrame],
+                                -6.0,
+                                -6.0),
+                    point);
+            } else {
+                canBegin =
+                    [self floatingResizeControlContainsPoint:point] ||
+                    CGRectContainsPoint(self.floatingContainer.frame, point);
+            }
         }
-        if (!canBegin) {
+        if (!canBegin && !self.floatingDockTransitionActive) {
             [self setFloatingDockRoutingSuppressed:NO];
         }
         return canBegin;
@@ -2710,9 +2739,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return YES;
     }
     if (gestureRecognizer == self.floatingDockInputGesture) {
-        if ((!self.floatingDocked && !self.floatingDockHidden) ||
+        BOOL entrySettleCanReceive =
+            self.floatingDockControlArmed &&
+            self.floatingDockEntrySettleActive;
+        self.floatingDockEntryControlTouchPending = NO;
+        if ((!self.floatingDocked && !self.floatingDockHidden &&
+             !entrySettleCanReceive) ||
             self.floatingWindow.hidden ||
-            self.floatingDockTransitionActive ||
+            (self.floatingDockTransitionActive &&
+             !entrySettleCanReceive) ||
             FLMDeviceIsLocked()) {
             return NO;
         }
@@ -2730,17 +2765,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                                        -18.0,
                                                        -18.0),
                                            point);
+        } else if (entrySettleCanReceive) {
+            accepted = CGRectContainsPoint(
+                CGRectInset([self floatingContainerPresentationFrame],
+                            -6.0,
+                            -6.0),
+                point);
         } else {
             accepted = [self floatingResizeControlContainsPoint:point] ||
                        CGRectContainsPoint(self.floatingContainer.frame, point);
         }
         accepted = accepted && !staleStream;
+        if (accepted && entrySettleCanReceive) {
+            self.floatingDockEntryControlTouchPending = YES;
+        }
         FLMEnqueueDiagnosticLine(
-            @"sb dock-input-delegate accepted=%d docked=%d hidden=%d transition=%d blocked=%d stale=%d timestamp=%.6f point={%.1f,%.1f} view=%@ card=%@",
+            @"sb dock-input-delegate accepted=%d docked=%d hidden=%d transition=%d entry=%d armed=%d blocked=%d stale=%d timestamp=%.6f point={%.1f,%.1f} view=%@ card=%@",
             accepted,
             self.floatingDocked,
             self.floatingDockHidden,
             self.floatingDockTransitionActive,
+            self.floatingDockEntrySettleActive,
+            self.floatingDockControlArmed,
             self.floatingDockInputBlockedUntilNextTouch,
             staleStream,
             touch.timestamp,
@@ -2759,7 +2805,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             // arbitration window where a drag through a lower corner can be
             // handed to the wheel for one compositor frame.
             [self setFloatingDockRoutingSuppressed:YES];
-            if (self.floatingDocked && !self.floatingDockHidden) {
+            if ((self.floatingDocked || entrySettleCanReceive) &&
+                !self.floatingDockHidden) {
                 // Reassert the shield at touch-begin.  The dock can finish its
                 // settle animation between two recognizer callbacks; without
                 // this refresh a newly accepted drag can briefly target the
@@ -3447,6 +3494,92 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     floatingWindow.suppressesCornerRoutingDuringDockGesture = suppressed;
 }
 
+- (CGRect)floatingContainerPresentationFrame {
+    CGRect frame = self.floatingContainer.frame;
+    CALayer *presentationLayer =
+        (CALayer *)self.floatingContainer.layer.presentationLayer;
+    if (!presentationLayer) {
+        return frame;
+    }
+    CGRect candidate = presentationLayer.frame;
+    BOOL finite = isfinite(CGRectGetMinX(candidate)) &&
+                  isfinite(CGRectGetMinY(candidate)) &&
+                  isfinite(CGRectGetWidth(candidate)) &&
+                  isfinite(CGRectGetHeight(candidate));
+    if (finite && !CGRectIsNull(candidate) && !CGRectIsEmpty(candidate) &&
+        CGRectGetWidth(candidate) > 1.0 && CGRectGetHeight(candidate) > 1.0) {
+        frame = candidate;
+    }
+    return frame;
+}
+
+- (CGFloat)floatingDockHiddenFractionForFrame:(CGRect)frame {
+    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGFloat width = MAX(1.0, CGRectGetWidth(frame));
+    CGFloat hiddenAmount =
+        self.floatingDockedOnRight
+            ? MAX(0.0, CGRectGetMaxX(frame) - CGRectGetMaxX(bounds))
+            : MAX(0.0, CGRectGetMinX(bounds) - CGRectGetMinX(frame));
+    return MIN(1.0, MAX(0.0, hiddenAmount / width));
+}
+
+- (void)finishFloatingDockEntryImmediatelyForControl {
+    if (!self.floatingDockEntrySettleActive ||
+        self.floatingWindow.hidden || self.floatingIdentifier.length == 0) {
+        return;
+    }
+
+    // A new touch arrived while the entry spring was still running. Finish
+    // that spring in this main-thread turn, then let the same touch enter the
+    // normal dock classifier. This prevents the remote Scene from seeing the
+    // touch and keeps tap/drag/outward-hide semantics available immediately.
+    self.floatingDockEntrySettleGeneration += 1;
+    self.floatingDockEntrySettleActive = NO;
+    [self.floatingContainer.layer removeAllAnimations];
+    [self.floatingDimView.layer removeAllAnimations];
+    [self.floatingHandle.layer removeAllAnimations];
+    [self.floatingHandleBar.layer removeAllAnimations];
+
+    CGRect target = self.floatingDockEntryTargetFrame;
+    if (CGRectIsNull(target) || CGRectIsEmpty(target)) {
+        target = [self dockedFloatingFrameOnRight:self.floatingDockedOnRight
+                                             width:self.floatingDockWidth];
+    }
+    [UIView performWithoutAnimation:^{
+        self.floatingContainer.transform = CGAffineTransformIdentity;
+        self.floatingContainer.frame = target;
+        self.floatingContainer.layer.cornerRadius =
+            22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
+        self.floatingDockShadowView.transform = CGAffineTransformIdentity;
+        self.floatingDockShadowView.frame = target;
+        self.floatingDockShadowView.layer.cornerRadius =
+            22.0 * self.floatingDockWidth / FLMCenteredCardWidth;
+        self.floatingDocked = YES;
+        self.floatingDockHidden = NO;
+        self.floatingDimView.alpha = 0.0;
+        self.floatingHandleBar.alpha = 1.0;
+        self.floatingHandleBar.transform = CGAffineTransformIdentity;
+        [self layoutFloatingHostView];
+    }];
+    self.floatingDockTransitionActive = NO;
+    self.floatingDockControlArmed = NO;
+    self.floatingDockEntryTargetFrame = CGRectNull;
+    self.floatingDockTouchCaptureFrame = CGRectNull;
+    self.lastObservedFrontmostIdentifier =
+        FLMFrontmostApplicationIdentifier();
+    self.floatingExternalActivationArmed =
+        ![self.lastObservedFrontmostIdentifier
+            isEqualToString:self.floatingIdentifier];
+    [self configureFloatingInteractionForDockedState];
+    if (self.floatingKeyboardSessionGeneration != 0) {
+        [self endFloatingKeyboardSession];
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb dock-entry-control-handoff generation=%lu frame=%@",
+        (unsigned long)self.floatingDockEntrySettleGeneration,
+        NSStringFromCGRect(target));
+}
+
 - (void)updateFloatingDockTouchGate {
     FLMDockTouchGateWindow *gate = self.floatingDockTouchGateWindow;
     if (!gate || !self.floatingWindow) {
@@ -3466,7 +3599,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     BOOL active = !self.floatingWindow.hidden &&
                   (self.floatingDocked || self.floatingDockHidden ||
-                   self.floatingDockTransitionActive);
+                   self.floatingDockTransitionActive ||
+                   self.floatingDockControlArmed);
     gate.dockTouchGateEnabled = active;
     if (!active) {
         gate.dockCardFrame = CGRectNull;
@@ -3477,9 +3611,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    gate.dockCardFrame = self.floatingDockHidden
-                             ? CGRectNull
-                             : self.floatingContainer.frame;
+    CGRect cardFrame = self.floatingContainer.frame;
+    if (self.floatingDockTransitionActive &&
+        !CGRectIsNull(self.floatingDockTouchCaptureFrame) &&
+        !CGRectIsEmpty(self.floatingDockTouchCaptureFrame)) {
+        // The gate is intentionally static during the compositor spring. A
+        // union of the source and target frames owns the whole swept path
+        // without rebuilding a window's hit-test geometry at 120 Hz.
+        cardFrame = self.floatingDockTouchCaptureFrame;
+    }
+    gate.dockCardFrame = self.floatingDockHidden ? CGRectNull : cardFrame;
     gate.dockHandleFrame = !self.floatingHandle.hidden
                                ? self.floatingHandle.frame
                                : CGRectNull;
@@ -3694,6 +3835,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDimView.alpha = 0.0;
         self.floatingResizeHandle.hidden = YES;
         self.floatingHandle.alpha = 1.0;
+        self.floatingHandleBar.alpha = 1.0;
         [self layoutFloatingHandleForCurrentContainer];
     };
     void (^completion)(BOOL) = ^(__unused BOOL finished) {
@@ -3787,6 +3929,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 FLMCenteredCardWidth;
         self.floatingHandle.frame = handleLanding;
                              self.floatingHandle.alpha = 1.0;
+                             self.floatingHandleBar.alpha = 1.0;
                              self.floatingDimView.alpha = 0.0;
                          }
                           completion:^(__unused BOOL finished) {
@@ -3823,6 +3966,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDimView.alpha = 0.0;
         self.floatingResizeHandle.hidden = YES;
         self.floatingHandle.alpha = 0.0;
+        self.floatingHandleBar.alpha = 1.0;
         [self layoutFloatingHandleForCurrentContainer];
     }];
     [CATransaction commit];
@@ -3885,16 +4029,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                    CGRectGetMinY(hiddenFrame) + 24.0,
                    handleWidth,
                    handleHeight);
-    CGRect handleOrigin = self.floatingHandle.frame;
+    CGRect handleOrigin = self.floatingDockHideInitialHandleFrame;
     if (CGRectIsEmpty(handleOrigin)) {
         handleOrigin = handleLanding;
     }
+    CGFloat hiddenFraction =
+        [self floatingDockHiddenFractionForFrame:visual];
     [UIView performWithoutAnimation:^{
         self.floatingContainer.transform = CGAffineTransformIdentity;
         self.floatingContainer.frame = visual;
         self.floatingDockShadowView.alpha = 0.0;
         self.floatingHandle.hidden = NO;
-        self.floatingHandle.alpha = revealing ? 1.0 - progress : progress;
+        self.floatingHandle.alpha = 1.0;
+        // Opacity is derived from the card's actual off-screen fraction, not
+        // from gesture distance. This remains continuous when card-drag hands
+        // off to hidden-reveal and mirrors perfectly on the left edge.
+        self.floatingHandleBar.alpha = hiddenFraction;
         // Keep the bar in its vertical hidden form while the handle tracks
         // the drag; only the handle container moves, never the bar shape.
         self.floatingHandleBar.frame =
@@ -3937,6 +4087,14 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputLatestPoint = point;
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        BOOL entryControlTouch =
+            self.floatingDockEntryControlTouchPending ||
+            (self.floatingDockControlArmed &&
+             self.floatingDockEntrySettleActive);
+        if (self.floatingDockEntrySettleActive) {
+            [self finishFloatingDockEntryImmediatelyForControl];
+        }
+        self.floatingDockEntryControlTouchPending = NO;
         [self cancelFloatingDockInputUpdates];
         self.floatingDockInputGeneration += 1;
         self.floatingDockInputMode = FLMFloatingDockInputModeNone;
@@ -3946,15 +4104,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockHideReady = NO;
         self.floatingDockHideStartPoint = point;
         self.floatingDockHideInitialFrame = self.floatingContainer.frame;
+        self.floatingDockHideInitialHandleFrame = self.floatingHandle.frame;
         self.floatingDockGlobalDragActivated = NO;
-        BOOL pointIsOwned = self.floatingDockHidden
+        BOOL pointIsOwned = entryControlTouch ||
+                            (self.floatingDockHidden
                                 ? (CGRectContainsPoint(self.floatingHandle.frame, point) ||
                                    CGRectContainsPoint(CGRectInset(self.floatingHandle.frame,
                                                                   -18.0,
                                                                   -18.0),
                                                         point))
                                 : ([self floatingResizeControlContainsPoint:point] ||
-                                   CGRectContainsPoint(self.floatingContainer.frame, point));
+                                   CGRectContainsPoint(self.floatingContainer.frame, point)));
         BOOL staleStream =
             self.floatingDockInputBlockedUntilNextTouch &&
             self.floatingDockInputBlockCutoffTimestamp > 0.0 &&
@@ -4002,7 +4162,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockInputMode =
             self.floatingDockHidden
                 ? FLMFloatingDockInputModeHiddenReveal
-                : ([self floatingResizeControlContainsPoint:point]
+                : (!entryControlTouch &&
+                           [self floatingResizeControlContainsPoint:point]
                        ? FLMFloatingDockInputModeResize
                        : FLMFloatingDockInputModeCardDrag);
         self.floatingDockInputTargetsResize =
@@ -4020,6 +4181,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingDockHideGestureActive = YES;
             self.floatingDockHideStartPoint = point;
             self.floatingDockHideInitialFrame = self.floatingContainer.frame;
+            self.floatingDockHideInitialHandleFrame = self.floatingHandle.frame;
             return;
         }
         if (self.floatingDockInputMode == FLMFloatingDockInputModeResize) {
@@ -4112,6 +4274,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 // to the touch-down frame.
                 self.floatingDockHideStartPoint = point;
                 self.floatingDockHideInitialFrame = self.floatingContainer.frame;
+                self.floatingDockHideInitialHandleFrame =
+                    self.floatingHandle.frame;
                 self.floatingDockInputMode =
                     FLMFloatingDockInputModeHiddenReveal;
                 self.floatingDockHideGestureActive = YES;
@@ -4406,6 +4570,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
     if (!blocked &&
         (self.floatingDocked || self.floatingDockHidden ||
+         self.floatingDockControlArmed ||
          self.floatingDockContentTailProtected)) {
         blocked = YES;
     }
@@ -4611,6 +4776,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingHandleInitialContainerFrame = self.floatingContainer.frame;
         self.floatingHandleMoved = NO;
         self.floatingDockTransitionActive = NO;
+        self.floatingDockControlArmed = NO;
+        self.floatingDockEntrySettleActive = NO;
+        self.floatingDockEntrySettleGeneration += 1;
+        self.floatingDockEntryTargetFrame = CGRectNull;
+        self.floatingDockTouchCaptureFrame = CGRectNull;
+        self.floatingDockEntryControlTouchPending = NO;
         self.floatingDockFeedbackSent = NO;
         self.floatingInteractiveScenePrepared = NO;
         self.floatingHandleBar.alpha = 1.0;
@@ -4666,6 +4837,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingDockShadowView.hidden = YES;
             self.floatingDockShadowView.alpha = 0.0;
             self.floatingHandle.alpha = 1.0;
+            self.floatingHandleBar.alpha = 1.0 - triggerProgress;
             [self layoutFloatingHandleForCurrentContainer];
             if (!self.floatingDockReady && triggerProgress >= 1.0) {
                 if (@available(iOS 10.0, *)) {
@@ -4678,11 +4850,49 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     }
                 }
                 self.floatingDockReady = YES;
+                self.floatingDockControlArmed = YES;
+                self.floatingDockInputGesture.enabled = YES;
+                self.floatingDockEntryTargetFrame = dockTarget;
+                CGRect presentationFrame =
+                    [self floatingContainerPresentationFrame];
+                self.floatingDockTouchCaptureFrame =
+                    CGRectUnion(presentationFrame, dockTarget);
+                [self setFloatingApplicationInputBlocked:YES];
+                [self setFloatingDockRoutingSuppressed:YES];
+                [self updateFloatingDockTouchGate];
+                FLMEnqueueDiagnosticLine(
+                    @"sb dock-control-armed trigger=%.3f visual=%.3f source=%@ target=%@",
+                    triggerProgress,
+                    visualProgress,
+                    NSStringFromCGRect(presentationFrame),
+                    NSStringFromCGRect(dockTarget));
             } else if (self.floatingDockReady && triggerProgress < 0.90) {
                 self.floatingDockReady = NO;
             }
         } else if (primaryMovement >= 3.0) {
             self.floatingDockReady = NO;
+            if (self.floatingDockControlArmed) {
+                // Crossing the dock threshold commits this touch stream to
+                // dock control. A reversal may cancel back to centered, but
+                // it must not reopen the remote Scene's input route or turn
+                // into the unrelated centered-to-fullscreen gesture.
+                [self setFloatingApplicationInputBlocked:YES];
+                self.floatingHandleMoved = YES;
+                self.floatingDockTransitionActive = YES;
+                self.floatingDockShadowView.alpha = 0.0;
+                self.floatingDockShadowView.hidden = YES;
+                [UIView performWithoutAnimation:^{
+                    self.floatingContainer.transform = CGAffineTransformIdentity;
+                    self.floatingContainer.frame =
+                        self.floatingHandleInitialContainerFrame;
+                    self.floatingDimView.alpha = 1.0;
+                    self.floatingHandle.alpha = 1.0;
+                    self.floatingHandleBar.alpha = 1.0;
+                    [self layoutFloatingHostView];
+                    [self layoutFloatingHandleForCurrentContainer];
+                }];
+                return;
+            }
             [self setFloatingApplicationInputBlocked:NO];
             self.floatingHandleMoved = YES;
             self.floatingDockTransitionActive = NO;
@@ -4727,6 +4937,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingDockShadowView.alpha = 0.0;
             self.floatingDockShadowView.hidden = YES;
             self.floatingHandle.alpha = 1.0;
+            self.floatingHandleBar.alpha = 1.0;
             [self layoutFloatingHostView];
             [self layoutFloatingHandleForCurrentContainer];
         }
@@ -4761,7 +4972,20 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingDockReady = NO;
     [self restoreFloatingSceneAfterCancelledTransition];
-    [self setFloatingApplicationInputBlocked:NO];
+    BOOL releaseDockControlAfterReset = self.floatingDockControlArmed;
+    self.floatingDockEntrySettleActive = NO;
+    self.floatingDockEntrySettleGeneration += 1;
+    self.floatingDockEntryControlTouchPending = NO;
+    self.floatingDockInputGesture.enabled =
+        self.floatingDocked || self.floatingDockHidden;
+    if (!releaseDockControlAfterReset) {
+        self.floatingDockControlArmed = NO;
+        self.floatingDockEntryTargetFrame = CGRectNull;
+        self.floatingDockTouchCaptureFrame = CGRectNull;
+        [self setFloatingApplicationInputBlocked:NO];
+    } else {
+        [self setFloatingApplicationInputBlocked:YES];
+    }
     [self normalizeFloatingContainerTransform];
     void (^changes)(void) = ^{
         self.floatingContainer.alpha = 1.0;
@@ -4776,6 +5000,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!animated) {
         changes();
         self.floatingDockTransitionActive = NO;
+        self.floatingDockControlArmed = NO;
+        self.floatingDockEntryTargetFrame = CGRectNull;
+        self.floatingDockTouchCaptureFrame = CGRectNull;
+        [self configureFloatingInteractionForDockedState];
+        [self setFloatingDockRoutingSuppressed:NO];
         if (!self.floatingDocked) {
             self.floatingDockShadowView.hidden = YES;
         }
@@ -4791,6 +5020,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                      completion:^(BOOL finished) {
                          (void)finished;
                          self.floatingDockTransitionActive = NO;
+                         self.floatingDockControlArmed = NO;
+                         self.floatingDockEntryTargetFrame = CGRectNull;
+                         self.floatingDockTouchCaptureFrame = CGRectNull;
+                         [self configureFloatingInteractionForDockedState];
+                         [self setFloatingDockRoutingSuppressed:NO];
                          if (!self.floatingDocked) {
                              self.floatingDockShadowView.hidden = YES;
                          }
@@ -5314,14 +5548,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.alpha = 1.0;
     BOOL contentTailProtected =
         self.floatingDockContentTailProtected && !docked && !hidden;
+    BOOL contentControlProtected =
+        self.floatingDockControlArmed && !docked && !hidden;
+    BOOL contentProtected =
+        contentTailProtected || contentControlProtected;
     self.floatingHostView.userInteractionEnabled =
-        !docked && !hidden && !contentTailProtected;
+        !docked && !hidden && !contentProtected;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden =
-        (!docked || hidden) && !contentTailProtected;
+        (!docked || hidden) && !contentProtected;
     self.floatingDockInteractionShield.userInteractionEnabled =
-        (docked && !hidden) || contentTailProtected;
-    if ((docked && !hidden) || contentTailProtected) {
+        (docked && !hidden) || contentProtected;
+    if ((docked && !hidden) || contentProtected) {
         [self.floatingContainer
             bringSubviewToFront:self.floatingDockInteractionShield];
     }
@@ -5336,6 +5574,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingResizeHandle.hidden = YES;
         self.floatingDimView.alpha = 0.0;
         self.floatingHandle.alpha = 1.0;
+        self.floatingHandleBar.alpha = 1.0;
         self.floatingDockShadowView.alpha = 0.0;
         self.floatingDockShadowView.hidden = YES;
         [self layoutFloatingHandleForCurrentContainer];
@@ -5347,6 +5586,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self layoutFloatingResizeHandle];
         self.floatingDimView.alpha = 0.0;
         self.floatingHandle.alpha = 0.0;
+        self.floatingHandleBar.alpha = 1.0;
         self.floatingDockShadowView.alpha = 0.0;
         [self layoutFloatingDockShadow];
         if (self.previousKeyWindow &&
@@ -5356,6 +5596,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     } else {
         self.floatingResizeHandle.hidden = YES;
         self.floatingHandle.alpha = 1.0;
+        self.floatingHandleBar.alpha = 1.0;
         self.floatingDockShadowView.alpha = 0.0;
         self.floatingDockShadowView.hidden = YES;
         [self.floatingWindow makeKeyWindow];
@@ -5370,6 +5611,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // never received touches.  Keep this reset independent of Scene startup.
     self.floatingHandle.hidden = NO;
     self.floatingHandle.alpha = 1.0;
+    self.floatingHandleBar.alpha = 1.0;
     self.floatingHandle.userInteractionEnabled = YES;
     self.floatingHandlePress.enabled = YES;
     self.floatingHandleTap.enabled = YES;
@@ -5382,6 +5624,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingDockContentTailProtected = NO;
     self.floatingDockContentProtectionGeneration += 1;
+    self.floatingDockControlArmed = YES;
+    self.floatingDockEntryControlTouchPending = NO;
     // Invalidate any global dock recognizer that may still be observing the
     // centered handle's original touch.  The dock becomes eligible only for a
     // later touch, never for the tail of the docking swipe itself.
@@ -5417,13 +5661,21 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self endFloatingKeyboardSession];
     }
     self.floatingDockTransitionActive = YES;
+    self.floatingDockEntrySettleActive = YES;
+    NSUInteger entrySettleGeneration =
+        ++self.floatingDockEntrySettleGeneration;
     self.floatingDockHidden = NO;
-    [self updateFloatingDockTouchGate];
     self.floatingDockHideGestureActive = NO;
+    self.floatingDockHideInitialHandleFrame = CGRectNull;
     self.floatingDockedOnRight = YES;
     self.floatingDockWidth = [self effectiveDockedPresentationWidth];
     CGRect target =
         [self dockedFloatingFrameOnRight:YES width:self.floatingDockWidth];
+    CGRect source = [self floatingContainerPresentationFrame];
+    self.floatingDockEntryTargetFrame = target;
+    self.floatingDockTouchCaptureFrame = CGRectUnion(source, target);
+    self.floatingDockInputGesture.enabled = YES;
+    [self updateFloatingDockTouchGate];
     self.floatingDockVerticalCenter = CGRectGetMidY(target);
     CGFloat targetScale =
         CGRectGetWidth(target) /
@@ -5453,9 +5705,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                           self.floatingHandle.alpha = 0.0;
                       }
                       completion:^(__unused BOOL finished) {
+                          if (entrySettleGeneration !=
+                                  self.floatingDockEntrySettleGeneration ||
+                              !self.floatingDockEntrySettleActive) {
+                              return;
+                          }
                           if (self.floatingWindow.hidden ||
                               self.floatingCloseInProgress ||
                               self.floatingIdentifier.length == 0) {
+                              self.floatingDockEntrySettleActive = NO;
+                              self.floatingDockControlArmed = NO;
+                              self.floatingDockEntryTargetFrame = CGRectNull;
+                              self.floatingDockTouchCaptureFrame = CGRectNull;
                               self.floatingDockTransitionActive = NO;
                               [self updateFloatingDockTouchGate];
                               if (deferKeyboardTeardown) {
@@ -5482,6 +5743,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                self.floatingDocked = YES;
                                [self layoutFloatingHostView];
                           }];
+                          self.floatingDockEntrySettleActive = NO;
+                          self.floatingDockControlArmed = NO;
+                          self.floatingDockEntryTargetFrame = CGRectNull;
+                          self.floatingDockTouchCaptureFrame = CGRectNull;
                           self.floatingDockTransitionActive = NO;
                           self.floatingDockHidden = NO;
                           self.lastObservedFrontmostIdentifier =
@@ -5507,6 +5772,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     self.floatingDockContentTailProtected = NO;
     self.floatingDockContentProtectionGeneration += 1;
+    self.floatingDockEntrySettleActive = NO;
+    self.floatingDockEntrySettleGeneration += 1;
+    self.floatingDockEntryControlTouchPending = NO;
+    self.floatingDockControlArmed = NO;
+    self.floatingDockEntryTargetFrame = CGRectNull;
+    self.floatingDockTouchCaptureFrame = CGRectNull;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     [self cancelFloatingDockInputUpdates];
@@ -5573,6 +5844,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          self.floatingDockShadowView.alpha = 0.0;
                          self.floatingDockShadowView.frame = target;
                          self.floatingHandle.alpha = 1.0;
+                         self.floatingHandleBar.alpha = 1.0;
                          [self layoutFloatingHostView];
                          [self layoutFloatingHandleForCurrentContainer];
                      }
@@ -5724,6 +5996,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 !self.floatingDocked &&
                 !self.floatingDockHidden &&
                 !self.floatingDockTransitionActive &&
+                !self.floatingDockControlArmed &&
                 !self.floatingDockContentTailProtected &&
                 !self.floatingOpenTargetDocked;
             [self setFloatingApplicationInputBlocked:!contentCanInteract];
@@ -7322,11 +7595,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDocked = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
+    self.floatingDockHideInitialHandleFrame = CGRectNull;
     self.floatingDockedOnRight = YES;
     self.floatingExternalActivationArmed = NO;
     self.floatingFullscreenActivationArmed = NO;
     self.lastObservedFrontmostIdentifier = nil;
     self.floatingDockTransitionActive = NO;
+    self.floatingDockControlArmed = NO;
+    self.floatingDockEntrySettleActive = NO;
+    self.floatingDockEntrySettleGeneration += 1;
+    self.floatingDockEntryTargetFrame = CGRectNull;
+    self.floatingDockTouchCaptureFrame = CGRectNull;
+    self.floatingDockEntryControlTouchPending = NO;
     self.floatingDockInputSessionActive = NO;
     self.floatingDockInputMode = FLMFloatingDockInputModeNone;
     self.floatingDockInputTargetsResize = NO;
@@ -7854,9 +8134,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardInteractionSessionActive = NO;
     self.floatingInteractiveScenePrepared = NO;
     self.floatingInteractiveFullscreenTransition = NO;
+    self.floatingDockControlArmed = NO;
+    self.floatingDockEntrySettleActive = NO;
+    self.floatingDockEntrySettleGeneration += 1;
+    self.floatingDockEntryTargetFrame = CGRectNull;
+    self.floatingDockTouchCaptureFrame = CGRectNull;
+    self.floatingDockEntryControlTouchPending = NO;
     self.floatingDocked = NO;
     self.floatingDockHidden = NO;
     self.floatingDockHideGestureActive = NO;
+    self.floatingDockHideInitialHandleFrame = CGRectNull;
     self.floatingDockTransitionActive = NO;
     self.floatingDockInputSessionActive = NO;
     self.floatingDockInputMode = FLMFloatingDockInputModeNone;

@@ -98,6 +98,11 @@ for marker in \
     "finishFloatingDockHiddenGesture" \
     "displayLink.preferredFrameRateRange" \
     "maximumFramesPerSecond" \
+    "floatingDockControlArmed" \
+    "dock-control-armed" \
+    "dock-entry-control-handoff" \
+    "floatingDockHiddenFractionForFrame" \
+    "self.floatingHandleBar.alpha = hiddenFraction;" \
     "triggerProgress" \
     "floatingDockFeedbackSent" \
     "updateFloatingFullscreenSnapshotForProgress" \
@@ -234,4 +239,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.53 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.54 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, immediate Dock input ownership, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
