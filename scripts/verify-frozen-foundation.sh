@@ -99,6 +99,10 @@ for marker in \
     "displayLink.preferredFrameRateRange" \
     "maximumFramesPerSecond" \
     "floatingDockControlArmed" \
+    "blocksFloatingContentInput" \
+    "floatingContentInputShieldView" \
+    "card-control-block" \
+    "BOOL prewarmForFloatingSession" \
     "dock-control-armed" \
     "dock-entry-control-handoff" \
     "floatingDockHiddenFractionForFrame" \
@@ -239,4 +243,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.54 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, immediate Dock input ownership, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.55 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, first-touch Dock input ownership, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"

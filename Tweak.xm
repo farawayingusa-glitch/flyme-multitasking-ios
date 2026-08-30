@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.54 (0.9.41 reset)"
+#define FLMLogBuildString @"Stable build 0.9.55 (0.9.41 reset)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -642,8 +642,10 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @interface FLMFloatingWindow : FLMOverlayWindow
 @property(nonatomic, assign) BOOL passesTouchesOutsideFloatingContent;
 @property(nonatomic, assign) BOOL suppressesCornerRoutingDuringDockGesture;
+@property(nonatomic, assign) BOOL blocksFloatingContentInput;
 @property(nonatomic, assign) CGRect keyboardPassThroughFrame;
 @property(nonatomic, weak) UIView *floatingContentView;
+@property(nonatomic, weak) UIView *floatingContentInputShieldView;
 @property(nonatomic, weak) UIView *floatingPrimaryControlView;
 @property(nonatomic, weak) UIView *floatingSecondaryControlView;
 @end
@@ -684,6 +686,40 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
         if (primaryHit) {
             FLMLogFloatingHitTest(self, point, event, primaryHit, @"handle");
             return primaryHit;
+        }
+    }
+    if (self.blocksFloatingContentInput && self.floatingContentView) {
+        // The display-level dock gate normally owns this point. Keep the same
+        // ownership rule in the already-visible floating window as well: when
+        // dock control is armed, a newly inserted/activated sibling UIWindow
+        // must not be the only thing standing between the next touch and the
+        // remote application's host view.
+        CGRect blockedFrame = self.floatingContentView.frame;
+        CALayer *presentationLayer =
+            (CALayer *)self.floatingContentView.layer.presentationLayer;
+        if (presentationLayer) {
+            CGRect candidate = presentationLayer.frame;
+            BOOL finite = isfinite(CGRectGetMinX(candidate)) &&
+                          isfinite(CGRectGetMinY(candidate)) &&
+                          isfinite(CGRectGetWidth(candidate)) &&
+                          isfinite(CGRectGetHeight(candidate));
+            if (finite && !CGRectIsNull(candidate) &&
+                !CGRectIsEmpty(candidate) &&
+                CGRectGetWidth(candidate) > 1.0 &&
+                CGRectGetHeight(candidate) > 1.0) {
+                blockedFrame = candidate;
+            }
+        }
+        if (CGRectContainsPoint(CGRectInset(blockedFrame, -6.0, -6.0),
+                                point)) {
+            UIView *shield = self.floatingContentInputShieldView;
+            UIView *owner = shield && !shield.hidden &&
+                                    shield.userInteractionEnabled
+                                ? shield
+                                : self.rootViewController.view;
+            FLMLogFloatingHitTest(self, point, event, owner,
+                                  @"card-control-block");
+            return owner;
         }
     }
     if (self.suppressesCornerRoutingDuringDockGesture) {
@@ -2440,6 +2476,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     floatingWindow.floatingContentView = self.floatingContainer;
+    floatingWindow.floatingContentInputShieldView =
+        self.floatingDockInteractionShield;
     floatingWindow.floatingPrimaryControlView = self.floatingHandle;
     floatingWindow.floatingSecondaryControlView = self.floatingResizeHandle;
     [self layoutFloatingWindow];
@@ -3606,8 +3644,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         gate.dockCardFrame = CGRectNull;
         gate.dockHandleFrame = CGRectNull;
         gate.dockResizeFrame = CGRectNull;
-        gate.userInteractionEnabled = NO;
-        gate.hidden = YES;
+        // Keep the transparent gate window in the display stack for the whole
+        // floating-card session. Its disabled hit-test remains fully
+        // pass-through in centered mode, while crossing the dock threshold now
+        // changes only an in-process flag instead of inserting a UIWindow and
+        // waiting for a later display-server commit. This makes the very first
+        // post-threshold touch eligible for dock control.
+        BOOL prewarmForFloatingSession = !self.floatingWindow.hidden;
+        gate.userInteractionEnabled = prewarmForFloatingSession;
+        gate.hidden = !prewarmForFloatingSession;
         return;
     }
 
@@ -4574,6 +4619,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
          self.floatingDockContentTailProtected)) {
         blocked = YES;
     }
+    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput =
+        blocked;
     self.floatingHostView.userInteractionEnabled = !blocked;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden = !blocked;
@@ -5552,14 +5599,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockControlArmed && !docked && !hidden;
     BOOL contentProtected =
         contentTailProtected || contentControlProtected;
+    BOOL shieldOwnsCard = (docked && !hidden) || contentProtected;
+    floatingWindow.blocksFloatingContentInput = shieldOwnsCard;
     self.floatingHostView.userInteractionEnabled =
         !docked && !hidden && !contentProtected;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden =
         (!docked || hidden) && !contentProtected;
     self.floatingDockInteractionShield.userInteractionEnabled =
-        (docked && !hidden) || contentProtected;
-    if ((docked && !hidden) || contentProtected) {
+        shieldOwnsCard;
+    if (shieldOwnsCard) {
         [self.floatingContainer
             bringSubviewToFront:self.floatingDockInteractionShield];
     }
@@ -7634,6 +7683,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.transform = CGAffineTransformIdentity;
     self.floatingDockInteractionShield.hidden = YES;
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
+    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput = NO;
     [self restoreFloatingHandleInteraction];
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingInteractiveScenePrepared = NO;
@@ -7703,6 +7753,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     [self.floatingWindow makeKeyAndVisible];
+    // The dock gate is deliberately visible-but-pass-through while centered,
+    // so it is already committed before a later up-swipe arms dock control.
+    [self updateFloatingDockTouchGate];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self layoutFloatingWindow];
     });
@@ -8170,6 +8223,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.transform = CGAffineTransformIdentity;
     self.floatingDockInteractionShield.hidden = YES;
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
+    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput = NO;
     self.floatingHandle.hidden = NO;
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;

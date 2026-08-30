@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - Stable build 0.9.54
-Description: Stable build 0.9.54 on the 0.9.41 portrait baseline, with immediate Dock input ownership and progress-linked handle animation.
+Name: Flyme Multitasking - Stable build 0.9.55
+Description: Stable build 0.9.55 on the 0.9.41 portrait baseline, with first-touch Dock input ownership and progress-linked handle animation.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.54
+Version: 0.9.55
