@@ -99,10 +99,13 @@ for marker in \
     "displayLink.preferredFrameRateRange" \
     "maximumFramesPerSecond" \
     "floatingDockControlArmed" \
-    "blocksFloatingContentInput" \
-    "floatingContentInputShieldView" \
-    "card-control-block" \
-    "BOOL prewarmForFloatingSession" \
+    "FLMPublishDockInputBlockState" \
+    "FLMDockInputBlockState" \
+    "FLYME_DOCK_INPUT_BLOCK_NOTIFICATION" \
+    "BOOL remoteInputBlocked = docked || hidden || contentProtected;" \
+    "dock-input-block publish" \
+    "schema=19" \
+    "springboard-ctor-reset" \
     "dock-control-armed" \
     "dock-entry-control-handoff" \
     "floatingDockHiddenFractionForFrame" \
@@ -153,7 +156,11 @@ for marker in \
     "cornerTriggerBounds" \
     "cornerTriggerPointForGesture:" \
     "cornerTriggerPointForTouch:" \
-    "scene-virtual-viewport"; do
+    "scene-virtual-viewport" \
+    "blocksFloatingContentInput" \
+    "floatingContentInputShieldView" \
+    "card-control-block" \
+    "BOOL prewarmForFloatingSession"; do
     reject_source "$marker"
 done
 
@@ -191,6 +198,17 @@ for marker in \
     "FLMHandleKeyboardDismissRequest" \
     "FLMRegisterKeyboardDismissObserverIfNeeded" \
     "FLMReloadContentViewportSelection" \
+    "%group FLMDockInputBarrier" \
+    "%hook UIApplication" \
+    "sendEvent:(UIEvent *)event" \
+    "FLMDockInputBlockedForCurrentApplication" \
+    "FLMCurrentApplicationIdentifierHash" \
+    "FLMShouldSuppressDockTouchEvent" \
+    "FLMDockInputSuppressedTouches" \
+    "FLMInstallDockInputBarrierIfEligible" \
+    "FLMDockInputBarrierRetryScheduled" \
+    "FLMDiagnosticEventInputSuppressed" \
+    "FLYME_DOCK_INPUT_BLOCK_NOTIFICATION" \
     "BOOL shouldApply = NO;" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
@@ -243,4 +261,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.55 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, first-touch Dock input ownership, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.56 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, application-process Dock input isolation, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"

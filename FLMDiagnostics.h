@@ -21,6 +21,31 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...);
 #define FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-uikit-other-v3"
 
+// SpringBoard publishes one exact application target while Dock control owns
+// the card.  The selected application reads this state synchronously at its
+// UIApplication event boundary, so a remote Scene cannot receive the same
+// touch stream that is controlling the Dock card.
+#define FLYME_DOCK_INPUT_BLOCK_NOTIFICATION \
+    "com.codex.flymemultitasking.dock-input-block-v1"
+#define FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK (UINT64_C(1) << 63)
+
+static inline uint64_t FLMDockInputBlockState(uint64_t identifierHash,
+                                              BOOL blocked) {
+    if (!blocked || identifierHash == 0) {
+        return 0;
+    }
+    return FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK |
+           (identifierHash & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK);
+}
+
+static inline BOOL FLMDockInputBlockStateMatches(uint64_t state,
+                                                 uint64_t identifierHash) {
+    return identifierHash != 0 &&
+           (state & FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK) != 0 &&
+           (state & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK) ==
+               (identifierHash & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK);
+}
+
 typedef NS_ENUM(uint8_t, FLMDiagnosticRole) {
     FLMDiagnosticRoleSpringBoard = 1,
     FLMDiagnosticRoleApplication = 2,
@@ -49,6 +74,7 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventAdapterLoaded = 18,
     FLMDiagnosticEventAdapterCtor = 19,
     FLMDiagnosticEventAdapterReady = 20,
+    FLMDiagnosticEventInputSuppressed = 21,
 };
 
 // Cross-process diagnostics intentionally carry only fixed-width integers.

@@ -55,6 +55,8 @@ static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static int FLMKeyboardAppCtorToken = -1;
 static int FLMKeyboardAppReadyToken = -1;
 static int FLMKeyboardDismissRequestToken = -1;
+static int FLMDockInputBlockToken = -1;
+static NSMutableSet<UITouch *> *FLMDockInputSuppressedTouches;
 static uint64_t FLMKeyboardLastTargetSessionGeneration = 0;
 static uint64_t FLMKeyboardLastDismissRequestState = 0;
 static BOOL FLMKeyboardHooksInstalled = NO;
@@ -64,9 +66,12 @@ static BOOL FLMContentViewportAdapterActive = NO;
 static uint64_t FLMContentViewportAdapterGeneration = 0;
 static NSMapTable<UIView *, NSDictionary *> *FLMContentViewportOriginalLayouts;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
+static BOOL FLMDockInputBarrierInstalled = NO;
+static BOOL FLMDockInputBarrierRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
+static NSUInteger FLMDockInputBarrierRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
 // The application-side logical viewport is deliberately fixed at the full
@@ -92,6 +97,8 @@ static void FLMRegisterKeyboardNotificationsAndInitialize(void);
 static void FLMRegisterKeyboardDismissObserverIfNeeded(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
+static void FLMInstallDockInputBarrierIfEligible(void);
+static void FLMScheduleDockInputBarrierRetry(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -156,6 +163,78 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
     return value ?: 1;
 }
 
+static uint64_t FLMCurrentApplicationIdentifierHash(void) {
+    static uint64_t identifierHash = 0;
+    if (identifierHash == 0) {
+        identifierHash =
+            FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier);
+    }
+    return identifierHash;
+}
+
+static BOOL FLMDockInputBlockedForCurrentApplication(void) {
+    if (FLMDockInputBlockToken < 0 &&
+        notify_register_check(FLYME_DOCK_INPUT_BLOCK_NOTIFICATION,
+                              &FLMDockInputBlockToken) != NOTIFY_STATUS_OK) {
+        FLMDockInputBlockToken = -1;
+        return NO;
+    }
+    uint64_t state = 0;
+    if (notify_get_state(FLMDockInputBlockToken, &state) !=
+        NOTIFY_STATUS_OK) {
+        return NO;
+    }
+    return FLMDockInputBlockStateMatches(
+        state, FLMCurrentApplicationIdentifierHash());
+}
+
+static BOOL FLMShouldSuppressDockTouchEvent(UIEvent *event,
+                                            BOOL routeBlocked,
+                                            BOOL *containsBeganTouch) {
+    NSSet<UITouch *> *touches = event.allTouches;
+    if (!FLMDockInputSuppressedTouches) {
+        FLMDockInputSuppressedTouches = [NSMutableSet set];
+    }
+    BOOL began = NO;
+    BOOL containsSuppressedTouch = NO;
+    for (UITouch *touch in touches) {
+        if (touch.phase == UITouchPhaseBegan) {
+            began = YES;
+        }
+        if ([FLMDockInputSuppressedTouches containsObject:touch]) {
+            containsSuppressedTouch = YES;
+        }
+    }
+    if (containsBeganTouch) {
+        *containsBeganTouch = began;
+    }
+
+    BOOL suppress = routeBlocked || containsSuppressedTouch;
+    if (!suppress) {
+        // A new Began with none of the retained touch identities proves any
+        // missing terminal callback belonged to an obsolete stream. Do not
+        // let a stale retained UITouch consume the first centered-mode tap.
+        if (began && FLMDockInputSuppressedTouches.count > 0) {
+            [FLMDockInputSuppressedTouches removeAllObjects];
+        }
+        return NO;
+    }
+
+    // Latch every touch identity in a suppressed UIEvent. If SpringBoard
+    // clears the route while that physical stream is still ending, its
+    // Changed/Ended tail remains suppressed and can never reach the app
+    // without the Began event that was intentionally dropped.
+    for (UITouch *touch in touches) {
+        if (touch.phase == UITouchPhaseEnded ||
+            touch.phase == UITouchPhaseCancelled) {
+            [FLMDockInputSuppressedTouches removeObject:touch];
+        } else {
+            [FLMDockInputSuppressedTouches addObject:touch];
+        }
+    }
+    return YES;
+}
+
 static BOOL FLMProcessIsKeyboardExtension(void) {
     NSDictionary *extension = [NSBundle mainBundle].infoDictionary[@"NSExtension"];
     NSString *pointIdentifier =
@@ -214,10 +293,10 @@ static uint16_t FLMApplicationProcessIdentityFlags(void) {
 }
 
 // FlymeKeyboard.plist reaches UIKit application clients rather than naming a
-// single app. The shared-state route is the second, exact gate: only the
-// process whose main bundle hash equals the current wheel target can install
-// functional hooks. A dylib loaded into another app is diagnostic-only until
-// a later route notification selects that app.
+// single app. The generic Dock event boundary is installed in each eligible
+// app but acts only when its exact bundle hash matches SpringBoard's current
+// block state. Keyboard geometry hooks keep their separate target route and
+// are installed only after that route selects this application.
 static BOOL FLMIsEligibleApplicationProcess(void) {
     return (FLMApplicationProcessIdentityFlags() & 2U) != 0;
 }
@@ -926,6 +1005,85 @@ static void FLMUpdateContentViewportAdapter(void) {
     FLMApplyContentViewportToVisibleApplicationWindows();
 }
 
+%group FLMDockInputBarrier
+
+%hook UIApplication
+
+- (void)sendEvent:(UIEvent *)event {
+    if (event && event.type == UIEventTypeTouches) {
+        BOOL routeBlocked = FLMDockInputBlockedForCurrentApplication();
+        if (!routeBlocked && FLMDockInputSuppressedTouches.count == 0) {
+            // Centered/fullscreen is the hot path. One shared-state read is
+            // sufficient; avoid allocating or walking UITouch objects when no
+            // suppressed stream needs a terminal tail.
+            %orig;
+            return;
+        }
+        BOOL containsBeganTouch = NO;
+        BOOL suppress = FLMShouldSuppressDockTouchEvent(
+            event, routeBlocked, &containsBeganTouch);
+        if (!suppress) {
+            %orig;
+            return;
+        }
+        NSSet<UITouch *> *touches = event.allTouches;
+        if (containsBeganTouch) {
+            FLMPublishDiagnosticEvent(
+                FLMDiagnosticRoleApplication,
+                FLMDiagnosticEventInputSuppressed,
+                0,
+                (uint16_t)(FLMCurrentApplicationIdentifierHash() & 0xFFFFULL),
+                (uint16_t)MIN((NSUInteger)UINT16_MAX, touches.count));
+        }
+        // SpringBoard's display-level recognizer still receives this stream
+        // and performs Dock tap/drag/hide control. Returning here removes the
+        // duplicate delivery only from the hosted application's Scene.
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%end
+
+static void FLMScheduleDockInputBarrierRetry(void) {
+    if (FLMDockInputBarrierInstalled ||
+        FLMDockInputBarrierRetryScheduled ||
+        FLMDockInputBarrierRetryCount >= FLMKeyboardIdentityRetryLimit ||
+        FLMProcessIsSpringBoardOrSystemAgent() ||
+        FLMProcessIsKeyboardExtension()) {
+        return;
+    }
+    NSDictionary *extension =
+        [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+    if ([extension isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    FLMDockInputBarrierRetryScheduled = YES;
+    NSUInteger attempt = ++FLMDockInputBarrierRetryCount;
+    NSTimeInterval delay = MIN(1.0, 0.05 * pow(2.0, (double)attempt));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       FLMDockInputBarrierRetryScheduled = NO;
+                       FLMInstallDockInputBarrierIfEligible();
+                   });
+}
+
+static void FLMInstallDockInputBarrierIfEligible(void) {
+    if (FLMDockInputBarrierInstalled) {
+        return;
+    }
+    if (!FLMIsEligibleApplicationProcess() ||
+        FLMCurrentApplicationIdentifierHash() == 0) {
+        FLMScheduleDockInputBarrierRetry();
+        return;
+    }
+    %init(FLMDockInputBarrier);
+    FLMDockInputBarrierInstalled = YES;
+}
+
 %group FLMContentViewportAdapter
 
 %hook UIWindow
@@ -1179,10 +1337,10 @@ static void FLMAttemptKeyboardInitialization(void) {
 
 %ctor {
     @autoreleasepool {
-        // This first call is intentionally safe even when the broad UIKit
-        // filter loads the dylib before the route has selected this app. All
-        // functional setup remains behind the application/process and exact
-        // shared bundle-hash gates.
+        // Install the event boundary in every ordinary UIKit application. It
+        // remains a no-op unless SpringBoard's synchronous state names this
+        // exact bundle; keyboard behavior keeps its independent route gate.
+        FLMInstallDockInputBarrierIfEligible();
         FLMPublishKeyboardRawLoadDiagnostic();
         FLMAttemptKeyboardInitialization();
     }

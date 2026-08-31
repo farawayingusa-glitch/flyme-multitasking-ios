@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.55 (0.9.41 reset)"
+#define FLMLogBuildString @"Stable build 0.9.56 (0.9.41 reset)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -88,6 +88,7 @@ static const char *FLMDiagnosticEventName(uint8_t event) {
         case FLMDiagnosticEventAdapterLoaded: return "adapter-loaded";
         case FLMDiagnosticEventAdapterCtor: return "adapter-ctor";
         case FLMDiagnosticEventAdapterReady: return "adapter-ready";
+        case FLMDiagnosticEventInputSuppressed: return "input-suppressed";
         default: return "unknown-event";
     }
 }
@@ -225,7 +226,7 @@ static void FLMStartDiagnosticWriter(void) {
         dispatch_async(FLMDiagnosticWriterQueue, ^{
             @autoreleasepool {
                 FLMAppendDiagnosticLineNow(
-                    [NSString stringWithFormat:@"logger-ready build=%@ schema=18",
+                    [NSString stringWithFormat:@"logger-ready build=%@ schema=19",
                                                FLMLogBuildString]);
             }
         });
@@ -642,10 +643,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @interface FLMFloatingWindow : FLMOverlayWindow
 @property(nonatomic, assign) BOOL passesTouchesOutsideFloatingContent;
 @property(nonatomic, assign) BOOL suppressesCornerRoutingDuringDockGesture;
-@property(nonatomic, assign) BOOL blocksFloatingContentInput;
 @property(nonatomic, assign) CGRect keyboardPassThroughFrame;
 @property(nonatomic, weak) UIView *floatingContentView;
-@property(nonatomic, weak) UIView *floatingContentInputShieldView;
 @property(nonatomic, weak) UIView *floatingPrimaryControlView;
 @property(nonatomic, weak) UIView *floatingSecondaryControlView;
 @end
@@ -686,40 +685,6 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
         if (primaryHit) {
             FLMLogFloatingHitTest(self, point, event, primaryHit, @"handle");
             return primaryHit;
-        }
-    }
-    if (self.blocksFloatingContentInput && self.floatingContentView) {
-        // The display-level dock gate normally owns this point. Keep the same
-        // ownership rule in the already-visible floating window as well: when
-        // dock control is armed, a newly inserted/activated sibling UIWindow
-        // must not be the only thing standing between the next touch and the
-        // remote application's host view.
-        CGRect blockedFrame = self.floatingContentView.frame;
-        CALayer *presentationLayer =
-            (CALayer *)self.floatingContentView.layer.presentationLayer;
-        if (presentationLayer) {
-            CGRect candidate = presentationLayer.frame;
-            BOOL finite = isfinite(CGRectGetMinX(candidate)) &&
-                          isfinite(CGRectGetMinY(candidate)) &&
-                          isfinite(CGRectGetWidth(candidate)) &&
-                          isfinite(CGRectGetHeight(candidate));
-            if (finite && !CGRectIsNull(candidate) &&
-                !CGRectIsEmpty(candidate) &&
-                CGRectGetWidth(candidate) > 1.0 &&
-                CGRectGetHeight(candidate) > 1.0) {
-                blockedFrame = candidate;
-            }
-        }
-        if (CGRectContainsPoint(CGRectInset(blockedFrame, -6.0, -6.0),
-                                point)) {
-            UIView *shield = self.floatingContentInputShieldView;
-            UIView *owner = shield && !shield.hidden &&
-                                    shield.userInteractionEnabled
-                                ? shield
-                                : self.rootViewController.view;
-            FLMLogFloatingHitTest(self, point, event, owner,
-                                  @"card-control-block");
-            return owner;
         }
     }
     if (self.suppressesCornerRoutingDuringDockGesture) {
@@ -1499,6 +1464,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)transitionFloatingWindowToFullscreen;
 - (void)finishFullscreenHandoffWithCover:(UIView *)cover
                               identifier:(NSString *)identifier
+                              generation:(NSUInteger)generation
                                  attempt:(NSUInteger)attempt;
 - (void)protectedSceneDidDisappear:(NSNotification *)notification;
 - (void)openFloatingIdentifier:(NSString *)identifier;
@@ -1549,6 +1515,8 @@ static int FlymeKeyboardCardGeometryToken = -1;
 static int FlymeKeyboardAppCtorToken = -1;
 static int FlymeKeyboardAppReadyToken = -1;
 static int FlymeKeyboardDismissRequestToken = -1;
+static int FlymeDockInputBlockToken = -1;
+static uint64_t FLMLastDockInputBlockState = UINT64_MAX;
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 static NSString *const FLMKeyboardSharedStateRootlessPath =
@@ -1625,6 +1593,42 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
+}
+
+static void FLMPublishDockInputBlockState(NSString *identifier,
+                                          BOOL blocked,
+                                          NSString *reason) {
+    uint64_t identifierHash = FLMIdentifierHash(identifier);
+    // Close transfers the identifier out of the live controller before its
+    // host/presenter teardown finishes. A late animation completion may still
+    // reassert blocking during that interval; without a target it must preserve
+    // the existing active state, not reinterpret "blocked" as a global clear.
+    if (blocked && identifierHash == 0) {
+        return;
+    }
+    uint64_t state = FLMDockInputBlockState(identifierHash, blocked);
+    if (FlymeDockInputBlockToken < 0 &&
+        notify_register_check(FLYME_DOCK_INPUT_BLOCK_NOTIFICATION,
+                              &FlymeDockInputBlockToken) != NOTIFY_STATUS_OK) {
+        FlymeDockInputBlockToken = -1;
+        FLMEnqueueDiagnosticLine(
+            @"sb dock-input-block register-failed blocked=%d app=%@ reason=%@",
+            blocked, identifier ?: @"<none>", reason ?: @"<none>");
+        return;
+    }
+    if (state == FLMLastDockInputBlockState) {
+        return;
+    }
+    int setStatus = notify_set_state(FlymeDockInputBlockToken, state);
+    int postStatus = notify_post(FLYME_DOCK_INPUT_BLOCK_NOTIFICATION);
+    if (setStatus == NOTIFY_STATUS_OK) {
+        FLMLastDockInputBlockState = state;
+    }
+    FLMEnqueueDiagnosticLine(
+        @"sb dock-input-block publish blocked=%d app=%@ hash=0x%016llx state=0x%016llx reason=%@ set=%d post=%d",
+        state != 0, identifier ?: @"<none>",
+        (unsigned long long)identifierHash, (unsigned long long)state,
+        reason ?: @"<none>", setStatus, postStatus);
 }
 
 typedef struct {
@@ -2476,8 +2480,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     floatingWindow.floatingContentView = self.floatingContainer;
-    floatingWindow.floatingContentInputShieldView =
-        self.floatingDockInteractionShield;
     floatingWindow.floatingPrimaryControlView = self.floatingHandle;
     floatingWindow.floatingSecondaryControlView = self.floatingResizeHandle;
     [self layoutFloatingWindow];
@@ -3644,15 +3646,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         gate.dockCardFrame = CGRectNull;
         gate.dockHandleFrame = CGRectNull;
         gate.dockResizeFrame = CGRectNull;
-        // Keep the transparent gate window in the display stack for the whole
-        // floating-card session. Its disabled hit-test remains fully
-        // pass-through in centered mode, while crossing the dock threshold now
-        // changes only an in-process flag instead of inserting a UIWindow and
-        // waiting for a later display-server commit. This makes the very first
-        // post-threshold touch eligible for dock control.
-        BOOL prewarmForFloatingSession = !self.floatingWindow.hidden;
-        gate.userInteractionEnabled = prewarmForFloatingSession;
-        gate.hidden = !prewarmForFloatingSession;
+        gate.userInteractionEnabled = NO;
+        gate.hidden = YES;
         return;
     }
 
@@ -4613,14 +4608,22 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)setFloatingApplicationInputBlocked:(BOOL)blocked {
+    if (self.floatingCloseInProgress) {
+        // Close owns the final state transition. A stale animation callback
+        // must neither reopen the local host nor alter the process-level state
+        // captured when close began.
+        self.floatingHostView.userInteractionEnabled = NO;
+        return;
+    }
     if (!blocked &&
         (self.floatingDocked || self.floatingDockHidden ||
          self.floatingDockControlArmed ||
          self.floatingDockContentTailProtected)) {
         blocked = YES;
     }
-    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput =
-        blocked;
+    FLMPublishDockInputBlockState(self.floatingIdentifier,
+                                  blocked,
+                                  @"application-input");
     self.floatingHostView.userInteractionEnabled = !blocked;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
     self.floatingDockInteractionShield.hidden = !blocked;
@@ -5092,6 +5095,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self prepareFloatingSceneForInteractiveFullscreen];
     }
     NSString *identifier = [self.floatingIdentifier copy];
+    NSUInteger transitionGeneration = self.floatingLaunchGeneration;
     self.floatingReconnectSuppressed = YES;
     // Start the already-running scene promotion while the final part of the
     // same card morph is still on screen. The old implementation waited until
@@ -5113,6 +5117,24 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       }
                       completion:^(BOOL finished) {
                           (void)finished;
+                          BOOL currentTransition =
+                              transitionGeneration ==
+                                  self.floatingLaunchGeneration &&
+                              !self.floatingCloseInProgress &&
+                              !self.floatingWindow.hidden &&
+                              [identifier
+                                  isEqualToString:self.floatingIdentifier];
+                          if (!currentTransition) {
+                              FLMEnqueueDiagnosticLine(
+                                  @"sb fullscreen-transition stale target=%@ generation=%lu current=%lu close=%d hidden=%d currentTarget=%@",
+                                  identifier ?: @"<none>",
+                                  (unsigned long)transitionGeneration,
+                                  (unsigned long)self.floatingLaunchGeneration,
+                                  self.floatingCloseInProgress,
+                                  self.floatingWindow.hidden,
+                                  self.floatingIdentifier ?: @"<none>");
+                              return;
+                          }
                           UIView *snapshot = self.floatingInteractiveSnapshot;
                          self.floatingInteractiveSnapshot = nil;
                          self.floatingInteractiveSnapshotBackground = nil;
@@ -5130,19 +5152,38 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                           self.floatingInteractiveFullscreenTransition = NO;
                           self.floatingFullscreenProgress = 1.0;
                          self.floatingLaunchGeneration += 1;
+                         NSUInteger handoffGeneration =
+                             self.floatingLaunchGeneration;
                          self.floatingExclusiveGesture.enabled = NO;
                          self.cornerGuardGesture.enabled = self.enabled;
                          self.cornerGesture.enabled = self.enabled;
                          self.floatingContainer.alpha = 0.0;
                           [self finishFullscreenHandoffWithCover:snapshot
                                                     identifier:identifier
+                                                    generation:handoffGeneration
                                                       attempt:0];
                      }];
 }
 
 - (void)finishFullscreenHandoffWithCover:(UIView *)cover
                               identifier:(NSString *)identifier
+                              generation:(NSUInteger)generation
                                  attempt:(NSUInteger)attempt {
+    BOOL currentHandoff =
+        generation == self.floatingLaunchGeneration &&
+        !self.floatingCloseInProgress && !self.floatingWindow.hidden &&
+        identifier.length > 0 &&
+        [identifier isEqualToString:self.floatingIdentifier];
+    if (!currentHandoff) {
+        FLMEnqueueDiagnosticLine(
+            @"sb fullscreen-handoff stale target=%@ generation=%lu current=%lu close=%d hidden=%d currentTarget=%@",
+            identifier ?: @"<none>", (unsigned long)generation,
+            (unsigned long)self.floatingLaunchGeneration,
+            self.floatingCloseInProgress, self.floatingWindow.hidden,
+            self.floatingIdentifier ?: @"<none>");
+        [cover removeFromSuperview];
+        return;
+    }
     BOOL targetIsFrontmost =
         identifier.length > 0 &&
         [identifier isEqualToString:FLMFrontmostApplicationIdentifier()];
@@ -5166,6 +5207,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        dispatch_get_main_queue(), ^{
             [self finishFullscreenHandoffWithCover:cover
                                        identifier:identifier
+                                       generation:generation
                                           attempt:attempt + 1];
         });
         return;
@@ -5190,6 +5232,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
+    // The fullscreen Scene is now committed behind the noninteractive cover.
+    // Reopen its application event route immediately before removing that
+    // cover, never while it is still presented as a Dock card.
+    FLMPublishDockInputBlockState(identifier, NO, @"fullscreen-handoff");
     id scene = self.floatingScene;
     id presenter = self.floatingPresenter;
     [self.floatingHostView removeFromSuperview];
@@ -5575,6 +5621,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)configureFloatingInteractionForDockedState {
+    if (self.floatingCloseInProgress) {
+        // The close path already disabled every recognizer and owns presenter
+        // teardown. Ignore completions from Dock/hidden animations that were
+        // scheduled before close began.
+        return;
+    }
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     BOOL docked = self.floatingDocked;
@@ -5600,7 +5652,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     BOOL contentProtected =
         contentTailProtected || contentControlProtected;
     BOOL shieldOwnsCard = (docked && !hidden) || contentProtected;
-    floatingWindow.blocksFloatingContentInput = shieldOwnsCard;
+    // Hidden Dock cards remain blocked in their application process too. The
+    // local shield is intentionally hidden with the card, but that must never
+    // reopen the remote Scene's input channel.
+    BOOL remoteInputBlocked = docked || hidden || contentProtected;
+    FLMPublishDockInputBlockState(self.floatingIdentifier,
+                                  remoteInputBlocked,
+                                  @"interaction-configure");
     self.floatingHostView.userInteractionEnabled =
         !docked && !hidden && !contentProtected;
     self.floatingDockInteractionShield.frame = self.floatingContainer.bounds;
@@ -5900,8 +5958,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       completion:^(BOOL finished) {
                           (void)finished;
                           self.floatingDockTransitionActive = NO;
-                          [self configureFloatingInteractionForDockedState];
+                          // Establish the short post-control tail before the
+                          // centered configuration can reopen application
+                          // delivery. This keeps one continuous block from
+                          // Dock touch-begin through the return animation.
                           [self protectFloatingContentAfterDockTouch];
+                          [self configureFloatingInteractionForDockedState];
                           [self setFloatingDockRoutingSuppressed:NO];
                       }];
 }
@@ -7638,6 +7700,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // the wrong application generation.
         [self endFloatingKeyboardSession];
     }
+    // A newly opened centered card must never inherit the previous Dock
+    // target's process-level input block, including after an interrupted
+    // SpringBoard/card lifecycle.
+    FLMPublishDockInputBlockState(nil, NO, @"centered-open");
 
     self.floatingDockWidth = [self effectiveDockedPresentationWidth];
     self.floatingReconnectSuppressed = NO;
@@ -7683,7 +7749,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.transform = CGAffineTransformIdentity;
     self.floatingDockInteractionShield.hidden = YES;
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
-    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput = NO;
     [self restoreFloatingHandleInteraction];
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingInteractiveScenePrepared = NO;
@@ -7753,9 +7818,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.cornerGuardGesture.enabled = self.enabled;
     self.cornerGesture.enabled = self.enabled;
     [self.floatingWindow makeKeyAndVisible];
-    // The dock gate is deliberately visible-but-pass-through while centered,
-    // so it is already committed before a later up-swipe arms dock control.
-    [self updateFloatingDockTouchGate];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self layoutFloatingWindow];
     });
@@ -8223,7 +8285,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.transform = CGAffineTransformIdentity;
     self.floatingDockInteractionShield.hidden = YES;
     self.floatingDockInteractionShield.userInteractionEnabled = NO;
-    ((FLMFloatingWindow *)self.floatingWindow).blocksFloatingContentInput = NO;
     self.floatingHandle.hidden = NO;
     self.floatingContainer.layer.borderWidth = 0.0;
     self.floatingContainer.transform = CGAffineTransformIdentity;
@@ -8320,6 +8381,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
     } @catch (__unused NSException *exception) {
     }
+    // Keep the application blocked through the close animation and host
+    // teardown. Clearing here prevents a fading Dock card from receiving one
+    // last content touch while still allowing the retained/fullscreen app to
+    // resume as soon as presenter ownership has ended.
+    FLMPublishDockInputBlockState(nil, NO, @"close-cleanup");
     self.floatingClosingScene = nil;
     self.floatingClosingPresenter = nil;
     self.floatingClosingHostView = nil;
@@ -8578,6 +8644,10 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
 %end
 
 %ctor {
+    // Darwin notification state can outlive a crashed/restarted SpringBoard.
+    // Clear it before any card can be presented so no application remains
+    // locked by a stale Dock session.
+    FLMPublishDockInputBlockState(nil, NO, @"springboard-ctor-reset");
     if (notify_register_check(FLYME_RUNTIME_NOTIFICATION, &FlymeRuntimeToken) ==
         NOTIFY_STATUS_OK) {
         uint64_t state = (FLYME_RUNTIME_MAGIC << 32) | (uint32_t)getpid();
