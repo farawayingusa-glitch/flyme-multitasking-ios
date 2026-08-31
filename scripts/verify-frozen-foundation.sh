@@ -98,6 +98,11 @@ for marker in \
     "finishFloatingDockHiddenGesture" \
     "displayLink.preferredFrameRateRange" \
     "maximumFramesPerSecond" \
+    "ensureFloatingDockInputDisplayLink" \
+    "beginFloatingHighRefreshLeaseForDuration" \
+    "minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;" \
+    "CGRect handoffFrame" \
+    "bringSubviewToFront:self.floatingHandle" \
     "floatingDockControlArmed" \
     "FLMPublishDockInputBlockState" \
     "FLMDockInputBlockState" \
@@ -261,4 +266,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.56 reset: 0.9.41 portrait foundation, responder cleanup, maximum-refresh Dock rendering, application-process Dock input isolation, progress-linked handle animation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.57 reset: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"

@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.56 (0.9.41 reset)"
+#define FLMLogBuildString @"Stable build 0.9.57 (0.9.41 reset)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1279,6 +1279,8 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, assign) BOOL floatingDockInputFramePending;
 @property(nonatomic, assign) NSUInteger floatingDockInputFrameGeneration;
 @property(nonatomic, strong) CADisplayLink *floatingDockInputDisplayLink;
+@property(nonatomic, strong) CADisplayLink *floatingHighRefreshDisplayLink;
+@property(nonatomic, assign) NSUInteger floatingHighRefreshLeaseGeneration;
 @property(nonatomic, assign) NSUInteger floatingDockInputGeneration;
 @property(nonatomic, assign) BOOL floatingDockReady;
 @property(nonatomic, assign) BOOL floatingDockFeedbackSent;
@@ -1390,6 +1392,10 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (void)refreshWheelPriorityWindow;
 - (void)activateFloatingDockDragForGeneration:(NSUInteger)generation;
 - (void)queueFloatingDockInputUpdateForPoint:(CGPoint)point;
+- (void)configureFloatingDisplayLinkForMaximumRefresh:(CADisplayLink *)displayLink;
+- (void)ensureFloatingDockInputDisplayLink;
+- (void)beginFloatingHighRefreshLeaseForDuration:(NSTimeInterval)duration;
+- (void)tickFloatingHighRefreshDisplayLink:(CADisplayLink *)displayLink;
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink;
 - (void)flushFloatingDockInputFrameImmediately;
 - (void)cancelFloatingDockInputUpdates;
@@ -3391,6 +3397,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
+    [self beginFloatingHighRefreshLeaseForDuration:0.24];
     [UIView animateWithDuration:0.24
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState |
@@ -3520,6 +3527,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     UIView *rootView = self.floatingWindow.rootViewController.view;
     [rootView bringSubviewToFront:self.floatingContainer];
     [rootView bringSubviewToFront:self.floatingResizeHandle];
+    // A card drag may be reclassified as an outward hide gesture. Keep the
+    // handle above the remote app surface from the start so its first reveal
+    // frame cannot be occluded by the card and then suddenly appear later.
+    [rootView bringSubviewToFront:self.floatingHandle];
     if (@available(iOS 10.0, *)) {
         UIImpactFeedbackGenerator *feedback =
             [[UIImpactFeedbackGenerator alloc]
@@ -3672,6 +3683,77 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     gate.hidden = NO;
 }
 
+- (void)configureFloatingDisplayLinkForMaximumRefresh:(CADisplayLink *)displayLink {
+    if (!displayLink) {
+        return;
+    }
+    NSInteger maximumFramesPerSecond = [UIScreen mainScreen].maximumFramesPerSecond;
+    if (maximumFramesPerSecond <= 0) {
+        maximumFramesPerSecond = 60;
+    }
+    if ([displayLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
+        displayLink.preferredFramesPerSecond = maximumFramesPerSecond;
+    }
+    if (@available(iOS 15.0, *)) {
+        // Keep the upper end at the physical panel maximum, but do not pin the
+        // minimum to 120. A fixed 120/120/120 range can be rejected by the
+        // system while ProMotion is transitioning between refresh states.
+        // 80..max with max preferred asks for 120 Hz on ProMotion while still
+        // allowing the system to enter that state cleanly.
+        float maximumRate = (float)maximumFramesPerSecond;
+        float minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;
+        displayLink.preferredFrameRateRange =
+            CAFrameRateRangeMake(minimumRate, maximumRate, maximumRate);
+    }
+}
+
+- (void)ensureFloatingDockInputDisplayLink {
+    if (self.floatingDockInputDisplayLink) {
+        return;
+    }
+    CADisplayLink *displayLink =
+        [CADisplayLink displayLinkWithTarget:self
+                                    selector:@selector(flushFloatingDockInputFrame:)];
+    [self configureFloatingDisplayLinkForMaximumRefresh:displayLink];
+    self.floatingDockInputDisplayLink = displayLink;
+    [displayLink addToRunLoop:[NSRunLoop mainRunLoop]
+                       forMode:NSRunLoopCommonModes];
+    FLMEnqueueDiagnosticLine(
+        @"sb dock-displaylink-start screenMaxFPS=%ld prewarmed=1 runLoop=common",
+        (long)MAX(60, [UIScreen mainScreen].maximumFramesPerSecond));
+}
+
+- (void)beginFloatingHighRefreshLeaseForDuration:(NSTimeInterval)duration {
+    duration = MAX(0.08, duration);
+    NSUInteger generation = ++self.floatingHighRefreshLeaseGeneration;
+    if (!self.floatingHighRefreshDisplayLink) {
+        CADisplayLink *displayLink =
+            [CADisplayLink displayLinkWithTarget:self
+                                        selector:@selector(tickFloatingHighRefreshDisplayLink:)];
+        [self configureFloatingDisplayLinkForMaximumRefresh:displayLink];
+        self.floatingHighRefreshDisplayLink = displayLink;
+        [displayLink addToRunLoop:[NSRunLoop mainRunLoop]
+                           forMode:NSRunLoopCommonModes];
+    }
+    // UIKit/CoreAnimation settle animations continue after the gesture's input
+    // display link is torn down. Keep one high-refresh client alive for the
+    // whole settle interval so ProMotion does not immediately fall back to a
+    // lower cadence between finger-up and the final animation frame.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)((duration + 0.12) * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != self.floatingHighRefreshLeaseGeneration) {
+            return;
+        }
+        [self.floatingHighRefreshDisplayLink invalidate];
+        self.floatingHighRefreshDisplayLink = nil;
+    });
+}
+
+- (void)tickFloatingHighRefreshDisplayLink:(CADisplayLink *)displayLink {
+    (void)displayLink;
+}
+
 - (void)queueFloatingDockInputUpdateForPoint:(CGPoint)point {
     if (self.floatingWindow.hidden ||
         ((!self.floatingDocked && !self.floatingDockHidden) &&
@@ -3681,36 +3763,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockInputFramePoint = point;
     self.floatingDockInputFrameGeneration = self.floatingDockInputGeneration;
     self.floatingDockInputFramePending = YES;
-    if (self.floatingDockInputDisplayLink) {
-        return;
-    }
-    CADisplayLink *displayLink =
-        [CADisplayLink displayLinkWithTarget:self
-                                    selector:@selector(flushFloatingDockInputFrame:)];
-    NSInteger maximumFramesPerSecond = [UIScreen mainScreen].maximumFramesPerSecond;
-    if (maximumFramesPerSecond <= 0) {
-        maximumFramesPerSecond = 60;
-    }
-    if ([displayLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
-        displayLink.preferredFramesPerSecond = maximumFramesPerSecond;
-    }
-    if (@available(iOS 15.0, *)) {
-        // The old 0.9.41 path explicitly capped every interactive Dock frame
-        // at 60 Hz. Request the panel maximum as a fixed range while the
-        // gesture is active; iOS can still lower the physical refresh rate for
-        // thermal/power reasons, but Flyme no longer imposes a 60 Hz ceiling.
-        float requestedRate = (float)maximumFramesPerSecond;
-        displayLink.preferredFrameRateRange =
-            CAFrameRateRangeMake(requestedRate,
-                                 requestedRate,
-                                 requestedRate);
-    }
-    self.floatingDockInputDisplayLink = displayLink;
-    [displayLink addToRunLoop:[NSRunLoop mainRunLoop]
-                       forMode:NSRunLoopCommonModes];
-    FLMEnqueueDiagnosticLine(
-        @"sb dock-displaylink-config screenMaxFPS=%ld requestedFPS=%ld runLoop=common",
-        (long)maximumFramesPerSecond, (long)maximumFramesPerSecond);
+    [self ensureFloatingDockInputDisplayLink];
 }
 
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink {
@@ -3887,6 +3940,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         changes();
         completion(YES);
     } else {
+        [self beginFloatingHighRefreshLeaseForDuration:0.30];
         [UIView animateWithDuration:0.30
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
@@ -3954,6 +4008,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        44.0);
         [self.floatingWindow.rootViewController.view
             bringSubviewToFront:self.floatingHandle];
+        [self beginFloatingHighRefreshLeaseForDuration:0.34];
         [UIView animateWithDuration:0.34
                               delay:0.0
              usingSpringWithDamping:0.92
@@ -4208,6 +4263,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        : FLMFloatingDockInputModeCardDrag);
         self.floatingDockInputTargetsResize =
             self.floatingDockInputMode == FLMFloatingDockInputModeResize;
+        // Start the display link at touch-begin, before the first Changed
+        // callback. Previously the first several points were applied before a
+        // 120 Hz client existed, which made the beginning of every drag feel
+        // distinctly more sluggish than the rest of the gesture.
+        [self ensureFloatingDockInputDisplayLink];
         FLMEnqueueDiagnosticLine(
             @"sb dock-input-began mode=%@ generation=%lu point={%.1f,%.1f} frame=%@ hidden=%d side=%@",
             FLMFloatingDockInputModeName(self.floatingDockInputMode),
@@ -4314,8 +4374,43 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 // to the touch-down frame.
                 self.floatingDockHideStartPoint = point;
                 self.floatingDockHideInitialFrame = self.floatingContainer.frame;
-                self.floatingDockHideInitialHandleFrame =
-                    self.floatingHandle.frame;
+
+                // Rebase the *visible* hidden handle to the card edge at the
+                // exact handoff frame. The old path reused floatingHandle.frame,
+                // which is the wide horizontal dock hit target below the card
+                // on the first hide. Turning that stale frame into a 44x72
+                // vertical handle made the white bar visibly fly in from the
+                // wrong origin. After one hide/reveal the frame happened to be
+                // normalized, explaining why later attempts looked better.
+                UIView *rootView = self.floatingWindow.rootViewController.view;
+                CGRect rootBounds = rootView.bounds;
+                CGRect cardFrame = self.floatingContainer.frame;
+                CGFloat handoffWidth = 44.0;
+                CGFloat handoffHeight = 72.0;
+                CGFloat maximumHandleX =
+                    MAX(0.0, CGRectGetWidth(rootBounds) - handoffWidth);
+                CGFloat handoffX = self.floatingDockedOnRight
+                    ? CGRectGetMaxX(cardFrame) - handoffWidth
+                    : CGRectGetMinX(cardFrame);
+                handoffX = MAX(0.0, MIN(maximumHandleX, handoffX));
+                CGFloat handoffY = MAX(8.0, CGRectGetMinY(cardFrame) + 24.0);
+                CGRect handoffFrame =
+                    CGRectMake(handoffX, handoffY, handoffWidth, handoffHeight);
+                self.floatingDockHideInitialHandleFrame = handoffFrame;
+                [UIView performWithoutAnimation:^{
+                    self.floatingHandle.hidden = NO;
+                    self.floatingHandle.userInteractionEnabled = NO;
+                    self.floatingHandle.frame = handoffFrame;
+                    self.floatingHandleBar.frame =
+                        CGRectMake(self.floatingDockedOnRight ? 36.0 : 3.0,
+                                   floor((handoffHeight - 44.0) * 0.5),
+                                   5.0,
+                                   44.0);
+                    self.floatingHandleBar.alpha =
+                        [self floatingDockHiddenFractionForFrame:cardFrame];
+                    [rootView bringSubviewToFront:self.floatingHandle];
+                }];
+
                 self.floatingDockInputMode =
                     FLMFloatingDockInputModeHiddenReveal;
                 self.floatingDockHideGestureActive = YES;
@@ -4416,6 +4511,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                    preservingVerticalCenter:currentVerticalCenter];
         self.floatingDockTransitionActive = YES;
         [self setFloatingDockRoutingSuppressed:YES];
+        [self beginFloatingHighRefreshLeaseForDuration:0.18];
         [UIView animateWithDuration:0.18
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
@@ -4494,6 +4590,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                            CGRectGetMinY(self.floatingContainer.frame) + 24.0),
                        CGRectGetWidth(self.floatingHandle.frame),
                        CGRectGetHeight(self.floatingHandle.frame));
+        [self beginFloatingHighRefreshLeaseForDuration:0.32];
         [UIView animateWithDuration:0.32
                               delay:0.0
              usingSpringWithDamping:0.78
@@ -5107,6 +5204,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat remainingProgress =
         MAX(0.0, 1.0 - self.floatingFullscreenProgress);
     NSTimeInterval finishDuration = 0.10 + 0.22 * remainingProgress;
+    [self beginFloatingHighRefreshLeaseForDuration:finishDuration];
     [UIView animateWithDuration:finishDuration
                            delay:0.0
                          options:UIViewAnimationOptionBeginFromCurrentState |
@@ -5788,6 +5886,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRectGetWidth(target) /
         MAX(1.0, CGRectGetWidth(self.floatingContainer.bounds));
     self.floatingDockShadowView.hidden = YES;
+    [self beginFloatingHighRefreshLeaseForDuration:0.36 / FLMDockAnimationSpeed];
     [UIView animateWithDuration:0.36 / FLMDockAnimationSpeed
                           delay:0.0
          usingSpringWithDamping:0.84
@@ -5934,6 +6033,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     [self.floatingWindow makeKeyWindow];
     CGRect target = [self centeredFloatingFrame];
     self.floatingHandle.hidden = NO;
+    [self beginFloatingHighRefreshLeaseForDuration:0.42];
     [UIView animateWithDuration:0.42
                           delay:0.0
          usingSpringWithDamping:0.82
@@ -5998,6 +6098,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockVerticalCenter);
     self.floatingDockTransitionActive = YES;
     [self setFloatingDockRoutingSuppressed:YES];
+    [self beginFloatingHighRefreshLeaseForDuration:0.28];
     [UIView animateWithDuration:0.28
                           delay:0.0
          usingSpringWithDamping:0.88
@@ -7821,6 +7922,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     dispatch_async(dispatch_get_main_queue(), ^{
         [self layoutFloatingWindow];
     });
+    [self beginFloatingHighRefreshLeaseForDuration:0.40];
     [UIView animateWithDuration:0.40
                           delay:0.0
          usingSpringWithDamping:0.84
@@ -8322,6 +8424,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
+    [self beginFloatingHighRefreshLeaseForDuration:0.24];
     [UIView animateWithDuration:0.24
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState |
