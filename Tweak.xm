@@ -7095,7 +7095,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.floatingDockHidden) {
         CGFloat handleWidth = 44.0;
         CGFloat handleHeight = 72.0;
-        UIView *rootView = [self floatingLayoutView];
         UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
         CGFloat leftEdge = [self isLandscapeFloatingSession]
                                ? safeInsets.left
