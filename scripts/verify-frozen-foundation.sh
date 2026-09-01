@@ -30,7 +30,7 @@ for marker in \
     "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
     "if (!self.hotspotsEnabled)" \
     "self.hotspotWindow.hotspotsEnabled = canReceive &&" \
-    "self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;" \
+    "self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;" \
     "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" \
     "refreshWheelPriorityWindow" \
     "wheel-priority-touch" \
@@ -169,7 +169,7 @@ for marker in \
     reject_source "$marker"
 done
 
-# 0.9.58 keeps the portrait foundation above but intentionally adds a
+# 0.9.59 keeps the portrait foundation above but intentionally adds a
 # separate landscape contract. Require its locked geometry/presentation path.
 for marker in \
     "FLMBoundsAreLandscape" \
@@ -186,6 +186,24 @@ for marker in \
     "currentMidX > screenMidX" \
     "!FLMDisplayIsLandscape()" \
     "UIInterfaceOrientationMaskAll"; do
+    require_source "$marker"
+done
+
+# 0.9.59 repairs the first landscape entry without weakening the proven
+# portrait route. The private system manager remains registered, while a
+# landscape-only SpringBoard hotspot and recognizer-owned touch origin provide
+# deterministic fallback when shouldReceiveTouch: is skipped after rotation.
+for marker in \
+    "flmFirstTouchPoint" \
+    "flmHasFirstTouchPoint" \
+    "landscapeCornerGuardGesture" \
+    "landscapeCornerGesture" \
+    "beginGeneratingDeviceOrientationNotifications" \
+    "displayGeometryDidChange:" \
+    "needsWindowIngress = landscape || !self.usesSystemGestureManager" \
+    "sb display-geometry-refresh" \
+    "sb wheel-should-begin" \
+    "landscape-window-opener"; do
     require_source "$marker"
 done
 
@@ -275,4 +293,10 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.58 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts verified"
+landscape_guard_line="$(grep -nF "addGestureRecognizer:self.landscapeCornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
+landscape_wheel_line="$(grep -nF "addGestureRecognizer:self.landscapeCornerGesture" "$source_file" | head -n1 | cut -d: -f1)"
+if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_guard_line" -ge "$landscape_wheel_line" ]]; then
+    echo "landscape fallback guard registration order changed" >&2
+    exit 1
+fi
+echo "0.9.59 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts and dual-route wheel ingress verified"

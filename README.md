@@ -2,14 +2,16 @@
 
 完全独立的 iOS 16 rootless 多任务插件工程。
 
-当前交付为 `Landscape Experimental 0.9.58`：以稳定的 `0.9.57` 竖屏路径为冻结基线，
+当前交付为 `Landscape Experimental 0.9.59`：以稳定的 `0.9.57` 竖屏路径为冻结基线，
 新增独立横屏合同。横屏时系统 Scene/键盘使用真实横屏全屏几何（例如 844×390），
 目标 App 的可见内容保持 390×844 竖屏逻辑画布并压入 landscape Scene 左侧 portrait strip，
 SpringBoard 只裁剪/呈现这条竖屏 surface，所以用户看到的仍是竖屏比例小卡片。
 
 横屏新增：左右下角 safe-area/刘海避让轮盘、左侧贴边竖屏卡片、右侧竖向白条、
 左滑渐隐进入 Dock、右滑全屏、Dock 内容硬封锁、拖动后左右自动吸附（精确居中默认左侧）、
-继续向外滑隐藏及 safe-area 隐藏白条。
+继续向外滑隐藏及 safe-area 隐藏白条。0.9.59 专门修复首个横屏入口：轮盘 opener
+不再依赖 `_UISystemGestureManager` 是否回调 `shouldReceiveTouch:`，并加入 landscape-only
+SpringBoard hotspot 兜底与旋转后的物理几何刷新。
 
 注意：这是实验源码。当前环境没有 Theos + iOS SDK，因此仅完成源码和静态校验，
 未声称已通过 arm64/arm64e 编译或真机验证。第一轮真机最关键测试是横屏竖屏卡片点击
