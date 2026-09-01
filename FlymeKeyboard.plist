@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Filter</key>
+    <dict>
+        <key>Bundles</key>
+        <array>
+            <!--
+                 UIKit is the smallest available static injection scope that
+                 can reach an arbitrary wheel-selected application. The
+                 current wheel target is not knowable to this plist filter.
+                 WeChat is also listed explicitly so its main process always
+                 receives the responder-dismiss observer at startup; all
+                 functional work still validates the exact bundle hash and
+                 keyboard session in Keyboard.xm.
+            -->
+            <string>com.apple.UIKit</string>
+            <string>com.tencent.xin</string>
+        </array>
+    </dict>
+</dict>
+</plist>

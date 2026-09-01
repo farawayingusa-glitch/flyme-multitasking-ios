@@ -1,0 +1,9 @@
+Package: com.codex.flymemultitasking
+Name: Flyme Multitasking - Landscape Experimental 0.9.58
+Description: Landscape Experimental 0.9.58 on the stable 0.9.57 portrait baseline, adding a locked landscape Scene/input contract, safe-area-aware landscape wheel/card presentation, portrait content strip hosting, and native landscape keyboard geometry while preserving portrait Dock input isolation and ProMotion behavior.
+Maintainer: Codex build for local testing
+Author: Codex build for local testing
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
+Architecture: iphoneos-arm64
+Version: 0.9.58

@@ -1,0 +1,7 @@
+#!/bin/sh
+
+# The application-side adapter is generic: the wheel may target any ordinary
+# UIKit application. Do not kill a hard-coded app during package installation;
+# restart the selected app (or respring) after upgrading so its dylib reloads.
+
+exit 0
