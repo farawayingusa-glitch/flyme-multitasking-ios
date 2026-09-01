@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Experimental 0.9.60 (landscape presentation coordinate repair; 0.9.57 portrait baseline)"
+#define FLMLogBuildString @"Landscape Experimental 0.9.61 (landscape window-coordinate ownership repair; 0.9.57 portrait baseline)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -460,6 +460,21 @@ static CGRect FLMVisualScreenBounds(void) {
         if (longSide > 1.0 && shortSide > 1.0) {
             return CGRectMake(0.0, 0.0, longSide, shortSide);
         }
+    }
+    return CGRectMake(0.0, 0.0, width, height);
+}
+
+static CGRect FLMSpringBoardWindowBounds(void) {
+    // UIWindow geometry belongs to SpringBoard's own scene coordinate space.
+    // On the affected iOS 16 path that space intentionally remains portrait
+    // (for example 390x844) even while the physical display presentation is
+    // landscape (844x390). Never size a SpringBoard UIWindow with the physical
+    // landscape bounds; only the child presentation canvas is rotated.
+    CGRect bounds = [UIScreen mainScreen].bounds;
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    if (width < 1.0 || height < 1.0) {
+        return FLMVisualScreenBounds();
     }
     return CGRectMake(0.0, 0.0, width, height);
 }
@@ -2438,7 +2453,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)createWindows {
-    CGRect bounds = FLMVisualScreenBounds();
+    CGRect bounds = FLMSpringBoardWindowBounds();
     self.overlayWindow = (FLMOverlayWindow *)FLMCreateWindow(bounds);
     self.overlayWindow.windowLevel = UIWindowLevelAlert + 91.0;
     self.overlayWindow.backgroundColor = [UIColor clearColor];
@@ -2660,7 +2675,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)createFloatingWindow {
-    CGRect bounds = FLMVisualScreenBounds();
+    CGRect bounds = FLMSpringBoardWindowBounds();
     self.floatingWindow = FLMCreateFloatingWindow(bounds);
     self.floatingWindow.windowLevel = UIWindowLevelAlert + 92.0;
     self.floatingWindow.backgroundColor = [UIColor clearColor];
@@ -2948,23 +2963,32 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       self.itemIdentifiers.count > 0;
     BOOL landscape = FLMDisplayIsLandscape();
 
-    // Portrait keeps the proven 0.9.57 routing: use the private global manager
-    // when available. Landscape deliberately keeps the transparent SpringBoard
-    // hotspot alive as a second ingress because several iOS 16 builds accept
-    // system-manager registration yet stop delivering its touch delegate after
-    // rotation. The window only hit-tests the two bottom-corner ellipses.
+    // Portrait keeps the proven 0.9.57 private system-manager route. In
+    // landscape, use exactly one coordinate owner: the SpringBoard hotspot
+    // window. Mixing the system-manager's display-space stream with a rotated
+    // SpringBoard root caused 0.9.60 to open from the wrong physical corner and
+    // left wheel selection in a different coordinate space.
     BOOL needsWindowIngress = landscape || !self.usesSystemGestureManager;
     self.hotspotWindow.hotspotsEnabled = canReceive && needsWindowIngress;
     self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
-    self.landscapeCornerGuardGesture.enabled =
-        self.enabled && landscape && self.usesSystemGestureManager;
-    self.landscapeCornerGesture.enabled =
-        self.enabled && landscape && self.usesSystemGestureManager;
+
+    if (self.usesSystemGestureManager) {
+        self.cornerGuardGesture.enabled = self.enabled && !landscape;
+        self.cornerGesture.enabled = self.enabled && !landscape;
+        self.landscapeCornerGuardGesture.enabled = self.enabled && landscape;
+        self.landscapeCornerGesture.enabled = self.enabled && landscape;
+    } else {
+        self.cornerGuardGesture.enabled = self.enabled;
+        self.cornerGesture.enabled = self.enabled;
+        self.landscapeCornerGuardGesture.enabled = NO;
+        self.landscapeCornerGesture.enabled = NO;
+    }
 }
 
 - (void)updateWindowFrames {
     CGRect visualBounds = FLMVisualScreenBounds();
+    CGRect windowBounds = FLMSpringBoardWindowBounds();
     UIView *overlayRoot = self.overlayWindow.rootViewController.view;
     [overlayRoot layoutIfNeeded];
     UIInterfaceOrientation orientation =
@@ -2972,17 +2996,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             ? FLMLandscapeOrientationForSafeInsets(overlayRoot.safeAreaInsets)
             : UIInterfaceOrientationPortrait;
 
-    self.overlayWindow.frame = visualBounds;
+    self.overlayWindow.frame = windowBounds;
     FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, visualBounds,
                              orientation);
 
-    self.hotspotWindow.frame = visualBounds;
+    self.hotspotWindow.frame = windowBounds;
     self.hotspotWindow.visualBounds = visualBounds;
     self.hotspotWindow.visualOrientation = orientation;
 
-    self.homeDockWindow.frame = visualBounds;
+    self.homeDockWindow.frame = windowBounds;
 
-    self.floatingWindow.frame = visualBounds;
+    self.floatingWindow.frame = windowBounds;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     floatingWindow.visualBounds = visualBounds;
@@ -2992,7 +3016,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              visualBounds, orientation);
     self.floatingDimView.frame = self.floatingPresentationView.bounds;
 
-    self.floatingDockTouchGateWindow.frame = visualBounds;
+    self.floatingDockTouchGateWindow.frame = windowBounds;
     self.floatingDockTouchGateWindow.visualBounds = visualBounds;
     self.floatingDockTouchGateWindow.visualOrientation = orientation;
 
@@ -3003,6 +3027,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)displayGeometryDidChange:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         CGRect visualBounds = FLMVisualScreenBounds();
+        CGRect windowBounds = FLMSpringBoardWindowBounds();
         UIView *overlayRoot = self.overlayWindow.rootViewController.view;
         [overlayRoot layoutIfNeeded];
         UIInterfaceOrientation orientation =
@@ -3016,17 +3041,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // landscape (844x390). Do not overwrite the root view's geometry with
         // the physical bounds. Instead rotate only our presentation canvases
         // into a stable physical-display coordinate space.
-        self.overlayWindow.frame = visualBounds;
+        self.overlayWindow.frame = windowBounds;
         FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot,
                                  visualBounds, orientation);
 
-        self.hotspotWindow.frame = visualBounds;
+        self.hotspotWindow.frame = windowBounds;
         self.hotspotWindow.visualBounds = visualBounds;
         self.hotspotWindow.visualOrientation = orientation;
-        self.homeDockWindow.frame = visualBounds;
+        self.homeDockWindow.frame = windowBounds;
 
         if (self.floatingWindow.hidden) {
-            self.floatingWindow.frame = visualBounds;
+            self.floatingWindow.frame = windowBounds;
             FLMFloatingWindow *floatingWindow =
                 (FLMFloatingWindow *)self.floatingWindow;
             floatingWindow.visualBounds = visualBounds;
@@ -3037,16 +3062,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 visualBounds, orientation);
             self.floatingDimView.frame = self.floatingPresentationView.bounds;
 
-            self.floatingDockTouchGateWindow.frame = visualBounds;
+            self.floatingDockTouchGateWindow.frame = windowBounds;
             self.floatingDockTouchGateWindow.visualBounds = visualBounds;
             self.floatingDockTouchGateWindow.visualOrientation = orientation;
         }
         [self refreshWheelPriorityWindow];
 
         FLMEnqueueDiagnosticLine(
-            @"sb display-geometry-refresh notification=%@ visual=%@ overlayRoot=%@ deviceOrientation=%ld statusOrientation=%ld presentationOrientation=%ld landscape=%d systemManager=%d hotspotHidden=%d hotspotEnabled=%d",
+            @"sb display-geometry-refresh notification=%@ visual=%@ window=%@ overlayRoot=%@ deviceOrientation=%ld statusOrientation=%ld presentationOrientation=%ld landscape=%d systemManager=%d hotspotHidden=%d hotspotEnabled=%d",
             notification.name ?: @"<manual>",
             NSStringFromCGRect(visualBounds),
+            NSStringFromCGRect(windowBounds),
             NSStringFromCGRect(overlayRoot.bounds),
             (long)[UIDevice currentDevice].orientation,
             (long)FLMReportedSceneOrientation(),
@@ -3063,6 +3089,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 return;
             }
             CGRect settledBounds = FLMVisualScreenBounds();
+            CGRect settledWindowBounds = FLMSpringBoardWindowBounds();
             UIView *settledRoot =
                 self.overlayWindow.rootViewController.view;
             [settledRoot layoutIfNeeded];
@@ -3072,16 +3099,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                           settledRoot.safeAreaInsets)
                     : UIInterfaceOrientationPortrait;
 
-            self.overlayWindow.frame = settledBounds;
+            self.overlayWindow.frame = settledWindowBounds;
             FLMConfigureVisualCanvas(self.wheelContainer, settledRoot,
                                      settledBounds, settledOrientation);
 
-            self.hotspotWindow.frame = settledBounds;
+            self.hotspotWindow.frame = settledWindowBounds;
             self.hotspotWindow.visualBounds = settledBounds;
             self.hotspotWindow.visualOrientation = settledOrientation;
-            self.homeDockWindow.frame = settledBounds;
+            self.homeDockWindow.frame = settledWindowBounds;
 
-            self.floatingWindow.frame = settledBounds;
+            self.floatingWindow.frame = settledWindowBounds;
             FLMFloatingWindow *floatingWindow =
                 (FLMFloatingWindow *)self.floatingWindow;
             floatingWindow.visualBounds = settledBounds;
@@ -3092,15 +3119,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 settledBounds, settledOrientation);
             self.floatingDimView.frame = self.floatingPresentationView.bounds;
 
-            self.floatingDockTouchGateWindow.frame = settledBounds;
+            self.floatingDockTouchGateWindow.frame = settledWindowBounds;
             self.floatingDockTouchGateWindow.visualBounds = settledBounds;
             self.floatingDockTouchGateWindow.visualOrientation =
                 settledOrientation;
 
             [self refreshWheelPriorityWindow];
             FLMEnqueueDiagnosticLine(
-                @"sb display-geometry-settled visual=%@ overlayRoot=%@ presentationOrientation=%ld landscape=%d hotspotHidden=%d hotspotEnabled=%d",
+                @"sb display-geometry-settled visual=%@ window=%@ overlayRoot=%@ presentationOrientation=%ld landscape=%d hotspotHidden=%d hotspotEnabled=%d",
                 NSStringFromCGRect(settledBounds),
+                NSStringFromCGRect(settledWindowBounds),
                 NSStringFromCGRect(settledRoot.bounds),
                 (long)settledOrientation,
                 FLMBoundsAreLandscape(settledBounds),
@@ -3866,12 +3894,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.wheelPinned = YES;
     self.hotspotWindow.hotspotsEnabled = NO;
     self.overlayWindow.userInteractionEnabled = YES;
-    if (self.usesSystemGestureManager) {
-        self.modalGesture.enabled = YES;
-        self.wheelTapGesture.enabled = NO;
-    } else {
-        self.wheelTapGesture.enabled = YES;
-    }
+    BOOL useWindowSelection = FLMDisplayIsLandscape() ||
+                              !self.usesSystemGestureManager;
+    self.modalGesture.enabled = self.usesSystemGestureManager &&
+                                !useWindowSelection;
+    self.wheelTapGesture.enabled = useWindowSelection;
+    FLMEnqueueDiagnosticLine(
+        @"sb wheel-pinned selectionRoute=%@ visual=%@ window=%@",
+        useWindowSelection ? @"window" : @"system",
+        NSStringFromCGRect(FLMVisualScreenBounds()),
+        NSStringFromCGRect(FLMSpringBoardWindowBounds()));
     [self beginLockMonitoring];
     [UIView animateWithDuration:0.32
                           delay:0.0
@@ -3895,12 +3927,19 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGPoint point = [gesture locationInView:self.wheelContainer];
     FLMWheelItemView *item =
         [self itemNearPoint:point
-            maximumDistance:self.wheelIconSize * 0.5 + 2.0];
+            maximumDistance:self.wheelIconSize * 0.5 + 8.0];
+    FLMEnqueueDiagnosticLine(
+        @"sb wheel-window-select point={%.1f,%.1f} selected=%@",
+        point.x, point.y, item.identifier ?: @"<none>");
     [self dismissWheelLaunchingItem:item];
 }
 
 - (void)dismissWheelLaunchingItem:(FLMWheelItemView *)item {
     NSString *selectedIdentifier = [item.identifier copy];
+    FLMEnqueueDiagnosticLine(
+        @"sb wheel-dismiss selected=%@ pinned=%d landscape=%d",
+        selectedIdentifier ?: @"<none>", self.wheelPinned,
+        FLMDisplayIsLandscape());
     BOOL selectedIsCurrentFloating =
         !self.floatingWindow.hidden && self.floatingIdentifier.length > 0 &&
         [selectedIdentifier isEqualToString:self.floatingIdentifier];

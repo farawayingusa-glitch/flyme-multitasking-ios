@@ -209,10 +209,11 @@ done
 
 
 
-# 0.9.60 repairs the SpringBoard presentation-coordinate split observed in
-# Diagnostic(37): the physical display can be 844x390 while SpringBoard's root
-# view remains 390x844. Require a rotated child canvas, physical safe-area
-# normalization, and explicit touch conversion instead of forcing root geometry.
+# 0.9.61 keeps the SpringBoard presentation-coordinate split isolated and
+# requires UIWindow ownership to remain in SpringBoard's native bounds while the
+# physical 844x390 presentation lives only in rotated child canvases. Landscape
+# wheel ingress/selection must also stay in-window so system-manager and UIKit
+# coordinates cannot diverge again.
 for marker in \
     "FLMPhysicalLandscapeSafeInsets" \
     "FLMConfigureVisualCanvas" \
@@ -222,7 +223,12 @@ for marker in \
     "visualPointForGesture:" \
     "visualPointForTouch:" \
     "physicalSafe={" \
-    "overlayRoot=%@"; do
+    "overlayRoot=%@" \
+    "FLMSpringBoardWindowBounds" \
+    "self.overlayWindow.frame = windowBounds" \
+    "self.cornerGesture.enabled = self.enabled && !landscape" \
+    "sb wheel-pinned selectionRoute=%@" \
+    "sb wheel-window-select"; do
     require_source "$marker"
 done
 
@@ -318,4 +324,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.60 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts, dual-route wheel ingress, and physical presentation coordinates verified"
+echo "0.9.61 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts, native SpringBoard UIWindow ownership, landscape window-only wheel ingress, and physical presentation coordinates verified"

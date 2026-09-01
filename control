@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - Landscape Experimental 0.9.60
-Description: Landscape Experimental 0.9.60 on the stable 0.9.57 portrait baseline, keeping the locked landscape Scene/input contract and dual-route wheel ingress while repairing SpringBoard portrait-root versus physical-landscape presentation coordinates, physical safe-area mapping, portrait-strip hosting, and native landscape keyboard geometry without changing portrait Dock input isolation or ProMotion behavior.
+Name: Flyme Multitasking - Landscape Experimental 0.9.61
+Description: Landscape Experimental 0.9.61 on the stable 0.9.57 portrait baseline, keeping the landscape Scene/portrait-content contract while restoring SpringBoard UIWindow ownership to its native coordinate space, making the landscape hotspot the single wheel ingress and using in-window wheel selection so card launch no longer depends on mixed display-space routing.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.60
+Version: 0.9.61
