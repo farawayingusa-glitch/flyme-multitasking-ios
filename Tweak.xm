@@ -444,6 +444,20 @@ static BOOL FLMDisplayIsLandscape(void) {
     return FLMBoundsAreLandscape(FLMVisualScreenBounds());
 }
 
+static UIInterfaceOrientation FLMReportedSceneOrientation(void) {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (windowScene.activationState == UISceneActivationStateForegroundActive ||
+            windowScene.activationState == UISceneActivationStateForegroundInactive) {
+            return windowScene.interfaceOrientation;
+        }
+    }
+    return UIInterfaceOrientationUnknown;
+}
+
 static UIInterfaceOrientation FLMLandscapeOrientationForSafeInsets(
     UIEdgeInsets safeInsets) {
     // A notched iPhone exposes the physical top edge via the larger horizontal
@@ -461,8 +475,7 @@ static UIInterfaceOrientation FLMLandscapeOrientationForSafeInsets(
     if (deviceOrientation == UIDeviceOrientationLandscapeRight) {
         return UIInterfaceOrientationLandscapeLeft;
     }
-    UIInterfaceOrientation reported =
-        [UIApplication sharedApplication].statusBarOrientation;
+    UIInterfaceOrientation reported = FLMReportedSceneOrientation();
     if (UIInterfaceOrientationIsLandscape(reported)) {
         return reported;
     }
