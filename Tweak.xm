@@ -2280,12 +2280,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [[NSNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(displayGeometryDidChange:)
-                   name:UIApplicationDidChangeStatusBarOrientationNotification
+                   name:@"UIApplicationDidChangeStatusBarOrientationNotification"
                  object:nil];
         [[NSNotificationCenter defaultCenter]
             addObserver:self
                selector:@selector(displayGeometryDidChange:)
-                   name:UIApplicationDidChangeStatusBarFrameNotification
+                   name:@"UIApplicationDidChangeStatusBarFrameNotification"
                  object:nil];
         self.lastPortraitKeyboardHeight = 291.0;
         self.floatingKeyboardFrame = CGRectNull;
