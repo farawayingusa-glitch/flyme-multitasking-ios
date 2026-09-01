@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Experimental 0.9.59 (landscape wheel ingress repair; 0.9.57 portrait baseline)"
+#define FLMLogBuildString @"Landscape Experimental 0.9.60 (landscape presentation coordinate repair; 0.9.57 portrait baseline)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -510,9 +510,74 @@ static UIInterfaceOrientation FLMLandscapeOrientationForSafeInsets(
     return UIInterfaceOrientationLandscapeLeft;
 }
 
+static UIEdgeInsets FLMPhysicalLandscapeSafeInsets(
+    UIEdgeInsets springBoardInsets,
+    UIInterfaceOrientation orientation) {
+    // SpringBoard can keep reporting its portrait safe area while another
+    // application's Scene owns the display in landscape. Preserve genuine
+    // landscape left/right insets when present; otherwise rotate the portrait
+    // sensor/home-indicator values into physical landscape coordinates.
+    if (springBoardInsets.left > 1.0 || springBoardInsets.right > 1.0) {
+        return springBoardInsets;
+    }
+    CGFloat sensorInset = MAX(0.0, springBoardInsets.top);
+    CGFloat bottomInset = springBoardInsets.bottom > 1.0
+                              ? MIN(21.0, springBoardInsets.bottom)
+                              : 0.0;
+    if (orientation == UIInterfaceOrientationLandscapeRight) {
+        return UIEdgeInsetsMake(0.0, 0.0, bottomInset, sensorInset);
+    }
+    return UIEdgeInsetsMake(0.0, sensorInset, bottomInset, 0.0);
+}
+
+static CGPoint FLMVisualPointFromRootPoint(CGPoint rootPoint,
+                                           CGRect rootBounds,
+                                           CGRect visualBounds,
+                                           UIInterfaceOrientation orientation) {
+    if (!FLMBoundsAreLandscape(visualBounds) ||
+        CGRectGetWidth(rootBounds) > CGRectGetHeight(rootBounds) + 1.0) {
+        return rootPoint;
+    }
+    CGFloat visualWidth = CGRectGetWidth(visualBounds);
+    CGFloat visualHeight = CGRectGetHeight(visualBounds);
+    if (orientation == UIInterfaceOrientationLandscapeRight) {
+        return CGPointMake(visualWidth - rootPoint.y, rootPoint.x);
+    }
+    return CGPointMake(rootPoint.y, visualHeight - rootPoint.x);
+}
+
+static void FLMConfigureVisualCanvas(UIView *canvas,
+                                     UIView *rootView,
+                                     CGRect visualBounds,
+                                     UIInterfaceOrientation orientation) {
+    if (!canvas || !rootView) {
+        return;
+    }
+    CGRect rootBounds = rootView.bounds;
+    canvas.autoresizingMask = UIViewAutoresizingNone;
+    canvas.transform = CGAffineTransformIdentity;
+    if (FLMBoundsAreLandscape(visualBounds) &&
+        CGRectGetWidth(rootBounds) <= CGRectGetHeight(rootBounds) + 1.0) {
+        canvas.bounds = CGRectMake(0.0, 0.0,
+                                   CGRectGetWidth(visualBounds),
+                                   CGRectGetHeight(visualBounds));
+        canvas.center = CGPointMake(CGRectGetMidX(rootBounds),
+                                    CGRectGetMidY(rootBounds));
+        CGFloat angle =
+            orientation == UIInterfaceOrientationLandscapeRight
+                ? -(CGFloat)M_PI_2
+                : (CGFloat)M_PI_2;
+        canvas.transform = CGAffineTransformMakeRotation(angle);
+        return;
+    }
+    canvas.transform = CGAffineTransformIdentity;
+    canvas.frame = rootBounds;
+}
+
 static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
-    // System gesture points, SpringBoard windows and the card all remain in the
-    // same physical display coordinate space. Never swap x/y in landscape.
+    // _UISystemGestureManager already reports display-space points. Window
+    // gestures are converted from SpringBoard's root coordinate space by the
+    // controller when a landscape presentation canvas is active.
     return rawPoint;
 }
 
@@ -646,6 +711,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @interface FLMDockTouchGateWindow : FLMOverlayWindow
 @property(nonatomic, assign) BOOL dockTouchGateEnabled;
 @property(nonatomic, assign) BOOL wheelPriorityActive;
+@property(nonatomic, assign) CGRect visualBounds;
+@property(nonatomic, assign) UIInterfaceOrientation visualOrientation;
 @property(nonatomic, assign) CGRect dockCardFrame;
 @property(nonatomic, assign) CGRect dockHandleFrame;
 @property(nonatomic, assign) CGRect dockResizeFrame;
@@ -657,41 +724,46 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
     if (!self.dockTouchGateEnabled || FLMDeviceIsLocked()) {
         return nil;
     }
+    CGRect visualBounds = CGRectIsEmpty(self.visualBounds)
+                              ? FLMVisualScreenBounds()
+                              : self.visualBounds;
+    UIView *rootView = self.rootViewController.view;
+    CGPoint visualPoint = FLMVisualPointFromRootPoint(
+        point, rootView.bounds, visualBounds, self.visualOrientation);
     if (self.wheelPriorityActive &&
-        FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
+        FLMPointInsideCornerTrigger(visualPoint, visualBounds, NULL)) {
         UITouch *touch = [event.allTouches anyObject];
         if (touch && touch.phase == UITouchPhaseBegan) {
             FLMEnqueueDiagnosticLine(
                 @"sb dock-input-gate owner=wheel point={%.1f,%.1f} touch=%p",
-                point.x, point.y, (__bridge void *)touch);
+                visualPoint.x, visualPoint.y, (__bridge void *)touch);
         }
         return nil;
     }
     BOOL insideCard = !CGRectIsNull(self.dockCardFrame) &&
                       !CGRectIsEmpty(self.dockCardFrame) &&
                       CGRectContainsPoint(CGRectInset(self.dockCardFrame, -3.0, -3.0),
-                                          point);
+                                          visualPoint);
     BOOL insideHandle = !CGRectIsNull(self.dockHandleFrame) &&
                         !CGRectIsEmpty(self.dockHandleFrame) &&
                         CGRectContainsPoint(CGRectInset(self.dockHandleFrame,
                                                         -18.0,
                                                         -18.0),
-                                            point);
+                                            visualPoint);
     BOOL insideResize = !CGRectIsNull(self.dockResizeFrame) &&
                         !CGRectIsEmpty(self.dockResizeFrame) &&
                         CGRectContainsPoint(CGRectInset(self.dockResizeFrame,
                                                         -10.0,
                                                         -10.0),
-                                            point);
+                                            visualPoint);
     if (!insideCard && !insideHandle && !insideResize) {
         return nil;
     }
-    UIView *rootView = self.rootViewController.view;
     UITouch *touch = [event.allTouches anyObject];
     if (touch && touch.phase == UITouchPhaseBegan) {
         FLMEnqueueDiagnosticLine(
             @"sb dock-input-gate owner=dock card=%d handle=%d resize=%d point={%.1f,%.1f} touch=%p",
-            insideCard, insideHandle, insideResize, point.x, point.y,
+            insideCard, insideHandle, insideResize, visualPoint.x, visualPoint.y,
             (__bridge void *)touch);
     }
     return rootView;
@@ -725,6 +797,8 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @end
 
 @interface FLMFloatingWindow : FLMOverlayWindow
+@property(nonatomic, assign) CGRect visualBounds;
+@property(nonatomic, assign) UIInterfaceOrientation visualOrientation;
 @property(nonatomic, assign) BOOL passesTouchesOutsideFloatingContent;
 @property(nonatomic, assign) BOOL suppressesCornerRoutingDuringDockGesture;
 @property(nonatomic, assign) CGRect keyboardPassThroughFrame;
@@ -758,8 +832,15 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    CGRect visualBounds = CGRectIsEmpty(self.visualBounds)
+                              ? FLMVisualScreenBounds()
+                              : self.visualBounds;
+    UIView *rootView = self.rootViewController.view;
+    CGPoint visualPoint = FLMVisualPointFromRootPoint(
+        point, rootView.bounds, visualBounds, self.visualOrientation);
+
     // A remote scene can retain an oversized hit-test view for one layout
-    // transaction after it is reattached.  Always give the centered handle
+    // transaction after it is reattached. Always give the centered handle
     // first refusal: it owns the only gestures that leave centered mode.
     UIView *primaryControl = self.floatingPrimaryControlView;
     if (primaryControl && !primaryControl.hidden &&
@@ -772,54 +853,61 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
         }
     }
     if (self.suppressesCornerRoutingDuringDockGesture) {
-        // A dock drag owns the touch stream until its settle animation ends.
-        // Without this short-lived guard, crossing a bottom corner changes the
-        // window route from the dock gesture to the wheel hotspot for one
-        // compositor transaction, which presents as a one-frame flash.
         UIView *hitView = [super hitTest:point withEvent:event];
-        return hitView ?: self.rootViewController.view;
+        return hitView ?: rootView;
     }
     if (!CGRectIsNull(self.keyboardPassThroughFrame) &&
-        CGRectContainsPoint(self.keyboardPassThroughFrame, point)) {
+        CGRectContainsPoint(self.keyboardPassThroughFrame, visualPoint)) {
         FLMLogFloatingHitTest(self, point, event, nil, @"keyboard-pass");
         return nil;
     }
     if (self.passesTouchesOutsideFloatingContent) {
-        BOOL insideContent =
-            self.floatingContentView &&
-            CGRectContainsPoint(CGRectInset(self.floatingContentView.frame, -2.0, -2.0),
-                                point);
-        BOOL insidePrimaryControl =
-            self.floatingPrimaryControlView &&
-            !self.floatingPrimaryControlView.hidden &&
-            CGRectContainsPoint(CGRectInset(self.floatingPrimaryControlView.frame,
-                                            -6.0,
-                                            -6.0),
-                                point);
-        BOOL insideSecondaryControl =
-            self.floatingSecondaryControlView &&
-            !self.floatingSecondaryControlView.hidden &&
-            CGRectContainsPoint(CGRectInset(self.floatingSecondaryControlView.frame,
-                                            -12.0,
-                                            -12.0),
-                                point);
+        BOOL insideContent = NO;
+        if (self.floatingContentView) {
+            CGPoint local = [self convertPoint:point toView:self.floatingContentView];
+            insideContent =
+                CGRectContainsPoint(CGRectInset(self.floatingContentView.bounds,
+                                                -2.0, -2.0),
+                                    local);
+        }
+        BOOL insidePrimaryControl = NO;
+        if (self.floatingPrimaryControlView &&
+            !self.floatingPrimaryControlView.hidden) {
+            CGPoint local =
+                [self convertPoint:point toView:self.floatingPrimaryControlView];
+            insidePrimaryControl =
+                CGRectContainsPoint(CGRectInset(
+                                        self.floatingPrimaryControlView.bounds,
+                                        -6.0, -6.0),
+                                    local);
+        }
+        BOOL insideSecondaryControl = NO;
+        if (self.floatingSecondaryControlView &&
+            !self.floatingSecondaryControlView.hidden) {
+            CGPoint local =
+                [self convertPoint:point toView:self.floatingSecondaryControlView];
+            insideSecondaryControl =
+                CGRectContainsPoint(CGRectInset(
+                                        self.floatingSecondaryControlView.bounds,
+                                        -12.0, -12.0),
+                                    local);
+        }
         if (!insideContent && !insidePrimaryControl && !insideSecondaryControl) {
-            // The wheel owns the corner trigger even while the card is docked
-            // or hidden: keep the touch inside the window so the in-window
-            // corner recognizers can summon the wheel instead of letting the
-            // touch pass through to the app below.
-            if (FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
+            if (FLMPointInsideCornerTrigger(visualPoint, visualBounds, NULL)) {
                 FLMLogFloatingHitTest(self, point, event, nil, @"wheel-corner");
                 UIView *hitView = [super hitTest:point withEvent:event];
-                return hitView ?: self.rootViewController.view;
+                return hitView ?: rootView;
             }
             FLMLogFloatingHitTest(self, point, event, nil, @"docked-pass");
             return nil;
         }
     }
     UIView *hitView = [super hitTest:point withEvent:event];
-    BOOL insideCard = self.floatingContentView &&
-                      CGRectContainsPoint(self.floatingContentView.frame, point);
+    BOOL insideCard = NO;
+    if (self.floatingContentView) {
+        CGPoint local = [self convertPoint:point toView:self.floatingContentView];
+        insideCard = CGRectContainsPoint(self.floatingContentView.bounds, local);
+    }
     FLMLogFloatingHitTest(self, point, event, hitView,
                           insideCard ? @"card" : @"backdrop");
     return hitView;
@@ -829,6 +917,8 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 
 @interface FLMHotspotWindow : UIWindow
 @property(nonatomic, assign) BOOL hotspotsEnabled;
+@property(nonatomic, assign) CGRect visualBounds;
+@property(nonatomic, assign) UIInterfaceOrientation visualOrientation;
 @end
 
 @implementation FLMHotspotWindow
@@ -838,15 +928,16 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    // Lock-screen exclusion is decided by the gesture delegate. Do not call
-    // the private lock-state aggregate from this top-level window: on some
-    // SpringBoard generations one of its compatibility selectors reports an
-    // active lock-screen service even while the device is unlocked, which
-    // would make the entire wheel entry disappear before UIKit arbitration.
     if (!self.hotspotsEnabled) {
         return nil;
     }
-    if (!FLMPointInsideCornerTrigger(point, self.bounds, NULL)) {
+    CGRect visualBounds = CGRectIsEmpty(self.visualBounds)
+                              ? FLMVisualScreenBounds()
+                              : self.visualBounds;
+    UIView *rootView = self.rootViewController.view;
+    CGPoint visualPoint = FLMVisualPointFromRootPoint(
+        point, rootView.bounds, visualBounds, self.visualOrientation);
+    if (!FLMPointInsideCornerTrigger(visualPoint, visualBounds, NULL)) {
         return nil;
     }
     return [super hitTest:point withEvent:event];
@@ -900,8 +991,39 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
         // _UISystemGestureManager does not consistently ask the delegate's
         // shouldReceiveTouch: in landscape. Capture the raw display-space
         // ingress here so shouldBegin never depends on that optional callback.
-        self.flmFirstTouchPoint =
+        CGPoint firstPoint =
             FLMVisualPointFromRawPoint([firstTouch locationInView:nil]);
+        UIWindow *touchWindow = firstTouch.view.window;
+        if ([touchWindow isKindOfClass:[FLMHotspotWindow class]]) {
+            FLMHotspotWindow *window = (FLMHotspotWindow *)touchWindow;
+            UIView *root = window.rootViewController.view;
+            firstPoint = FLMVisualPointFromRootPoint(
+                [firstTouch locationInView:root], root.bounds,
+                CGRectIsEmpty(window.visualBounds)
+                    ? FLMVisualScreenBounds()
+                    : window.visualBounds,
+                window.visualOrientation);
+        } else if ([touchWindow isKindOfClass:[FLMFloatingWindow class]]) {
+            FLMFloatingWindow *window = (FLMFloatingWindow *)touchWindow;
+            UIView *root = window.rootViewController.view;
+            firstPoint = FLMVisualPointFromRootPoint(
+                [firstTouch locationInView:root], root.bounds,
+                CGRectIsEmpty(window.visualBounds)
+                    ? FLMVisualScreenBounds()
+                    : window.visualBounds,
+                window.visualOrientation);
+        } else if ([touchWindow isKindOfClass:[FLMDockTouchGateWindow class]]) {
+            FLMDockTouchGateWindow *window =
+                (FLMDockTouchGateWindow *)touchWindow;
+            UIView *root = window.rootViewController.view;
+            firstPoint = FLMVisualPointFromRootPoint(
+                [firstTouch locationInView:root], root.bounds,
+                CGRectIsEmpty(window.visualBounds)
+                    ? FLMVisualScreenBounds()
+                    : window.visualBounds,
+                window.visualOrientation);
+        }
+        self.flmFirstTouchPoint = firstPoint;
         self.flmHasFirstTouchPoint = YES;
     }
     [super touchesBegan:touches withEvent:event];
@@ -1130,11 +1252,19 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
     }
     for (UITouch *touch in touches) {
         CGPoint point = [touch locationInView:self.view];
-        BOOL inCard = self.protectedView &&
-                      CGRectContainsPoint(self.protectedView.frame, point);
-        BOOL inHandle = self.secondaryProtectedView &&
-                        CGRectContainsPoint(self.secondaryProtectedView.frame,
-                                            point);
+        BOOL inCard = NO;
+        if (self.protectedView) {
+            CGPoint protectedPoint = [touch locationInView:self.protectedView];
+            inCard = CGRectContainsPoint(self.protectedView.bounds,
+                                         protectedPoint);
+        }
+        BOOL inHandle = NO;
+        if (self.secondaryProtectedView) {
+            CGPoint handlePoint =
+                [touch locationInView:self.secondaryProtectedView];
+            inHandle = CGRectContainsPoint(
+                self.secondaryProtectedView.bounds, handlePoint);
+        }
         BOOL inKeyboard = !CGRectIsNull(self.additionalProtectedFrame) &&
                           CGRectContainsPoint(self.additionalProtectedFrame,
                                               point);
@@ -1292,6 +1422,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 @property(nonatomic, strong) FLMHomeDockWindow *homeDockWindow;
 @property(nonatomic, strong) FLMOverlayWindow *floatingWindow;
 @property(nonatomic, strong) FLMDockTouchGateWindow *floatingDockTouchGateWindow;
+@property(nonatomic, strong) UIView *floatingPresentationView;
 @property(nonatomic, strong) UIView *floatingDimView;
 @property(nonatomic, strong) UIView *floatingDockShadowView;
 @property(nonatomic, strong) UIView *floatingContainer;
@@ -1547,6 +1678,10 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 - (CGFloat)effectiveCenteredDockSwipeThreshold;
 - (CGFloat)effectiveDockedPresentationWidth;
 - (BOOL)isLandscapeFloatingSession;
+- (UIView *)floatingLayoutView;
+- (UIEdgeInsets)floatingLayoutSafeInsets;
+- (CGPoint)visualPointForGesture:(UIGestureRecognizer *)gesture;
+- (CGPoint)visualPointForTouch:(UITouch *)touch;
 - (void)captureFloatingOrientationContract;
 - (void)clearFloatingOrientationContract;
 - (CGRect)landscapeFloatingFrame;
@@ -2534,10 +2669,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingWindow.hidden = YES;
     ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame = CGRectNull;
 
+    self.floatingPresentationView = [[UIView alloc] initWithFrame:bounds];
+    self.floatingPresentationView.backgroundColor = [UIColor clearColor];
+    self.floatingPresentationView.userInteractionEnabled = YES;
+    [self.floatingWindow.rootViewController.view
+        addSubview:self.floatingPresentationView];
+
     self.floatingDimView = [[UIView alloc] initWithFrame:bounds];
     self.floatingDimView.backgroundColor =
         [UIColor colorWithWhite:0.0 alpha:0.12];
-    [self.floatingWindow.rootViewController.view addSubview:self.floatingDimView];
+    [self.floatingPresentationView addSubview:self.floatingDimView];
 
     self.floatingDockShadowView = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingDockShadowView.backgroundColor =
@@ -2549,14 +2690,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingDockShadowView.layer.shadowOpacity = 0.18;
     self.floatingDockShadowView.layer.shadowRadius = 14.0;
     self.floatingDockShadowView.layer.shadowOffset = CGSizeMake(0.0, 3.0);
-    [self.floatingWindow.rootViewController.view
-        addSubview:self.floatingDockShadowView];
+    [self.floatingPresentationView addSubview:self.floatingDockShadowView];
 
     self.floatingContainer = [[UIView alloc] initWithFrame:CGRectZero];
     self.floatingContainer.backgroundColor = [UIColor blackColor];
     self.floatingContainer.layer.cornerRadius = 22.0;
     self.floatingContainer.layer.masksToBounds = YES;
-    [self.floatingWindow.rootViewController.view addSubview:self.floatingContainer];
+    [self.floatingPresentationView addSubview:self.floatingContainer];
 
     self.floatingStatusLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.floatingStatusLabel.text = @"正在打开…";
@@ -2596,7 +2736,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingHandleBar.layer.cornerRadius = 2.5;
     self.floatingHandleBar.userInteractionEnabled = NO;
     [self.floatingHandle addSubview:self.floatingHandleBar];
-    [self.floatingWindow.rootViewController.view addSubview:self.floatingHandle];
+    [self.floatingPresentationView addSubview:self.floatingHandle];
 
     // Keep the resize interaction as a transparent hit target.  The previous
     // L-shaped CAShapeLayer was only a visual affordance and is intentionally
@@ -2605,8 +2745,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingResizeHandle.backgroundColor = [UIColor clearColor];
     self.floatingResizeHandle.hidden = YES;
     self.floatingResizeHandle.userInteractionEnabled = YES;
-    [self.floatingWindow.rootViewController.view
-        addSubview:self.floatingResizeHandle];
+    [self.floatingPresentationView addSubview:self.floatingResizeHandle];
 
     self.floatingBackdropTap =
         [[FLMOutsideTapGestureRecognizer alloc]
@@ -2615,7 +2754,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingBackdropTap.protectedView = self.floatingContainer;
     self.floatingBackdropTap.secondaryProtectedView = self.floatingHandle;
     self.floatingBackdropTap.delegate = self;
-    [self.floatingWindow.rootViewController.view
+    [self.floatingPresentationView
         addGestureRecognizer:self.floatingBackdropTap];
 
     self.floatingHandlePress =
@@ -2825,53 +2964,97 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)updateWindowFrames {
-    CGRect bounds = FLMVisualScreenBounds();
-    self.overlayWindow.frame = bounds;
-    self.overlayWindow.rootViewController.view.frame = bounds;
-    self.wheelContainer.frame = bounds;
-    self.hotspotWindow.frame = bounds;
-    self.hotspotWindow.rootViewController.view.frame = bounds;
-    self.homeDockWindow.frame = bounds;
-    self.homeDockWindow.rootViewController.view.frame = bounds;
-    self.floatingWindow.frame = bounds;
-    self.floatingWindow.rootViewController.view.frame = bounds;
-    self.floatingDockTouchGateWindow.frame = bounds;
-    self.floatingDockTouchGateWindow.rootViewController.view.frame = bounds;
-    self.floatingDimView.frame = bounds;
+    CGRect visualBounds = FLMVisualScreenBounds();
+    UIView *overlayRoot = self.overlayWindow.rootViewController.view;
+    [overlayRoot layoutIfNeeded];
+    UIInterfaceOrientation orientation =
+        FLMBoundsAreLandscape(visualBounds)
+            ? FLMLandscapeOrientationForSafeInsets(overlayRoot.safeAreaInsets)
+            : UIInterfaceOrientationPortrait;
+
+    self.overlayWindow.frame = visualBounds;
+    FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, visualBounds,
+                             orientation);
+
+    self.hotspotWindow.frame = visualBounds;
+    self.hotspotWindow.visualBounds = visualBounds;
+    self.hotspotWindow.visualOrientation = orientation;
+
+    self.homeDockWindow.frame = visualBounds;
+
+    self.floatingWindow.frame = visualBounds;
+    FLMFloatingWindow *floatingWindow =
+        (FLMFloatingWindow *)self.floatingWindow;
+    floatingWindow.visualBounds = visualBounds;
+    floatingWindow.visualOrientation = orientation;
+    FLMConfigureVisualCanvas(self.floatingPresentationView,
+                             self.floatingWindow.rootViewController.view,
+                             visualBounds, orientation);
+    self.floatingDimView.frame = self.floatingPresentationView.bounds;
+
+    self.floatingDockTouchGateWindow.frame = visualBounds;
+    self.floatingDockTouchGateWindow.visualBounds = visualBounds;
+    self.floatingDockTouchGateWindow.visualOrientation = orientation;
+
     [self layoutFloatingWindow];
     [self updateFloatingDockTouchGate];
 }
 
 - (void)displayGeometryDidChange:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
-        CGRect bounds = FLMVisualScreenBounds();
+        CGRect visualBounds = FLMVisualScreenBounds();
+        UIView *overlayRoot = self.overlayWindow.rootViewController.view;
+        [overlayRoot layoutIfNeeded];
+        UIInterfaceOrientation orientation =
+            FLMBoundsAreLandscape(visualBounds)
+                ? FLMLandscapeOrientationForSafeInsets(
+                      overlayRoot.safeAreaInsets)
+                : UIInterfaceOrientationPortrait;
 
-        // Entry windows follow the physical display even when SpringBoard's
-        // interfaceOrientation is stale. An already-open floating session owns
-        // a locked geometry contract, so only resize that host while hidden.
-        self.overlayWindow.frame = bounds;
-        self.overlayWindow.rootViewController.view.frame = bounds;
-        self.wheelContainer.frame = bounds;
-        self.hotspotWindow.frame = bounds;
-        self.hotspotWindow.rootViewController.view.frame = bounds;
-        self.homeDockWindow.frame = bounds;
-        self.homeDockWindow.rootViewController.view.frame = bounds;
+        // SpringBoard's UIWindow/root coordinate space can remain portrait
+        // (390x844) while a foreground application owns the display in
+        // landscape (844x390). Do not overwrite the root view's geometry with
+        // the physical bounds. Instead rotate only our presentation canvases
+        // into a stable physical-display coordinate space.
+        self.overlayWindow.frame = visualBounds;
+        FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot,
+                                 visualBounds, orientation);
+
+        self.hotspotWindow.frame = visualBounds;
+        self.hotspotWindow.visualBounds = visualBounds;
+        self.hotspotWindow.visualOrientation = orientation;
+        self.homeDockWindow.frame = visualBounds;
+
         if (self.floatingWindow.hidden) {
-            self.floatingWindow.frame = bounds;
-            self.floatingWindow.rootViewController.view.frame = bounds;
-            self.floatingDockTouchGateWindow.frame = bounds;
-            self.floatingDockTouchGateWindow.rootViewController.view.frame = bounds;
-            self.floatingDimView.frame = bounds;
+            self.floatingWindow.frame = visualBounds;
+            FLMFloatingWindow *floatingWindow =
+                (FLMFloatingWindow *)self.floatingWindow;
+            floatingWindow.visualBounds = visualBounds;
+            floatingWindow.visualOrientation = orientation;
+            FLMConfigureVisualCanvas(
+                self.floatingPresentationView,
+                self.floatingWindow.rootViewController.view,
+                visualBounds, orientation);
+            self.floatingDimView.frame = self.floatingPresentationView.bounds;
+
+            self.floatingDockTouchGateWindow.frame = visualBounds;
+            self.floatingDockTouchGateWindow.visualBounds = visualBounds;
+            self.floatingDockTouchGateWindow.visualOrientation = orientation;
         }
         [self refreshWheelPriorityWindow];
 
         FLMEnqueueDiagnosticLine(
-            @"sb display-geometry-refresh notification=%@ bounds=%@ deviceOrientation=%ld statusOrientation=%ld landscape=%d systemManager=%d hotspotHidden=%d hotspotEnabled=%d",
-            notification.name ?: @"<manual>", NSStringFromCGRect(bounds),
+            @"sb display-geometry-refresh notification=%@ visual=%@ overlayRoot=%@ deviceOrientation=%ld statusOrientation=%ld presentationOrientation=%ld landscape=%d systemManager=%d hotspotHidden=%d hotspotEnabled=%d",
+            notification.name ?: @"<manual>",
+            NSStringFromCGRect(visualBounds),
+            NSStringFromCGRect(overlayRoot.bounds),
             (long)[UIDevice currentDevice].orientation,
             (long)FLMReportedSceneOrientation(),
-            FLMBoundsAreLandscape(bounds), self.usesSystemGestureManager,
-            self.hotspotWindow.hidden, self.hotspotWindow.hotspotsEnabled);
+            (long)orientation,
+            FLMBoundsAreLandscape(visualBounds),
+            self.usesSystemGestureManager,
+            self.hotspotWindow.hidden,
+            self.hotspotWindow.hotspotsEnabled);
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(0.18 * NSEC_PER_SEC)),
@@ -2880,24 +3063,49 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 return;
             }
             CGRect settledBounds = FLMVisualScreenBounds();
+            UIView *settledRoot =
+                self.overlayWindow.rootViewController.view;
+            [settledRoot layoutIfNeeded];
+            UIInterfaceOrientation settledOrientation =
+                FLMBoundsAreLandscape(settledBounds)
+                    ? FLMLandscapeOrientationForSafeInsets(
+                          settledRoot.safeAreaInsets)
+                    : UIInterfaceOrientationPortrait;
+
             self.overlayWindow.frame = settledBounds;
-            self.overlayWindow.rootViewController.view.frame = settledBounds;
-            self.wheelContainer.frame = settledBounds;
+            FLMConfigureVisualCanvas(self.wheelContainer, settledRoot,
+                                     settledBounds, settledOrientation);
+
             self.hotspotWindow.frame = settledBounds;
-            self.hotspotWindow.rootViewController.view.frame = settledBounds;
+            self.hotspotWindow.visualBounds = settledBounds;
+            self.hotspotWindow.visualOrientation = settledOrientation;
             self.homeDockWindow.frame = settledBounds;
-            self.homeDockWindow.rootViewController.view.frame = settledBounds;
+
             self.floatingWindow.frame = settledBounds;
-            self.floatingWindow.rootViewController.view.frame = settledBounds;
+            FLMFloatingWindow *floatingWindow =
+                (FLMFloatingWindow *)self.floatingWindow;
+            floatingWindow.visualBounds = settledBounds;
+            floatingWindow.visualOrientation = settledOrientation;
+            FLMConfigureVisualCanvas(
+                self.floatingPresentationView,
+                self.floatingWindow.rootViewController.view,
+                settledBounds, settledOrientation);
+            self.floatingDimView.frame = self.floatingPresentationView.bounds;
+
             self.floatingDockTouchGateWindow.frame = settledBounds;
-            self.floatingDockTouchGateWindow.rootViewController.view.frame = settledBounds;
-            self.floatingDimView.frame = settledBounds;
+            self.floatingDockTouchGateWindow.visualBounds = settledBounds;
+            self.floatingDockTouchGateWindow.visualOrientation =
+                settledOrientation;
+
             [self refreshWheelPriorityWindow];
             FLMEnqueueDiagnosticLine(
-                @"sb display-geometry-settled bounds=%@ landscape=%d hotspotHidden=%d hotspotEnabled=%d",
+                @"sb display-geometry-settled visual=%@ overlayRoot=%@ presentationOrientation=%ld landscape=%d hotspotHidden=%d hotspotEnabled=%d",
                 NSStringFromCGRect(settledBounds),
+                NSStringFromCGRect(settledRoot.bounds),
+                (long)settledOrientation,
                 FLMBoundsAreLandscape(settledBounds),
-                self.hotspotWindow.hidden, self.hotspotWindow.hotspotsEnabled);
+                self.hotspotWindow.hidden,
+                self.hotspotWindow.hotspotsEnabled);
         });
     });
 }
@@ -2924,7 +3132,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                         !FLMDeviceIsLocked();
         if (canBegin) {
             CGPoint point =
-                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]);
+                [self visualPointForGesture:gestureRecognizer];
             if (self.floatingDockHidden) {
                 canBegin =
                     CGRectContainsPoint(self.floatingHandle.frame, point) ||
@@ -2965,13 +3173,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (self.enabled && !self.wheelPinned &&
             self.itemIdentifiers.count > 0 &&
             FLMPointInsideCornerTrigger(
-                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]),
+                [self visualPointForGesture:gestureRecognizer],
                 FLMVisualScreenBounds(),
                 NULL)) {
             FLMEnqueueDiagnosticLine(
                 @"sb should-begin recognizer=exclusive gate=wheel-corner point={%.1f,%.1f}",
-                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).x,
-                FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]).y);
+                [self visualPointForGesture:gestureRecognizer].x,
+                [self visualPointForGesture:gestureRecognizer].y);
             return NO;
         }
         return !self.floatingWindow.hidden && !self.floatingDocked &&
@@ -3008,7 +3216,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // without delegate delivery. The recognizer's current point is still a
         // better physical-space candidate than a stale point from a prior touch.
         CGPoint currentPoint =
-            FLMVisualPointFromRawPoint([gestureRecognizer locationInView:nil]);
+            [self visualPointForGesture:gestureRecognizer];
         if (!CGPointEqualToPoint(currentPoint, CGPointZero)) {
             startPoint = currentPoint;
         }
@@ -3038,8 +3246,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             self.floatingCloseInProgress || FLMDeviceIsLocked()) {
             return NO;
         }
-        CGPoint rawPoint = [touch locationInView:nil];
-        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        CGPoint point = [self visualPointForTouch:touch];
         CGRect screenBounds = FLMVisualScreenBounds();
         CGFloat zoneLeft = CGRectGetWidth(screenBounds) * 0.30;
         CGFloat zoneRight = CGRectGetWidth(screenBounds) * 0.70;
@@ -3068,8 +3275,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             FLMDeviceIsLocked()) {
             return NO;
         }
-        CGPoint rawPoint = [touch locationInView:nil];
-        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        CGPoint point = [self visualPointForTouch:touch];
         BOOL staleStream =
             self.floatingDockInputBlockedUntilNextTouch &&
             self.floatingDockInputBlockCutoffTimestamp > 0.0 &&
@@ -3135,7 +3341,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     if (gestureRecognizer == self.floatingBackdropTap) {
         BOOL accepted = !self.floatingWindow.hidden;
-        CGPoint point = [touch locationInView:self.floatingWindow.rootViewController.view];
+        CGPoint point = [self visualPointForTouch:touch];
         FLMEnqueueDiagnosticLine(
             @"sb touch-delegate recognizer=backdrop touch=%p timestamp=%.6f accepted=%d point={%.1f,%.1f} view=%@",
             (__bridge void *)touch, touch.timestamp, accepted, point.x, point.y,
@@ -3165,8 +3371,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 (__bridge void *)touchView);
             return NO;
         }
-        CGPoint rawPoint = [touch locationInView:nil];
-        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        CGPoint point = [self visualPointForTouch:touch];
         // The wheel owns the corner trigger while it can summon: the exclusive
         // close gesture must never arbitrate away the corner swipe that opens
         // the wheel over a centered card.
@@ -3215,8 +3420,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             !FLMDisplayIsLandscape()) {
             return NO;
         }
-        CGPoint rawPoint = [touch locationInView:nil];
-        CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+        CGPoint point = [self visualPointForTouch:touch];
         BOOL accepted = FLMPointInsideCornerTrigger(point,
                                                     FLMVisualScreenBounds(),
                                                     NULL);
@@ -3247,14 +3451,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return NO;
     }
     CGRect bounds = FLMVisualScreenBounds();
-    CGPoint rawPoint = [touch locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self visualPointForTouch:touch];
     BOOL fromRight = NO;
     if (!FLMPointInsideCornerTrigger(point, bounds, &fromRight)) {
         return NO;
     }
     self.presentingFromRight = fromRight;
     self.cornerGestureStartPoint = point;
+    FLMCornerGestureRecognizer *cornerRecognizer =
+        (FLMCornerGestureRecognizer *)gestureRecognizer;
+    cornerRecognizer.flmFirstTouchPoint = point;
+    cornerRecognizer.flmHasFirstTouchPoint = YES;
     self.wheelGestureActive = NO;
     NSString *route =
         gestureRecognizer == self.cornerGesture ? @"opener" :
@@ -3317,8 +3524,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.wheelPinned) {
         return;
     }
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self visualPointForGesture:gesture];
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged:
@@ -3346,7 +3552,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // gestures cannot consume the same touch stream. Keep a breadcrumb for
     // the priority boundary because this guard runs before the wheel opener.
     if (gesture.state == UIGestureRecognizerStateBegan) {
-        CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
+        CGPoint point = [self visualPointForGesture:gesture];
         FLMEnqueueDiagnosticLine(
             @"sb wheel-priority-guard began point={%.1f,%.1f}",
             point.x, point.y);
@@ -3410,8 +3616,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleCornerGesture:(UIGestureRecognizer *)gesture {
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self visualPointForGesture:gesture];
     FLMCornerGestureRecognizer *cornerRecognizer =
         [gesture isKindOfClass:[FLMCornerGestureRecognizer class]]
             ? (FLMCornerGestureRecognizer *)gesture
@@ -3515,17 +3720,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     UIView *overlayRoot = self.overlayWindow.rootViewController.view;
-    UIEdgeInsets safeInsets = overlayRoot.safeAreaInsets;
+    [overlayRoot layoutIfNeeded];
+    UIEdgeInsets rawSafeInsets = overlayRoot.safeAreaInsets;
+    UIInterfaceOrientation presentationOrientation =
+        FLMBoundsAreLandscape(bounds)
+            ? FLMLandscapeOrientationForSafeInsets(rawSafeInsets)
+            : UIInterfaceOrientationPortrait;
+    FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, bounds,
+                             presentationOrientation);
+    UIEdgeInsets safeInsets =
+        FLMBoundsAreLandscape(bounds)
+            ? FLMPhysicalLandscapeSafeInsets(rawSafeInsets,
+                                             presentationOrientation)
+            : rawSafeInsets;
     CGFloat safeLeft = MAX(4.0, safeInsets.left + 4.0);
     CGFloat safeRight = MIN(width - 4.0, width - safeInsets.right - 4.0);
     CGFloat safeBottom = MIN(height - 4.0, height - safeInsets.bottom - 4.0);
     CGPoint anchor = CGPointMake(fromRight ? safeRight : safeLeft, safeBottom);
     if (FLMBoundsAreLandscape(bounds)) {
         FLMEnqueueDiagnosticLine(
-            @"sb wheel-landscape-layout side=%@ bounds=%@ safe={%.1f,%.1f,%.1f,%.1f} anchor={%.1f,%.1f}",
+            @"sb wheel-landscape-layout side=%@ bounds=%@ rawSafe={%.1f,%.1f,%.1f,%.1f} physicalSafe={%.1f,%.1f,%.1f,%.1f} orientation=%ld anchor={%.1f,%.1f}",
             fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
-            safeInsets.top, safeInsets.left, safeInsets.bottom, safeInsets.right,
-            anchor.x, anchor.y);
+            rawSafeInsets.top, rawSafeInsets.left, rawSafeInsets.bottom,
+            rawSafeInsets.right, safeInsets.top, safeInsets.left,
+            safeInsets.bottom, safeInsets.right,
+            (long)presentationOrientation, anchor.x, anchor.y);
     }
     NSArray<NSNumber *> *ringCounts =
         [self itemCountsByRingForCount:self.itemIdentifiers.count];
@@ -3747,7 +3966,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     FLMOutsideTapGestureRecognizer *outsideGesture =
         (FLMOutsideTapGestureRecognizer *)gesture;
-    CGPoint point = FLMVisualPointFromRawPoint([gesture locationInView:nil]);
+    CGPoint point = [self visualPointForGesture:gesture];
     FLMEnqueueDiagnosticLine(
         @"sb backdrop-ended authorized=%d point={%.1f,%.1f} keyboardVisible=%d interaction=%d keyboardFrame=%@ card=%@",
         outsideGesture.outsideCloseAuthorized, point.x, point.y,
@@ -3767,8 +3986,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self visualPointForGesture:gesture];
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
             self.floatingExclusiveStartPoint =
@@ -3843,7 +4061,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingDockDragStartPoint.y,
         self.floatingDockDragInitialCenter.x,
         self.floatingDockDragInitialCenter.y);
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     [rootView bringSubviewToFront:self.floatingContainer];
     [rootView bringSubviewToFront:self.floatingResizeHandle];
     // A card drag may be reclassified as an outward hide gesture. Keep the
@@ -3884,7 +4102,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGFloat)floatingDockHiddenFractionForFrame:(CGRect)frame {
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGFloat width = MAX(1.0, CGRectGetWidth(frame));
     CGFloat hiddenAmount =
         self.floatingDockedOnRight
@@ -3955,14 +4173,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!gate || !self.floatingWindow) {
         return;
     }
-    CGRect bounds = self.floatingWindow.bounds;
-    if (!CGRectEqualToRect(gate.frame, bounds)) {
-        gate.frame = bounds;
-    }
-    UIView *gateRootView = gate.rootViewController.view;
-    if (gateRootView && !CGRectEqualToRect(gateRootView.frame, bounds)) {
-        gateRootView.frame = bounds;
-    }
+    CGRect visualBounds = [self floatingLayoutView].bounds;
+    gate.visualBounds = visualBounds;
+    gate.visualOrientation =
+        [self isLandscapeFloatingSession]
+            ? self.floatingLandscapeInterfaceOrientation
+            : UIInterfaceOrientationPortrait;
     gate.wheelPriorityActive = self.enabled && !self.wheelPinned &&
                                self.itemIdentifiers.count > 0 &&
                                !FLMDeviceIsLocked();
@@ -4119,7 +4335,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
 
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     if (self.floatingDockInputMode == FLMFloatingDockInputModeResize ||
         self.floatingDockInputTargetsResize) {
         CGFloat horizontalOutward =
@@ -4195,7 +4411,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGPointMake(point.x - self.floatingDockDragStartPoint.x,
                     point.y - self.floatingDockDragStartPoint.y);
     CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
+    UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
     CGFloat halfWidth = CGRectGetWidth(self.floatingContainer.bounds) * 0.5;
     CGFloat halfHeight = CGRectGetHeight(self.floatingContainer.bounds) * 0.5;
     CGPoint center =
@@ -4294,7 +4510,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         // Single-stage edge-hide: the grab bar and the card travel together,
         // so the bar glides up from the card's corner to its edge landing
         // spot while the card slides off-screen, instead of popping in.
-        UIView *rootView = self.floatingWindow.rootViewController.view;
+        UIView *rootView = [self floatingLayoutView];
         CGRect bounds = rootView.bounds;
         CGFloat handleWidth = 44.0;
         CGFloat handleHeight = 72.0;
@@ -4325,7 +4541,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                        floor((CGRectGetHeight(handleStart) - 44.0) * 0.5),
                        5.0,
                        44.0);
-        [self.floatingWindow.rootViewController.view
+        [self.floatingPresentationView
             bringSubviewToFront:self.floatingHandle];
         [self beginFloatingHighRefreshLeaseForDuration:0.34];
         [UIView animateWithDuration:0.34
@@ -4429,7 +4645,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                    (CGRectGetHeight(target) - CGRectGetHeight(start)) * progress);
     // The hidden grab bar tracks the drag from the card edge to its landing
     // position while the card disappears.
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGFloat handleWidth = 44.0;
     CGFloat handleHeight = 72.0;
     CGRect hiddenFrame =
@@ -4496,8 +4712,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleFloatingDockInputGesture:(FLMCornerGestureRecognizer *)gesture {
-    CGPoint rawPoint = [gesture locationInView:nil];
-    CGPoint point = FLMVisualPointFromRawPoint(rawPoint);
+    CGPoint point = [self visualPointForGesture:gesture];
     self.floatingDockInputLatestPoint = point;
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
@@ -4701,7 +4916,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 // vertical handle made the white bar visibly fly in from the
                 // wrong origin. After one hide/reveal the frame happened to be
                 // normalized, explaining why later attempts looked better.
-                UIView *rootView = self.floatingWindow.rootViewController.view;
+                UIView *rootView = [self floatingLayoutView];
                 CGRect rootBounds = rootView.bounds;
                 CGRect cardFrame = self.floatingContainer.frame;
                 CGFloat handoffWidth = 44.0;
@@ -4876,7 +5091,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)handleFloatingHiddenBarDrag:(UILongPressGestureRecognizer *)gesture {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     CGRect bounds = rootView.bounds;
     CGPoint point = [gesture locationInView:rootView];
     if (gesture.state == UIGestureRecognizerStateBegan) {
@@ -4887,10 +5102,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (gesture.state == UIGestureRecognizerStateChanged) {
         CGFloat deltaY = point.y - self.floatingHiddenBarDragStartPoint.y;
         CGRect frame = self.floatingHiddenBarDragInitialFrame;
-        CGFloat topLimit = MAX(8.0, rootView.safeAreaInsets.top);
+        UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
+        CGFloat topLimit = MAX(8.0, safeInsets.top);
         CGFloat bottomLimit =
             CGRectGetHeight(bounds) - CGRectGetHeight(frame) -
-            rootView.safeAreaInsets.bottom;
+            safeInsets.bottom;
         frame.origin.y =
             MAX(topLimit, MIN(bottomLimit, CGRectGetMinY(frame) + deltaY));
         [UIView performWithoutAnimation:^{
@@ -4971,7 +5187,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.floatingDocked || self.floatingWindow.hidden) {
         return;
     }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     CGPoint point = [gesture locationInView:rootView];
     if (gesture.state == UIGestureRecognizerStateBegan) {
         [self setFloatingDockRoutingSuppressed:YES];
@@ -4992,7 +5208,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGPointMake(point.x - self.floatingDockDragStartPoint.x,
                         point.y - self.floatingDockDragStartPoint.y);
         CGRect bounds = rootView.bounds;
-        UIEdgeInsets safeInsets = rootView.safeAreaInsets;
+        UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
         CGFloat halfWidth = CGRectGetWidth(self.floatingContainer.bounds) * 0.5;
         CGFloat halfHeight = CGRectGetHeight(self.floatingContainer.bounds) * 0.5;
         CGPoint center =
@@ -5085,7 +5301,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     progress = MIN(1.0, MAX(0.0, progress));
     CGRect start = self.floatingHandleInitialContainerFrame;
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     if (CGRectGetWidth(start) < 1.0 || CGRectGetHeight(start) < 1.0) {
         return;
     }
@@ -5194,8 +5410,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     content.autoresizingMask = UIViewAutoresizingNone;
     content.userInteractionEnabled = NO;
     [wrapper addSubview:content];
-    [self.floatingWindow.rootViewController.view addSubview:wrapper];
-    [self.floatingWindow.rootViewController.view
+    [self.floatingPresentationView addSubview:wrapper];
+    [self.floatingPresentationView
         bringSubviewToFront:self.floatingHandle];
     self.floatingInteractiveSnapshot = wrapper;
     self.floatingInteractiveSnapshotBackground = background;
@@ -5234,7 +5450,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self handleFloatingHiddenBarDrag:gesture];
         return;
     }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     CGPoint point = [gesture locationInView:rootView];
     CGRect bounds = rootView.bounds;
 
@@ -5609,7 +5825,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         [self resetFloatingInteractiveLayoutAnimated:YES];
         return;
     }
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     [self endFloatingKeyboardSession];
     CGRect targetFrame = rootView.bounds;
     if (!self.floatingInteractiveScenePrepared) {
@@ -5935,28 +6151,128 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                self.floatingLandscapeSystemSize.height + 1.0;
 }
 
+- (UIView *)floatingLayoutView {
+    return self.floatingPresentationView
+               ?: self.floatingWindow.rootViewController.view;
+}
+
+- (UIEdgeInsets)floatingLayoutSafeInsets {
+    if ([self isLandscapeFloatingSession]) {
+        return self.floatingLandscapeSafeInsets;
+    }
+    UIView *rootView = self.floatingWindow.rootViewController.view;
+    return rootView ? rootView.safeAreaInsets : UIEdgeInsetsZero;
+}
+
+- (CGPoint)visualPointForGesture:(UIGestureRecognizer *)gesture {
+    if (!gesture) {
+        return CGPointZero;
+    }
+    UIWindow *window = gesture.view.window;
+    if (window == self.floatingWindow && self.floatingPresentationView) {
+        return [gesture locationInView:self.floatingPresentationView];
+    }
+    if (window == self.hotspotWindow) {
+        UIView *root = self.hotspotWindow.rootViewController.view;
+        CGPoint local = [gesture locationInView:root];
+        return FLMVisualPointFromRootPoint(
+            local, root.bounds,
+            CGRectIsEmpty(self.hotspotWindow.visualBounds)
+                ? FLMVisualScreenBounds()
+                : self.hotspotWindow.visualBounds,
+            self.hotspotWindow.visualOrientation);
+    }
+    if (window == self.floatingDockTouchGateWindow) {
+        UIView *root =
+            self.floatingDockTouchGateWindow.rootViewController.view;
+        CGPoint local = [gesture locationInView:root];
+        return FLMVisualPointFromRootPoint(
+            local, root.bounds,
+            CGRectIsEmpty(self.floatingDockTouchGateWindow.visualBounds)
+                ? FLMVisualScreenBounds()
+                : self.floatingDockTouchGateWindow.visualBounds,
+            self.floatingDockTouchGateWindow.visualOrientation);
+    }
+    CGPoint rawPoint = [gesture locationInView:nil];
+    return FLMVisualPointFromRawPoint(rawPoint);
+}
+
+- (CGPoint)visualPointForTouch:(UITouch *)touch {
+    if (!touch) {
+        return CGPointZero;
+    }
+    UIWindow *window = touch.view.window;
+    if (window == self.floatingWindow && self.floatingPresentationView) {
+        return [touch locationInView:self.floatingPresentationView];
+    }
+    if (window == self.hotspotWindow) {
+        UIView *root = self.hotspotWindow.rootViewController.view;
+        CGPoint local = [touch locationInView:root];
+        return FLMVisualPointFromRootPoint(
+            local, root.bounds,
+            CGRectIsEmpty(self.hotspotWindow.visualBounds)
+                ? FLMVisualScreenBounds()
+                : self.hotspotWindow.visualBounds,
+            self.hotspotWindow.visualOrientation);
+    }
+    if (window == self.floatingDockTouchGateWindow) {
+        UIView *root =
+            self.floatingDockTouchGateWindow.rootViewController.view;
+        CGPoint local = [touch locationInView:root];
+        return FLMVisualPointFromRootPoint(
+            local, root.bounds,
+            CGRectIsEmpty(self.floatingDockTouchGateWindow.visualBounds)
+                ? FLMVisualScreenBounds()
+                : self.floatingDockTouchGateWindow.visualBounds,
+            self.floatingDockTouchGateWindow.visualOrientation);
+    }
+    CGPoint rawPoint = [touch locationInView:nil];
+    return FLMVisualPointFromRawPoint(rawPoint);
+}
+
 - (void)captureFloatingOrientationContract {
     CGRect bounds = FLMVisualScreenBounds();
     CGSize systemSize = bounds.size;
     UIView *rootView = self.floatingWindow.rootViewController.view;
     [rootView layoutIfNeeded];
-    UIEdgeInsets safeInsets = rootView ? rootView.safeAreaInsets : UIEdgeInsetsZero;
+    UIEdgeInsets rawSafeInsets =
+        rootView ? rootView.safeAreaInsets : UIEdgeInsetsZero;
     BOOL landscape = FLMBoundsAreLandscape(bounds);
+    UIInterfaceOrientation orientation =
+        landscape ? FLMLandscapeOrientationForSafeInsets(rawSafeInsets)
+                  : UIInterfaceOrientationPortrait;
+    UIEdgeInsets physicalSafeInsets =
+        landscape ? FLMPhysicalLandscapeSafeInsets(rawSafeInsets, orientation)
+                  : rawSafeInsets;
+
     self.floatingLandscapeSession = landscape;
     self.floatingLandscapeSystemSize = landscape ? systemSize : CGSizeZero;
-    self.floatingLandscapeSafeInsets = landscape ? safeInsets : UIEdgeInsetsZero;
-    self.floatingLandscapeInterfaceOrientation =
-        landscape ? FLMLandscapeOrientationForSafeInsets(safeInsets)
-                  : UIInterfaceOrientationPortrait;
+    self.floatingLandscapeSafeInsets =
+        landscape ? physicalSafeInsets : UIEdgeInsetsZero;
+    self.floatingLandscapeInterfaceOrientation = orientation;
+
+    FLMFloatingWindow *floatingWindow =
+        (FLMFloatingWindow *)self.floatingWindow;
+    floatingWindow.visualBounds = bounds;
+    floatingWindow.visualOrientation = orientation;
+    FLMConfigureVisualCanvas(self.floatingPresentationView, rootView, bounds,
+                             orientation);
+    self.floatingDimView.frame = self.floatingPresentationView.bounds;
+
+    self.floatingDockTouchGateWindow.visualBounds = bounds;
+    self.floatingDockTouchGateWindow.visualOrientation = orientation;
+
     FLMKeyboardSharedLandscapeScene = landscape;
-    FLMKeyboardSharedInterfaceOrientation = self.floatingLandscapeInterfaceOrientation;
+    FLMKeyboardSharedInterfaceOrientation = orientation;
     FLMKeyboardSharedSystemWidth = landscape ? systemSize.width : 0.0;
     FLMKeyboardSharedSystemHeight = landscape ? systemSize.height : 0.0;
     FLMEnqueueDiagnosticLine(
-        @"sb presentation-session landscape=%d system={%.1f,%.1f} orientation=%ld safe={%.1f,%.1f,%.1f,%.1f}",
-        landscape, systemSize.width, systemSize.height,
-        (long)self.floatingLandscapeInterfaceOrientation,
-        safeInsets.top, safeInsets.left, safeInsets.bottom, safeInsets.right);
+        @"sb presentation-session landscape=%d system={%.1f,%.1f} orientation=%ld root=%@ rawSafe={%.1f,%.1f,%.1f,%.1f} physicalSafe={%.1f,%.1f,%.1f,%.1f}",
+        landscape, systemSize.width, systemSize.height, (long)orientation,
+        NSStringFromCGRect(rootView.bounds),
+        rawSafeInsets.top, rawSafeInsets.left, rawSafeInsets.bottom,
+        rawSafeInsets.right, physicalSafeInsets.top, physicalSafeInsets.left,
+        physicalSafeInsets.bottom, physicalSafeInsets.right);
 }
 
 - (void)clearFloatingOrientationContract {
@@ -5971,12 +6287,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGRect)landscapeFloatingFrame {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
-    if (UIEdgeInsetsEqualToEdgeInsets(safeInsets, UIEdgeInsetsZero)) {
-        safeInsets = self.floatingLandscapeSafeInsets;
-    }
+    UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
     CGFloat availableHeight =
         MAX(1.0, CGRectGetHeight(bounds) - safeInsets.top - safeInsets.bottom -
                      FLMLandscapeCardVerticalMargin * 2.0);
@@ -5996,7 +6309,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if ([self isLandscapeFloatingSession]) {
         return [self landscapeFloatingFrame];
     }
-    CGRect bounds = self.floatingWindow.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     if (width <= 0.0 || height <= 0.0) {
@@ -6018,9 +6331,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (CGRect)dockedFloatingFrameOnRight:(BOOL)onRight width:(CGFloat)width {
-    UIView *rootView = self.floatingWindow.rootViewController.view;
+    UIView *rootView = [self floatingLayoutView];
     CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
+    UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
     CGRect centeredFrame = [self centeredFloatingFrame];
     CGFloat aspectRatio =
         CGRectGetWidth(centeredFrame) / MAX(1.0, CGRectGetHeight(centeredFrame));
@@ -6041,8 +6354,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                width:(CGFloat)width
              preservingVerticalCenter:(CGFloat)verticalCenter {
     CGRect frame = [self dockedFloatingFrameOnRight:onRight width:width];
-    UIView *rootView = self.floatingWindow.rootViewController.view;
-    UIEdgeInsets safeInsets = rootView.safeAreaInsets;
+    UIView *rootView = [self floatingLayoutView];
+    UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
     CGFloat halfHeight = CGRectGetHeight(frame) * 0.5;
     CGFloat minimumCenterY = safeInsets.top + halfHeight;
     CGFloat maximumCenterY =
@@ -6075,7 +6388,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // visible, so the user never sees an app sliver next to it.
     CGFloat visibleSliver = 0.0;
     frame.origin.x = onRight
-                         ? CGRectGetWidth(self.floatingWindow.bounds) -
+                         ? CGRectGetWidth([self floatingLayoutView].bounds) -
                                visibleSliver
                          : visibleSliver - CGRectGetWidth(frame);
     return frame;
@@ -6574,7 +6887,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // the current vertical center, so release never snaps the card upward or
     // downward into a corner.
     [self normalizeFloatingContainerTransform];
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGRect currentFrame = self.floatingContainer.frame;
     CGFloat currentMidX = CGRectGetMidX(currentFrame);
     CGFloat screenMidX = CGRectGetMidX(bounds);
@@ -6726,7 +7039,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.floatingWindow) {
         return;
     }
-    CGRect bounds = self.floatingWindow.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     if (width <= 0.0 || height <= 0.0) {
@@ -6777,13 +7090,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)layoutFloatingHandleForCurrentContainer {
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGFloat containerWidth = CGRectGetWidth(self.floatingContainer.frame);
     if (self.floatingDockHidden) {
         CGFloat handleWidth = 44.0;
         CGFloat handleHeight = 72.0;
-        UIView *rootView = self.floatingWindow.rootViewController.view;
-        UIEdgeInsets safeInsets = rootView.safeAreaInsets;
+        UIView *rootView = [self floatingLayoutView];
+        UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
         CGFloat leftEdge = [self isLandscapeFloatingSession]
                                ? safeInsets.left
                                : 0.0;
@@ -7504,7 +7817,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardPendingSessionGeneration = 0;
         return;
     }
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     FLMEnqueueDiagnosticLine(
         @"sb frame-apply inputVisible=%d inputFrame=%@ cardHidden=%d docked=%d session=%lu host=%p",
         visible, NSStringFromCGRect(frame), self.floatingWindow.hidden,
@@ -7668,7 +7981,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (!self.floatingKeyboardInteractionSessionActive) {
         return CGRectNull;
     }
-    CGRect bounds = self.floatingWindow.rootViewController.view.bounds;
+    CGRect bounds = [self floatingLayoutView].bounds;
     CGRect keyboardFrame = CGRectNull;
     if (self.floatingKeyboardVisible &&
         !CGRectIsNull(self.floatingKeyboardFrame) &&

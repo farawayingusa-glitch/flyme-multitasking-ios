@@ -207,6 +207,25 @@ for marker in \
     require_source "$marker"
 done
 
+
+
+# 0.9.60 repairs the SpringBoard presentation-coordinate split observed in
+# Diagnostic(37): the physical display can be 844x390 while SpringBoard's root
+# view remains 390x844. Require a rotated child canvas, physical safe-area
+# normalization, and explicit touch conversion instead of forcing root geometry.
+for marker in \
+    "FLMPhysicalLandscapeSafeInsets" \
+    "FLMConfigureVisualCanvas" \
+    "FLMVisualPointFromRootPoint" \
+    "floatingPresentationView" \
+    "floatingLayoutView" \
+    "visualPointForGesture:" \
+    "visualPointForTouch:" \
+    "physicalSafe={" \
+    "overlayRoot=%@"; do
+    require_source "$marker"
+done
+
 for marker in \
     "%hook UITextEffectsWindow" \
     "keyboardScreenReferenceSize" \
@@ -299,4 +318,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.59 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts and dual-route wheel ingress verified"
+echo "0.9.60 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts, dual-route wheel ingress, and physical presentation coordinates verified"
