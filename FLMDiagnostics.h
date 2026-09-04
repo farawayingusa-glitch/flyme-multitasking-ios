@@ -20,7 +20,11 @@
 #if FLM_DIAGNOSTICS_ENABLED
 void FLMEnqueueDiagnosticLine(NSString *format, ...);
 #else
-#define FLMEnqueueDiagnosticLine(...) ((void)0)
+// Keep diagnostic-only locals and parameters type-checked and considered used
+// without evaluating any argument or emitting a call in release builds.
+extern void FLMTypecheckDiagnosticLine(NSString *format, ...);
+#define FLMEnqueueDiagnosticLine(...) \
+    ((void)sizeof((FLMTypecheckDiagnosticLine(__VA_ARGS__), 0)))
 #endif
 
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \

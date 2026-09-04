@@ -103,10 +103,11 @@ grep -q "keyboard-app-ctor-v53" "$keyboard_strings"
 grep -q "keyboard-app-ready-v53" "$keyboard_strings"
 grep -q "keyboard-dismiss-request-reset-v1" "$keyboard_strings"
 grep -q "dock-input-block-v1" "$runtime_strings"
-grep -q "dock-input-block publish" "$runtime_strings"
-grep -q "schema=19" "$runtime_strings"
-grep -q "Stable build 0.9.58" "$runtime_strings"
 grep -q "dock-input-block-v1" "$keyboard_strings"
+if grep -Eq "FlymeMultitasking-Diagnostic\\.log|diagnostic-writer|logger-ready build=|dock-input-block publish" "$runtime_strings"; then
+    echo "release runtime unexpectedly contains the disabled diagnostic writer" >&2
+    exit 1
+fi
 python3 "$script_directory/verify-macho-signature.py" --require-flags 0 "$preferences"
 
 grep -qx "Package: com.codex.flymemultitasking" "$workspace/control/control"

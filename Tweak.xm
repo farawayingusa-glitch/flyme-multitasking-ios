@@ -33,14 +33,17 @@
 #define FLYME_KEYBOARD_APP_ADAPTER_BUILD 53ULL
 #define FLYME_RUNTIME_MAGIC 0x464C594DULL
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
-// Bump this together with the package version in control / Info.plist so the
-// diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.58 (heat optimization)"
-
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
 static NSString *const FLMRemovedLegacyWheelItemIdentifier =
     @"com.codex.flymemultitasking.screensense";
+
+static const CGFloat FLMKeyboardAccessoryProtectionHeight = 56.0;
+
+#if FLM_DIAGNOSTICS_ENABLED
+// Bump this together with the package version in control / Info.plist so a
+// diagnostics-enabled development build can identify itself in its log.
+#define FLMLogBuildString @"Stable build 0.9.58 (heat optimization)"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -54,7 +57,6 @@ static int FLMDiagnosticApplicationReceiverToken = -1;
 static int FLMDiagnosticKeyboardReceiverToken = -1;
 static int FLMDiagnosticUIKitOtherReceiverToken = -1;
 static const off_t FLMDiagnosticMaximumSize = 1024 * 1024;
-static const CGFloat FLMKeyboardAccessoryProtectionHeight = 56.0;
 
 static const char *FLMDiagnosticRoleName(uint8_t role) {
     switch (role) {
@@ -162,7 +164,6 @@ static void FLMAppendDiagnosticLineNow(NSString *message) {
     close(descriptor);
 }
 
-#if FLM_DIAGNOSTICS_ENABLED
 void FLMEnqueueDiagnosticLine(NSString *format, ...) {
     if (!FLMDiagnosticWriterReady || !FLMDiagnosticWriterQueue ||
         format.length == 0) {
@@ -179,7 +180,6 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...) {
         }
     });
 }
-#endif
 
 static void FLMRecordRemoteDiagnosticEvent(int token) {
     uint64_t state = 0;
@@ -234,6 +234,7 @@ static void FLMStartDiagnosticWriter(void) {
         });
     });
 }
+#endif
 
 static const CGFloat FLMDefaultWheelRadius = 202.0;
 static const CGFloat FLMMinimumWheelRadius = 170.0;
