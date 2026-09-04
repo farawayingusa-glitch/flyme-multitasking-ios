@@ -6,9 +6,22 @@
 #import <notify.h>
 #import <stdint.h>
 
-// SpringBoard owns the diagnostic writer. Auxiliary SpringBoard modules may
-// enqueue lines through this function without creating another file writer.
+// Release builds default to diagnostics-off. The diagnostic path does real
+// Darwin notifications plus file I/O, so leaving it enabled during hit-testing
+// or 120 Hz presentation updates can keep SpringBoard unnecessarily busy.
+// Build with -DFLM_DIAGNOSTICS_ENABLED=1 when a trace is actually needed.
+#ifndef FLM_DIAGNOSTICS_ENABLED
+#define FLM_DIAGNOSTICS_ENABLED 0
+#endif
+
+// SpringBoard owns the diagnostic writer. Compile the call sites out entirely
+// when diagnostics are disabled so expensive arguments such as
+// NSStringFromCGRect() are not evaluated on hot paths.
+#if FLM_DIAGNOSTICS_ENABLED
 void FLMEnqueueDiagnosticLine(NSString *format, ...);
+#else
+#define FLMEnqueueDiagnosticLine(...) ((void)0)
+#endif
 
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-event-v2"
@@ -85,6 +98,14 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
                                              uint64_t sessionGeneration,
                                              uint16_t firstValue,
                                              uint16_t secondValue) {
+#if !FLM_DIAGNOSTICS_ENABLED
+    (void)role;
+    (void)event;
+    (void)sessionGeneration;
+    (void)firstValue;
+    (void)secondValue;
+    return;
+#else
     static int springBoardToken = -1;
     static int applicationToken = -1;
     static int keyboardToken = -1;
@@ -132,6 +153,7 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
                      (uint64_t)secondValue;
     notify_set_state(*eventToken, state);
     notify_post(notificationName);
+#endif
 }
 
 static inline uint16_t FLMDiagnosticUnsignedValue(CGFloat value) {

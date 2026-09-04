@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - Stable build 0.9.57
-Description: Stable build 0.9.57 on the 0.9.41 portrait baseline, with application-process Dock input isolation, full-lifecycle ProMotion requests, and first-hide handle handoff repair.
+Name: Flyme Multitasking - Stable build 0.9.58
+Description: Stable build 0.9.58 on the 0.9.57 baseline, with release diagnostics disabled, coalesced keyboard-state writes, deduplicated notifications, and cached hot-path lookups.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.57
+Version: 0.9.58

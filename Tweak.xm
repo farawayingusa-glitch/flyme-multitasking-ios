@@ -35,7 +35,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Stable build 0.9.57 (0.9.41 reset)"
+#define FLMLogBuildString @"Stable build 0.9.58 (heat optimization)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -162,6 +162,7 @@ static void FLMAppendDiagnosticLineNow(NSString *message) {
     close(descriptor);
 }
 
+#if FLM_DIAGNOSTICS_ENABLED
 void FLMEnqueueDiagnosticLine(NSString *format, ...) {
     if (!FLMDiagnosticWriterReady || !FLMDiagnosticWriterQueue ||
         format.length == 0) {
@@ -178,6 +179,7 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...) {
         }
     });
 }
+#endif
 
 static void FLMRecordRemoteDiagnosticEvent(int token) {
     uint64_t state = 0;
@@ -402,15 +404,30 @@ typedef NS_ENUM(NSUInteger, FLMFloatingLaunchState) {
 @end
 
 static BOOL FLMDeviceIsLocked(void) {
-    id manager = [NSClassFromString(@"SBLockScreenManager") sharedInstance];
+    // This helper is hit from global gesture arbitration, window hit-testing
+    // and the lock monitor. Cache the class/selectors once instead of creating
+    // an NSArray/NSString selector list on every touch sample.
+    static Class managerClass = Nil;
+    static SEL selectors[4] = {NULL, NULL, NULL, NULL};
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        managerClass = NSClassFromString(@"SBLockScreenManager");
+        selectors[0] = NSSelectorFromString(@"isUILocked");
+        selectors[1] = NSSelectorFromString(@"isLockScreenVisible");
+        selectors[2] = NSSelectorFromString(@"isLockScreenActive");
+        selectors[3] = NSSelectorFromString(@"isLocked");
+    });
+
+    id manager =
+        [managerClass respondsToSelector:@selector(sharedInstance)]
+            ? [managerClass sharedInstance]
+            : nil;
     if (!manager) {
         return NO;
     }
-    NSArray<NSString *> *selectorNames =
-        @[@"isUILocked", @"isLockScreenVisible", @"isLockScreenActive", @"isLocked"];
-    for (NSString *selectorName in selectorNames) {
-        SEL selector = NSSelectorFromString(selectorName);
-        if (![manager respondsToSelector:selector]) {
+    for (NSUInteger index = 0; index < 4; index++) {
+        SEL selector = selectors[index];
+        if (!selector || ![manager respondsToSelector:selector]) {
             continue;
         }
         BOOL (*getter)(id, SEL) =
@@ -654,6 +671,14 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
                                   UIEvent *event,
                                   UIView *hitView,
                                   NSString *route) {
+#if !FLM_DIAGNOSTICS_ENABLED
+    (void)window;
+    (void)point;
+    (void)event;
+    (void)hitView;
+    (void)route;
+    return;
+#else
     UITouch *touch = [event.allTouches anyObject];
     FLMEnqueueDiagnosticLine(
         @"sb touch-hit touch=%p timestamp=%.6f phase=%ld route=%@ point={%.1f,%.1f} hit=%@ hitPtr=%p key=%d keyboardPass=%@ card=%@ handle=%@",
@@ -665,6 +690,7 @@ static void FLMLogFloatingHitTest(FLMFloatingWindow *window,
         NSStringFromCGRect(window.keyboardPassThroughFrame),
         NSStringFromCGRect(window.floatingContentView.frame),
         NSStringFromCGRect(window.floatingPrimaryControlView.frame));
+#endif
 }
 
 @implementation FLMFloatingWindow
@@ -1523,11 +1549,17 @@ static int FlymeKeyboardAppReadyToken = -1;
 static int FlymeKeyboardDismissRequestToken = -1;
 static int FlymeDockInputBlockToken = -1;
 static uint64_t FLMLastDockInputBlockState = UINT64_MAX;
+static uint64_t FLMLastKeyboardAvoidanceState = UINT64_MAX;
+static uint64_t FLMLastKeyboardCardGeometryState = UINT64_MAX;
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 static NSString *const FLMKeyboardSharedStateRootlessPath =
     @"/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
 static dispatch_queue_t FLMKeyboardSharedStateWriterQueue;
+static NSObject *FLMKeyboardSharedStateWriteLock;
+static NSDictionary *FLMKeyboardSharedStateLastPayload;
+static NSDictionary *FLMKeyboardSharedStatePendingSnapshot;
+static BOOL FLMKeyboardSharedStateWriterScheduled = NO;
 static NSString *FLMKeyboardSharedIdentifier;
 static uint64_t FLMKeyboardSharedSceneHash = 0;
 static uint64_t FLMKeyboardSharedSessionGeneration = 0;
@@ -1687,6 +1719,14 @@ static BOOL FLMLogKeyboardAdapterHandshake(NSString *context,
     if (readyPID) {
         *readyPID = 0;
     }
+#if !FLM_DIAGNOSTICS_ENABLED
+    // Handshake probing is diagnostic evidence only; it is never a route or
+    // keyboard publishing gate. Avoid notify_get_state()/kill() work in the
+    // release build.
+    (void)context;
+    (void)identifier;
+    return NO;
+#endif
     FLMKeyboardLifecycleEvidence ctor = FLMReadKeyboardLifecycleEvidence(
         FLYME_KEYBOARD_APP_CTOR_NOTIFICATION,
         &FlymeKeyboardAppCtorToken,
@@ -1727,10 +1767,16 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         FLMKeyboardSharedStateWriterQueue = dispatch_queue_create(
             "com.codex.flymemultitasking.keyboard-shared-state",
             DISPATCH_QUEUE_SERIAL);
+        FLMKeyboardSharedStateWriteLock = [[NSObject alloc] init];
     });
+
     BOOL active = FLMKeyboardSharedIdentifier.length > 0 &&
                   FLMKeyboardSharedSessionGeneration != 0;
-    NSDictionary *snapshot = @{
+
+    // Keep updatedAt out of the equality payload. The old implementation made
+    // every call unique solely because the timestamp changed, forcing an
+    // atomic plist rewrite even when the actual route/geometry state did not.
+    NSDictionary *payload = @{
         @"version": @2,
         @"active": @(active),
         @"bundleID": FLMKeyboardSharedIdentifier ?: @"",
@@ -1745,50 +1791,88 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         @"cardHeight": @(FLMKeyboardSharedCardHeight),
         @"contentViewportWidth": @(FLMKeyboardSharedContentViewportWidth),
         @"contentViewportHeight": @(FLMKeyboardSharedContentViewportHeight),
-        @"updatedAt": @([[NSDate date] timeIntervalSince1970]),
     };
-    dispatch_async(FLMKeyboardSharedStateWriterQueue, ^{
-        @autoreleasepool {
-            NSError *serializationError = nil;
-            NSData *data = [NSPropertyListSerialization
-                dataWithPropertyList:snapshot
-                              format:NSPropertyListBinaryFormat_v1_0
-                             options:0
-                               error:&serializationError];
-            if (!data || serializationError) {
-                return;
-            }
-            NSError *writeError = nil;
-            BOOL wrote = [data writeToFile:FLMKeyboardSharedStatePath
-                                   options:NSDataWritingAtomic
-                                     error:&writeError];
-            NSString *writtenPath = nil;
-            if (wrote) {
-                chmod(FLMKeyboardSharedStatePath.fileSystemRepresentation, 0644);
-                writtenPath = FLMKeyboardSharedStatePath;
-            } else {
-                writeError = nil;
-                wrote = [data writeToFile:FLMKeyboardSharedStateRootlessPath
-                                  options:NSDataWritingAtomic
-                                    error:&writeError];
-                if (wrote) {
-                    chmod(
-                        FLMKeyboardSharedStateRootlessPath.fileSystemRepresentation,
-                        0644);
-                    writtenPath = FLMKeyboardSharedStateRootlessPath;
+
+    NSMutableDictionary *snapshot = nil;
+    BOOL shouldScheduleWorker = NO;
+    @synchronized(FLMKeyboardSharedStateWriteLock) {
+        if ([payload isEqualToDictionary:FLMKeyboardSharedStateLastPayload]) {
+            return;
+        }
+        FLMKeyboardSharedStateLastPayload = payload;
+
+        snapshot = [payload mutableCopy];
+        snapshot[@"updatedAt"] = @([[NSDate date] timeIntervalSince1970]);
+        // Latest-state-wins coalescing: if the storage queue is still writing
+        // the previous atomic plist, replace the pending snapshot rather than
+        // enqueueing another disk transaction for every 120 Hz geometry frame.
+        FLMKeyboardSharedStatePendingSnapshot = snapshot;
+        if (!FLMKeyboardSharedStateWriterScheduled) {
+            FLMKeyboardSharedStateWriterScheduled = YES;
+            shouldScheduleWorker = YES;
+        }
+    }
+
+    if (shouldScheduleWorker) {
+        dispatch_async(FLMKeyboardSharedStateWriterQueue, ^{
+            for (;;) {
+                @autoreleasepool {
+                    NSDictionary *snapshotToWrite = nil;
+                    @synchronized(FLMKeyboardSharedStateWriteLock) {
+                        snapshotToWrite = FLMKeyboardSharedStatePendingSnapshot;
+                        FLMKeyboardSharedStatePendingSnapshot = nil;
+                        if (!snapshotToWrite) {
+                            FLMKeyboardSharedStateWriterScheduled = NO;
+                            return;
+                        }
+                    }
+
+                    NSError *serializationError = nil;
+                    NSData *data = [NSPropertyListSerialization
+                        dataWithPropertyList:snapshotToWrite
+                                      format:NSPropertyListBinaryFormat_v1_0
+                                     options:0
+                                       error:&serializationError];
+                    if (!data || serializationError) {
+                        continue;
+                    }
+
+                    NSError *writeError = nil;
+                    BOOL wrote = [data writeToFile:FLMKeyboardSharedStatePath
+                                           options:NSDataWritingAtomic
+                                             error:&writeError];
+                    NSString *writtenPath = nil;
+                    if (wrote) {
+                        chmod(FLMKeyboardSharedStatePath.fileSystemRepresentation,
+                              0644);
+                        writtenPath = FLMKeyboardSharedStatePath;
+                    } else {
+                        writeError = nil;
+                        wrote = [data writeToFile:FLMKeyboardSharedStateRootlessPath
+                                          options:NSDataWritingAtomic
+                                            error:&writeError];
+                        if (wrote) {
+                            chmod(
+                                FLMKeyboardSharedStateRootlessPath.fileSystemRepresentation,
+                                0644);
+                            writtenPath = FLMKeyboardSharedStateRootlessPath;
+                        }
+                    }
+
+                    if (wrote) {
+                        // The notification remains a refresh signal; consumers
+                        // still read the same atomic shared snapshot.
+                        notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);
+                    }
+                    FLMEnqueueDiagnosticLine(
+                        @"sb shared-state write success=%d path=%@ error=%@",
+                        wrote, writtenPath ?: @"<none>",
+                        writeError.localizedDescription ?: @"<none>");
                 }
             }
-            if (wrote) {
-                // The notification is only a refresh signal. All routing and
-                // geometry values are read from the atomically replaced file.
-                notify_post(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION);
-            }
-            FLMEnqueueDiagnosticLine(
-                @"sb shared-state write success=%d path=%@ error=%@",
-                wrote, writtenPath ?: @"<none>",
-                writeError.localizedDescription ?: @"<none>");
-        }
-    });
+        });
+    }
+
     FLMEnqueueDiagnosticLine(
         @"sb shared-state publish active=%d app=%@ session=%llu avoidance=%d/%.2f card=%d/%.2f/%.5f",
         active, FLMKeyboardSharedIdentifier ?: @"<none>",
@@ -1921,8 +2005,12 @@ static void FLMPublishKeyboardAvoidance(uint64_t sessionGeneration,
         (sessionGeneration & 0x7FFFFFFFFFULL) << 24;
     uint64_t state = (effectiveVisible ? (1ULL << 63) : 0) |
                      encodedGeneration | encodedHeight;
-    if (FlymeKeyboardAvoidanceToken >= 0) {
-        notify_set_state(FlymeKeyboardAvoidanceToken, state);
+    if (FlymeKeyboardAvoidanceToken >= 0 &&
+        state != FLMLastKeyboardAvoidanceState) {
+        if (notify_set_state(FlymeKeyboardAvoidanceToken, state) ==
+            NOTIFY_STATUS_OK) {
+            FLMLastKeyboardAvoidanceState = state;
+        }
         notify_post(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION);
     }
     FLMEnqueueDiagnosticLine(
@@ -1974,8 +2062,12 @@ static void FLMPublishKeyboardCardGeometry(uint64_t sessionGeneration,
             MIN(0xFFFFFFULL, (uint64_t)llround(visualScale * 1000000.0));
         state = (1ULL << 63) | generation | encodedBottom | encodedScale;
     }
-    if (FlymeKeyboardCardGeometryToken >= 0) {
-        notify_set_state(FlymeKeyboardCardGeometryToken, state);
+    if (FlymeKeyboardCardGeometryToken >= 0 &&
+        state != FLMLastKeyboardCardGeometryState) {
+        if (notify_set_state(FlymeKeyboardCardGeometryToken, state) ==
+            NOTIFY_STATUS_OK) {
+            FLMLastKeyboardCardGeometryState = state;
+        }
         notify_post(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION);
     }
     FLMEnqueueDiagnosticLine(
@@ -2633,10 +2725,23 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // A Scene-bound window cannot receive touches from a different frontmost
     // application. It is therefore only an emergency fallback; the global
     // system-manager pair remains enabled regardless of this window state.
-    self.hotspotWindow.hotspotsEnabled = canReceive &&
-                                         !self.usesSystemGestureManager;
-    self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;
-    self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
+    //
+    // checkLockState: calls this every 350 ms while a card is retained. Avoid
+    // submitting redundant UIWindow transactions when nothing actually changed.
+    BOOL hotspotsEnabled = canReceive && !self.usesSystemGestureManager;
+    if (self.hotspotWindow.hotspotsEnabled != hotspotsEnabled) {
+        self.hotspotWindow.hotspotsEnabled = hotspotsEnabled;
+    }
+
+    BOOL shouldHide = !self.enabled || self.usesSystemGestureManager;
+    if (self.hotspotWindow.hidden != shouldHide) {
+        self.hotspotWindow.hidden = shouldHide;
+    }
+
+    CGFloat targetLevel = UIWindowLevelAlert + 120.0;
+    if (fabs(self.hotspotWindow.windowLevel - targetLevel) > 0.01) {
+        self.hotspotWindow.windowLevel = targetLevel;
+    }
 }
 
 - (void)updateWindowFrames {
@@ -8542,6 +8647,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                              selector:@selector(checkLockState:)
                              userInfo:nil
                               repeats:YES];
+    // Give iOS room to coalesce this housekeeping wakeup with nearby run-loop
+    // work. The 350 ms lock/external-activation policy is unchanged.
+    self.lockMonitorTimer.tolerance = 0.08;
     [[NSRunLoop mainRunLoop] addTimer:self.lockMonitorTimer
                               forMode:NSRunLoopCommonModes];
 }
@@ -8729,6 +8837,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
                    dispatch_get_main_queue(), ^{
                        [[FLMWheelController sharedController] start];
                    });
+#if FLM_DIAGNOSTICS_ENABLED
     // Diagnostics are deliberately initialized after SpringBoard launch and
     // away from keyboard host callbacks. UIKit clients only publish compact
     // Darwin events; this process is the sole asynchronous file writer.
@@ -8742,6 +8851,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point) {
                            (uint16_t)(getpid() & 0xFFFF),
                            0);
                    });
+#endif
 }
 
 %end

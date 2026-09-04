@@ -27,10 +27,16 @@ for marker in \
     "static const CGFloat FLMMaximumCornerTriggerSize = 96.0;" \
     "CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);" \
     "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
-    "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
+    "CGFloat targetLevel = UIWindowLevelAlert + 120.0;" \
+    "if (fabs(self.hotspotWindow.windowLevel - targetLevel) > 0.01)" \
+    "self.hotspotWindow.windowLevel = targetLevel;" \
     "if (!self.hotspotsEnabled)" \
-    "self.hotspotWindow.hotspotsEnabled = canReceive &&" \
-    "self.hotspotWindow.hidden = !self.enabled || self.usesSystemGestureManager;" \
+    "BOOL hotspotsEnabled = canReceive && !self.usesSystemGestureManager;" \
+    "if (self.hotspotWindow.hotspotsEnabled != hotspotsEnabled)" \
+    "self.hotspotWindow.hotspotsEnabled = hotspotsEnabled;" \
+    "BOOL shouldHide = !self.enabled || self.usesSystemGestureManager;" \
+    "if (self.hotspotWindow.hidden != shouldHide)" \
+    "self.hotspotWindow.hidden = shouldHide;" \
     "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" \
     "refreshWheelPriorityWindow" \
     "wheel-priority-touch" \
@@ -266,4 +272,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.57 reset: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Stable build 0.9.58 heat optimization: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"

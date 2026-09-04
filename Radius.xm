@@ -22,27 +22,56 @@ static const CGFloat FLMRadiusMaximumCardWidth = 360.0;
 static __weak id FLMRadiusController;
 static __weak CALayer *FLMRadiusCardLayer;
 
-static CGFloat FLMRadiusPreferenceValue(void) {
-    CFPropertyListRef value =
+static CGFloat FLMRadiusCachedValue = FLMRadiusDefaultValue;
+static CGFloat FLMRadiusCachedCenteredCardWidth = FLMRadiusDefaultCardWidth;
+
+static void FLMRadiusReloadCachedPreferences(void) {
+    CFPropertyListRef radiusValue =
         CFPreferencesCopyValue(CFSTR("cardCornerRadius"),
-                                FLMRadiusPreferencesDomain,
-                                kCFPreferencesCurrentUser,
-                                kCFPreferencesAnyHost);
+                               FLMRadiusPreferencesDomain,
+                               kCFPreferencesCurrentUser,
+                               kCFPreferencesAnyHost);
     CGFloat radius = FLMRadiusDefaultValue;
-    if (value && CFGetTypeID(value) == CFNumberGetTypeID()) {
+    if (radiusValue && CFGetTypeID(radiusValue) == CFNumberGetTypeID()) {
         double storedValue = FLMRadiusDefaultValue;
-        if (CFNumberGetValue((CFNumberRef)value,
+        if (CFNumberGetValue((CFNumberRef)radiusValue,
                              kCFNumberDoubleType,
                              &storedValue) &&
             isfinite(storedValue)) {
             radius = (CGFloat)storedValue;
         }
     }
-    if (value) {
-        CFRelease(value);
+    if (radiusValue) {
+        CFRelease(radiusValue);
     }
-    return MAX(FLMRadiusMinimumValue,
-               MIN(FLMRadiusMaximumValue, radius));
+
+    CFPropertyListRef widthValue =
+        CFPreferencesCopyValue(CFSTR("centeredCardWidth"),
+                               FLMRadiusPreferencesDomain,
+                               kCFPreferencesCurrentUser,
+                               kCFPreferencesAnyHost);
+    CGFloat width = FLMRadiusDefaultCardWidth;
+    if (widthValue && CFGetTypeID(widthValue) == CFNumberGetTypeID()) {
+        double storedValue = FLMRadiusDefaultCardWidth;
+        if (CFNumberGetValue((CFNumberRef)widthValue,
+                             kCFNumberDoubleType,
+                             &storedValue) &&
+            isfinite(storedValue)) {
+            width = (CGFloat)storedValue;
+        }
+    }
+    if (widthValue) {
+        CFRelease(widthValue);
+    }
+
+    FLMRadiusCachedValue =
+        MAX(FLMRadiusMinimumValue, MIN(FLMRadiusMaximumValue, radius));
+    FLMRadiusCachedCenteredCardWidth =
+        MAX(FLMRadiusMinimumCardWidth, MIN(FLMRadiusMaximumCardWidth, width));
+}
+
+static CGFloat FLMRadiusPreferenceValue(void) {
+    return FLMRadiusCachedValue;
 }
 
 static id FLMRadiusControllerValue(NSString *key) {
@@ -58,26 +87,7 @@ static id FLMRadiusControllerValue(NSString *key) {
 }
 
 static CGFloat FLMRadiusCenteredCardWidth(void) {
-    CFPropertyListRef value =
-        CFPreferencesCopyValue(CFSTR("centeredCardWidth"),
-                                FLMRadiusPreferencesDomain,
-                                kCFPreferencesCurrentUser,
-                                kCFPreferencesAnyHost);
-    CGFloat width = FLMRadiusDefaultCardWidth;
-    if (value && CFGetTypeID(value) == CFNumberGetTypeID()) {
-        double storedValue = FLMRadiusDefaultCardWidth;
-        if (CFNumberGetValue((CFNumberRef)value,
-                             kCFNumberDoubleType,
-                             &storedValue) &&
-            isfinite(storedValue)) {
-            width = (CGFloat)storedValue;
-        }
-    }
-    if (value) {
-        CFRelease(value);
-    }
-    return MAX(FLMRadiusMinimumCardWidth,
-               MIN(FLMRadiusMaximumCardWidth, width));
+    return FLMRadiusCachedCenteredCardWidth;
 }
 
 static CGFloat FLMRadiusDockWidth(void) {
@@ -230,6 +240,7 @@ static void FLMRadiusPreferencesChanged(CFNotificationCenterRef center,
     (void)object;
     (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{
+        FLMRadiusReloadCachedPreferences();
         FLMRadiusSetLayerRadius(FLMRadiusCardLayer);
         FLMRadiusInstallControllerHooks();
     });
@@ -277,6 +288,8 @@ static void FLMRadiusInstallControllerHooks(void) {
 }
 
 %ctor {
+    FLMRadiusReloadCachedPreferences();
+
     MSHookMessageEx([CALayer class],
                     @selector(setCornerRadius:),
                     (IMP)FLMRadiusSetCornerRadius,
