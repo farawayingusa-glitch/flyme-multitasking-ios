@@ -302,6 +302,8 @@ typedef NS_ENUM(NSUInteger, FLMFloatingDockInputMode) {
     FLMFloatingDockInputModeHiddenReveal,
 };
 
+static NSString *FLMFloatingDockInputModeName(FLMFloatingDockInputMode mode)
+    __attribute__((unused));
 static NSString *FLMFloatingDockInputModeName(FLMFloatingDockInputMode mode) {
     switch (mode) {
         case FLMFloatingDockInputModeCardDrag:
