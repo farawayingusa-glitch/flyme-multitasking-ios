@@ -105,6 +105,7 @@ for marker in \
     "displayLink.preferredFrameRateRange" \
     "maximumFramesPerSecond" \
     "ensureFloatingDockInputDisplayLink" \
+    "Keeping this alive after the last sample causes a permanent main" \
     "beginFloatingHighRefreshLeaseForDuration" \
     "minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;" \
     "CGRect handoffFrame" \
@@ -272,4 +273,6 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Stable build 0.9.58 heat optimization: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+require_source "if (!self.wheelPinned && self.floatingWindow.hidden)"
+
+echo "Stable build 0.9.59 heat optimization v2 idle guard: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"

@@ -43,7 +43,7 @@ static const CGFloat FLMKeyboardAccessoryProtectionHeight = 56.0;
 #if FLM_DIAGNOSTICS_ENABLED
 // Bump this together with the package version in control / Info.plist so a
 // diagnostics-enabled development build can identify itself in its log.
-#define FLMLogBuildString @"Stable build 0.9.58 (heat optimization)"
+#define FLMLogBuildString @"Stable build 0.9.59 (heat optimization v2 idle guard)"
 
 static const char *FLMDiagnosticPrimaryPath =
     "/var/jb/var/mobile/Library/Preferences/FlymeMultitasking-Diagnostic.log";
@@ -3877,6 +3877,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink {
     (void)displayLink;
     if (!self.floatingDockInputFramePending) {
+        // The input display link is a temporary 120Hz transport for touch
+        // samples. Do not keep a CADisplayLink alive while the dock is idle.
+        // Keeping this alive after the last sample causes a permanent main
+        // run-loop wakeup even though no frames are consumed.
+        [self.floatingDockInputDisplayLink invalidate];
+        self.floatingDockInputDisplayLink = nil;
         return;
     }
     self.floatingDockInputFramePending = NO;
@@ -8667,6 +8673,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (void)checkLockState:(NSTimer *)timer {
     (void)timer;
+
+    // When the wheel/card system is not retained, do not keep the
+    // housekeeping timer alive. The timer is only needed while there is an
+    // active wheel or floating session. This avoids a permanent main-runloop
+    // wakeup while the tweak is otherwise idle.
+    if (!self.wheelPinned && self.floatingWindow.hidden) {
+        [self stopLockMonitoringIfIdle];
+        return;
+    }
+
     [self refreshWheelPriorityWindow];
     if (self.floatingDocked && !self.floatingWindow.hidden &&
         self.floatingIdentifier.length > 0) {
