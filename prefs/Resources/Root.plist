@@ -262,9 +262,15 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>日志只记录 Scene、键盘、手势和会话状态，不记录输入文字或聊天内容。日志达到 1 MB 后自动轮换。</string>
+            <string>默认关闭，排查问题时开启，无需重启。关闭后停止新增插件诊断日志，已有日志仍可查看、分享和清除。日志只记录 Scene、键盘、手势和会话状态，不记录输入文字或聊天内容。日志达到 1 MB 后自动轮换。</string>
             <key>label</key>
             <string>日志与诊断</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>日志捕捉</string>
+            <key>get</key><string>diagnosticCaptureEnabled:</string>
+            <key>set</key><string>setDiagnosticCaptureEnabled:specifier:</string>
         </dict>
         <dict>
             <key>action</key>
