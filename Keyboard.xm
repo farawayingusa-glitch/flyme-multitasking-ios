@@ -826,7 +826,7 @@ static void FLMLogContentViewportLayout(NSString *stage,
                                         CGRect currentBounds) {
     (void)contentView;
     CGRect windowBounds = window ? window.bounds : CGRectZero;
-    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+    FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
           (unsigned long long)FLMKeyboardSessionGeneration,
           NSStringFromCGRect(sceneLogicalBounds),
@@ -978,7 +978,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!shouldApply) {
         if (FLMContentViewportAdapterActive ||
             FLMContentViewportOriginalLayouts.count > 0) {
-            NSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
+            FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
                   [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
                   (unsigned long long)FLMKeyboardSessionGeneration,
                   FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
@@ -993,7 +993,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMContentViewportAdapterActive) {
         FLMContentViewportAdapterActive = YES;
         FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
-        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
+        FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
               [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
               (unsigned long long)FLMKeyboardSessionGeneration,
               FLMContentLogicalViewportSize.width,
