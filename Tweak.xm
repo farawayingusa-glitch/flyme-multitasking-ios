@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Energy repair 0.9.58 (live hidden mode)"
+#define FLMLogBuildString @"Energy repair 0.9.62 (live hidden mode)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -320,6 +320,16 @@ static const NSTimeInterval FLMFloatingLaunchTimeout = 6.5;
 static const NSTimeInterval FLMFloatingSceneSettleDelay = 0.10;
 static const NSTimeInterval FLMFloatingScenePollInterval = 0.05;
 static const NSTimeInterval FLMFloatingSceneResolveGraceDelay = 0.03;
+
+// Scene/presenter polling starts at the original 50 ms cadence and then backs
+// off geometrically, so a slow launch no longer runs a 20 Hz main-queue
+// heartbeat for the whole timeout window. The retry budget is unchanged; only
+// the spacing grows (50 ms -> capped 400 ms).
+static NSTimeInterval FLMFloatingSceneRetryDelay(NSUInteger attempt) {
+    NSTimeInterval delay =
+        FLMFloatingScenePollInterval * pow(1.35, (double)attempt);
+    return MIN(0.40, MAX(FLMFloatingScenePollInterval, delay));
+}
 static const NSTimeInterval FLMFloatingLaunchCoverSettleDelay = 0.02;
 static const NSTimeInterval FLMFloatingLaunchCoverFadeDuration = 0.05;
 static const NSTimeInterval FLMFloatingFullscreenActivationDelay = 0.02;
@@ -8110,7 +8120,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
-                              (int64_t)(FLMFloatingScenePollInterval *
+                              (int64_t)(FLMFloatingSceneRetryDelay(attempt) *
                                         NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
@@ -8140,7 +8150,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
-                              (int64_t)(FLMFloatingScenePollInterval *
+                              (int64_t)(FLMFloatingSceneRetryDelay(attempt) *
                                         NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
@@ -8198,7 +8208,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         if (attempt < 60) {
             dispatch_after(
                 dispatch_time(DISPATCH_TIME_NOW,
-                              (int64_t)(FLMFloatingScenePollInterval *
+                              (int64_t)(FLMFloatingSceneRetryDelay(attempt) *
                                         NSEC_PER_SEC)),
                 dispatch_get_main_queue(), ^{
                     [self attachFloatingIdentifier:identifier
@@ -8670,13 +8680,31 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (self.lockMonitorTimer.valid) {
         return;
     }
+    // Lock transitions arrive on the Darwin lock-state channel and are handled
+    // immediately. The timer below is only a low-frequency fallback and keeps
+    // driving external-frontmost detection; 1 Hz with a wide tolerance lets
+    // the system coalesce the wakeup instead of a 3 Hz heartbeat.
+    static dispatch_once_t lockStateObserverOnceToken;
+    dispatch_once(&lockStateObserverOnceToken, ^{
+        static int lockStateToken = -1;
+        if (notify_register_dispatch("com.apple.springboard.lockstate",
+                                     &lockStateToken,
+                                     dispatch_get_main_queue(),
+                                     ^(int token) {
+                                         (void)token;
+                                         [[FLMWheelController sharedController]
+                                             checkLockState:nil];
+                                     }) != NOTIFY_STATUS_OK) {
+            lockStateToken = -1;
+        }
+    });
     self.lockMonitorTimer =
-        [NSTimer timerWithTimeInterval:0.35
+        [NSTimer timerWithTimeInterval:1.0
                                target:self
                              selector:@selector(checkLockState:)
                              userInfo:nil
                               repeats:YES];
-    self.lockMonitorTimer.tolerance = 0.05;
+    self.lockMonitorTimer.tolerance = 0.25;
     [[NSRunLoop mainRunLoop] addTimer:self.lockMonitorTimer
                               forMode:NSRunLoopCommonModes];
 }

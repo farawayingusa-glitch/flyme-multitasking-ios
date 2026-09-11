@@ -266,4 +266,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Energy repair 0.9.58 reset: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Energy repair 0.9.62 idle/poll repair: 1 Hz lock monitor with Darwin lock-state trigger and geometric scene/presenter poll backoff; 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"
