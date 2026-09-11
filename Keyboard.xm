@@ -21,12 +21,13 @@
 #define FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION "com.codex.flymemultitasking.keyboard-avoidance-changed"
 #define FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION "com.codex.flymemultitasking.keyboard-card-geometry-changed"
 #define FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION "com.codex.flymemultitasking.keyboard-shared-state-changed"
-#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v47"
-#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v47"
+#define FLYME_KEYBOARD_APP_CTOR_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ctor-v53"
+#define FLYME_KEYBOARD_APP_READY_NOTIFICATION "com.codex.flymemultitasking.keyboard-app-ready-v53"
+#define FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION "com.codex.flymemultitasking.keyboard-dismiss-request-reset-v1"
 #define FLYME_KEYBOARD_SHARED_STATE_VERSION 2
-#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF147ULL
-#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF247ULL
-#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 47ULL
+#define FLYME_KEYBOARD_APP_CTOR_MAGIC 0xF153ULL
+#define FLYME_KEYBOARD_APP_READY_MAGIC 0xF253ULL
+#define FLYME_KEYBOARD_APP_ADAPTER_BUILD 53ULL
 
 static NSString *const FLMKeyboardSharedStatePath =
     @"/var/mobile/Library/Preferences/FlymeMultitasking-KeyboardState.plist";
@@ -53,6 +54,11 @@ static CGFloat FLMKeyboardCardBottom = 0.0;
 static CGFloat FLMKeyboardCardVisualScale = 0.0;
 static int FLMKeyboardAppCtorToken = -1;
 static int FLMKeyboardAppReadyToken = -1;
+static int FLMKeyboardDismissRequestToken = -1;
+static int FLMDockInputBlockToken = -1;
+static NSMutableSet<UITouch *> *FLMDockInputSuppressedTouches;
+static uint64_t FLMKeyboardLastTargetSessionGeneration = 0;
+static uint64_t FLMKeyboardLastDismissRequestState = 0;
 static BOOL FLMKeyboardHooksInstalled = NO;
 static BOOL FLMKeyboardRouteObserversInstalled = NO;
 static BOOL FLMContentViewportAdapterApplying = NO;
@@ -60,9 +66,12 @@ static BOOL FLMContentViewportAdapterActive = NO;
 static uint64_t FLMContentViewportAdapterGeneration = 0;
 static NSMapTable<UIView *, NSDictionary *> *FLMContentViewportOriginalLayouts;
 static BOOL FLMKeyboardIdentityRetryScheduled = NO;
+static BOOL FLMDockInputBarrierInstalled = NO;
+static BOOL FLMDockInputBarrierRetryScheduled = NO;
 static BOOL FLMKeyboardRawLoadDiagnosticPublished = NO;
 static uint16_t FLMKeyboardLastIdentityFlags = UINT16_MAX;
 static NSUInteger FLMKeyboardIdentityRetryCount = 0;
+static NSUInteger FLMDockInputBarrierRetryCount = 0;
 static const NSUInteger FLMKeyboardIdentityRetryLimit = 8;
 
 // The application-side logical viewport is deliberately fixed at the full
@@ -85,8 +94,11 @@ static void FLMReloadKeyboardCardGeometry(void);
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState);
 static void FLMAttemptKeyboardInitialization(void);
 static void FLMRegisterKeyboardNotificationsAndInitialize(void);
+static void FLMRegisterKeyboardDismissObserverIfNeeded(void);
 static void FLMHandleKeyboardRouteNotification(void);
 static void FLMUpdateContentViewportAdapter(void);
+static void FLMInstallDockInputBarrierIfEligible(void);
+static void FLMScheduleDockInputBarrierRetry(void);
 
 static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                                                 int *token,
@@ -109,7 +121,24 @@ static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                               (uint16_t)(getpid() & 0xFFFF));
 }
 
+static int FLMKeyboardSharedCheckToken = -1;
+static NSDictionary *FLMKeyboardCachedSharedState;
+static BOOL FLMKeyboardSharedCacheLoaded = NO;
+static uint64_t FLMKeyboardSharedCacheRevision = 0;
+
 static NSDictionary *FLMReadKeyboardSharedState(void) {
+    // notify_check uses a change flag. The plist is read once per committed
+    // snapshot, never three times on every UIKit geometry/intersection query.
+    if (FLMKeyboardSharedCheckToken < 0) {
+        if (notify_register_check(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
+                                 &FLMKeyboardSharedCheckToken) != NOTIFY_STATUS_OK)
+            FLMKeyboardSharedCheckToken = -1;
+    }
+    int changed = 0;
+    BOOL checkOK = FLMKeyboardSharedCheckToken >= 0 &&
+        notify_check(FLMKeyboardSharedCheckToken, &changed) == NOTIFY_STATUS_OK;
+    if (checkOK && !changed && FLMKeyboardSharedCacheLoaded)
+        return FLMKeyboardCachedSharedState;
     NSDictionary *state =
         [NSDictionary dictionaryWithContentsOfFile:FLMKeyboardSharedStatePath];
     if (![state isKindOfClass:[NSDictionary class]]) {
@@ -119,9 +148,11 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
     NSNumber *version = [state[@"version"] isKindOfClass:[NSNumber class]]
                             ? state[@"version"]
                             : nil;
-    return version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION
-               ? state
-               : nil;
+    FLMKeyboardCachedSharedState =
+        version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION ? state : nil;
+    FLMKeyboardSharedCacheLoaded = checkOK;
+    FLMKeyboardSharedCacheRevision += 1;
+    return FLMKeyboardCachedSharedState;
 }
 
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
@@ -149,6 +180,86 @@ static uint64_t FLMIdentifierHash(NSString *identifier) {
         value *= 1099511628211ULL;
     }
     return value ?: 1;
+}
+
+static uint64_t FLMCurrentApplicationIdentifierHash(void) {
+    static uint64_t identifierHash = 0;
+    if (identifierHash == 0) {
+        identifierHash =
+            FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier);
+    }
+    return identifierHash;
+}
+
+static BOOL FLMDockInputBlockedForCurrentApplication(void) {
+    if (FLMDockInputBlockToken < 0 &&
+        notify_register_check(FLYME_DOCK_INPUT_BLOCK_NOTIFICATION,
+                              &FLMDockInputBlockToken) != NOTIFY_STATUS_OK) {
+        FLMDockInputBlockToken = -1;
+        return NO;
+    }
+    static uint64_t cachedState = 0;
+    static BOOL needsRead = YES;
+    int changed = 0;
+    if (notify_check(FLMDockInputBlockToken, &changed) != NOTIFY_STATUS_OK)
+        needsRead = YES;
+    if (changed) needsRead = YES;
+    if (needsRead) {
+        uint64_t state = 0;
+        if (notify_get_state(FLMDockInputBlockToken, &state) != NOTIFY_STATUS_OK)
+            return NO;
+        cachedState = state;
+        needsRead = NO;
+    }
+    return FLMDockInputBlockStateMatches(
+        cachedState, FLMCurrentApplicationIdentifierHash());
+}
+
+static BOOL FLMShouldSuppressDockTouchEvent(UIEvent *event,
+                                            BOOL routeBlocked,
+                                            BOOL *containsBeganTouch) {
+    NSSet<UITouch *> *touches = event.allTouches;
+    if (!FLMDockInputSuppressedTouches) {
+        FLMDockInputSuppressedTouches = [NSMutableSet set];
+    }
+    BOOL began = NO;
+    BOOL containsSuppressedTouch = NO;
+    for (UITouch *touch in touches) {
+        if (touch.phase == UITouchPhaseBegan) {
+            began = YES;
+        }
+        if ([FLMDockInputSuppressedTouches containsObject:touch]) {
+            containsSuppressedTouch = YES;
+        }
+    }
+    if (containsBeganTouch) {
+        *containsBeganTouch = began;
+    }
+
+    BOOL suppress = routeBlocked || containsSuppressedTouch;
+    if (!suppress) {
+        // A new Began with none of the retained touch identities proves any
+        // missing terminal callback belonged to an obsolete stream. Do not
+        // let a stale retained UITouch consume the first centered-mode tap.
+        if (began && FLMDockInputSuppressedTouches.count > 0) {
+            [FLMDockInputSuppressedTouches removeAllObjects];
+        }
+        return NO;
+    }
+
+    // Latch every touch identity in a suppressed UIEvent. If SpringBoard
+    // clears the route while that physical stream is still ending, its
+    // Changed/Ended tail remains suppressed and can never reach the app
+    // without the Began event that was intentionally dropped.
+    for (UITouch *touch in touches) {
+        if (touch.phase == UITouchPhaseEnded ||
+            touch.phase == UITouchPhaseCancelled) {
+            [FLMDockInputSuppressedTouches removeObject:touch];
+        } else {
+            [FLMDockInputSuppressedTouches addObject:touch];
+        }
+    }
+    return YES;
 }
 
 static BOOL FLMProcessIsKeyboardExtension(void) {
@@ -209,10 +320,10 @@ static uint16_t FLMApplicationProcessIdentityFlags(void) {
 }
 
 // FlymeKeyboard.plist reaches UIKit application clients rather than naming a
-// single app. The shared-state route is the second, exact gate: only the
-// process whose main bundle hash equals the current wheel target can install
-// functional hooks. A dylib loaded into another app is diagnostic-only until
-// a later route notification selects that app.
+// single app. The generic Dock event boundary is installed in each eligible
+// app but acts only when its exact bundle hash matches SpringBoard's current
+// block state. Keyboard geometry hooks keep their separate target route and
+// are installed only after that route selects this application.
 static BOOL FLMIsEligibleApplicationProcess(void) {
     return (FLMApplicationProcessIdentityFlags() & 2U) != 0;
 }
@@ -401,6 +512,77 @@ static void FLMEndPreviousApplicationKeyboardSession(uint64_t generation) {
         0);
 }
 
+static void FLMHandleKeyboardDismissRequest(int deliveredToken) {
+    uint64_t requestState = 0;
+    if (deliveredToken < 0 ||
+        notify_get_state(deliveredToken, &requestState) != NOTIFY_STATUS_OK ||
+        requestState == 0 ||
+        requestState == FLMKeyboardLastDismissRequestState) {
+        return;
+    }
+
+    uint64_t requestedSession = (requestState >> 32) & 0xFFFFFFFFULL;
+    uint64_t requestedBundleHash = requestState & 0xFFFFFFFFULL;
+    uint64_t currentBundleHash =
+        FLMIdentifierHash([NSBundle mainBundle].bundleIdentifier) &
+        0xFFFFFFFFULL;
+    uint64_t activeSession =
+        FLMKeyboardSessionGeneration & 0xFFFFFFFFULL;
+    uint64_t lastTargetSession =
+        FLMKeyboardLastTargetSessionGeneration & 0xFFFFFFFFULL;
+    BOOL sessionMatches =
+        requestedSession != 0 &&
+        (activeSession == requestedSession ||
+         (activeSession == 0 &&
+          (lastTargetSession == 0 ||
+           lastTargetSession == requestedSession)));
+    if (!FLMIsEligibleApplicationProcess() || currentBundleHash == 0 ||
+        currentBundleHash != requestedBundleHash || !sessionMatches) {
+        return;
+    }
+
+    FLMKeyboardLastDismissRequestState = requestState;
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventDismissRequest,
+        requestedSession,
+        (uint16_t)(requestedBundleHash & 0xFFFFULL),
+        0);
+    FLMEndPreviousApplicationKeyboardSession(requestedSession);
+    FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
+                              FLMDiagnosticEventDismissAck,
+                              requestedSession,
+                              1,
+                              0);
+
+    // Some retained Scenes restore their saved responder during the route
+    // teardown transaction. Repeat once inside the existing 0.24 s close
+    // animation, but never touch a newer session if the card has already been
+    // reopened.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.16 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        uint64_t lastSession =
+            FLMKeyboardLastTargetSessionGeneration & 0xFFFFFFFFULL;
+        if (FLMKeyboardLastDismissRequestState != requestState ||
+            (lastSession != 0 && lastSession != requestedSession)) {
+            return;
+        }
+        uint64_t repeatedActiveSession =
+            FLMKeyboardSessionGeneration & 0xFFFFFFFFULL;
+        if (repeatedActiveSession != 0 &&
+            repeatedActiveSession != requestedSession) {
+            return;
+        }
+        FLMEndPreviousApplicationKeyboardSession(requestedSession);
+        FLMPublishDiagnosticEvent(FLMDiagnosticRoleApplication,
+                                  FLMDiagnosticEventDismissAck,
+                                  requestedSession,
+                                  2,
+                                  0);
+    });
+}
+
 static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
     if (generation == 0) {
         return;
@@ -420,11 +602,40 @@ static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
     });
 }
 
+// The shared plist can be unreadable in a sandboxed client. Keep the legacy
+// fallback cheap too: separate check tokens avoid server state reads on each
+// UIKit geometry query while retaining synchronous change detection.
+static BOOL FLMKeyboardFallbackReadFailed = NO;
+
+static BOOL FLMKeyboardFallbackStateChanged(void) {
+    static int tokens[5] = {-1, -1, -1, -1, -1};
+    const char *names[5] = {FLYME_KEYBOARD_NOTIFICATION,
+        FLYME_KEYBOARD_SCENE_NOTIFICATION, FLYME_KEYBOARD_SESSION_NOTIFICATION,
+        FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION, FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION};
+    BOOL anyChanged = NO;
+    for (NSUInteger i = 0; i < 5; i++) {
+        if (tokens[i] < 0 && notify_register_check(names[i], &tokens[i]) != NOTIFY_STATUS_OK) {
+            tokens[i] = -1;
+            anyChanged = YES;
+            continue;
+        }
+        int changed = 0;
+        if (notify_check(tokens[i], &changed) != NOTIFY_STATUS_OK || changed)
+            anyChanged = YES;
+    }
+    return anyChanged;
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
     uint64_t sceneHash = 0;
     NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    static uint64_t lastAppliedRevision = UINT64_MAX;
+    BOOL fallbackChanged = !sharedState && FLMKeyboardFallbackStateChanged();
+    if (lastAppliedRevision == FLMKeyboardSharedCacheRevision &&
+        (sharedState || (!fallbackChanged && !FLMKeyboardFallbackReadFailed))) return;
+    FLMKeyboardFallbackReadFailed = NO;
     BOOL sharedStateAvailable = sharedState != nil;
     BOOL sharedStateActive =
         [sharedState[@"active"] isKindOfClass:[NSNumber class]] &&
@@ -440,15 +651,17 @@ static void FLMReloadKeyboardRoute(void) {
         sessionGeneration =
             [sharedState[@"sessionGeneration"] unsignedLongLongValue];
         sceneHash = [sharedState[@"sceneHash"] unsignedLongLongValue];
-    } else if (FLMKeyboardRouteToken >= 0) {
-        notify_get_state(FLMKeyboardRouteToken, &targetHash);
-        if (FLMKeyboardSessionToken >= 0) {
-            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
-        }
-        if (FLMKeyboardSceneToken >= 0) {
-            notify_get_state(FLMKeyboardSceneToken, &sceneHash);
+    } else {
+        if (FLMKeyboardRouteToken < 0 || FLMKeyboardSessionToken < 0 ||
+            FLMKeyboardSceneToken < 0 ||
+            notify_get_state(FLMKeyboardRouteToken, &targetHash) != NOTIFY_STATUS_OK ||
+            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration) != NOTIFY_STATUS_OK ||
+            notify_get_state(FLMKeyboardSceneToken, &sceneHash) != NOTIFY_STATUS_OK) {
+            FLMKeyboardFallbackReadFailed = YES;
+            return; // do not commit a partial tuple or consume the retry
         }
     }
+    lastAppliedRevision = FLMKeyboardSharedCacheRevision;
 
     BOOL previousTargetApplication = FLMKeyboardTargetApplication;
     uint64_t previousGeneration = FLMKeyboardSessionGeneration;
@@ -465,6 +678,9 @@ static void FLMReloadKeyboardRoute(void) {
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
+    if (FLMKeyboardTargetApplication && sessionGeneration != 0) {
+        FLMKeyboardLastTargetSessionGeneration = sessionGeneration;
+    }
 
     BOOL startingTargetSession =
         FLMKeyboardTargetApplication && sessionGeneration != 0 &&
@@ -557,6 +773,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
     if (FLMKeyboardCardGeometryToken < 0 ||
         notify_get_state(FLMKeyboardCardGeometryToken, &state) !=
             NOTIFY_STATUS_OK) {
+        FLMKeyboardFallbackReadFailed = YES;
         return;
     }
     // The legacy notify payload contains only card bottom/scale.  The
@@ -597,6 +814,7 @@ static void FLMReloadKeyboardAvoidance(void) {
         height = [sharedState[@"avoidanceHeight"] doubleValue];
     } else if (FLMKeyboardAvoidanceToken < 0 ||
         notify_get_state(FLMKeyboardAvoidanceToken, &state) != NOTIFY_STATUS_OK) {
+        FLMKeyboardFallbackReadFailed = YES;
         return;
     } else {
         visible = (state & (1ULL << 63)) != 0;
@@ -668,7 +886,7 @@ static void FLMLogContentViewportLayout(NSString *stage,
                                         CGRect currentBounds) {
     (void)contentView;
     CGRect windowBounds = window ? window.bounds : CGRectZero;
-    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+    FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
           (unsigned long long)FLMKeyboardSessionGeneration,
           NSStringFromCGRect(sceneLogicalBounds),
@@ -820,7 +1038,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!shouldApply) {
         if (FLMContentViewportAdapterActive ||
             FLMContentViewportOriginalLayouts.count > 0) {
-            NSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
+            FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
                   [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
                   (unsigned long long)FLMKeyboardSessionGeneration,
                   FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
@@ -835,7 +1053,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMContentViewportAdapterActive) {
         FLMContentViewportAdapterActive = YES;
         FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
-        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
+        FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
               [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
               (unsigned long long)FLMKeyboardSessionGeneration,
               FLMContentLogicalViewportSize.width,
@@ -845,6 +1063,85 @@ static void FLMUpdateContentViewportAdapter(void) {
                                                     : @"fullscreen-fallback");
     }
     FLMApplyContentViewportToVisibleApplicationWindows();
+}
+
+%group FLMDockInputBarrier
+
+%hook UIApplication
+
+- (void)sendEvent:(UIEvent *)event {
+    if (event && event.type == UIEventTypeTouches) {
+        BOOL routeBlocked = FLMDockInputBlockedForCurrentApplication();
+        if (!routeBlocked && FLMDockInputSuppressedTouches.count == 0) {
+            // Centered/fullscreen is the hot path. One shared-state read is
+            // sufficient; avoid allocating or walking UITouch objects when no
+            // suppressed stream needs a terminal tail.
+            %orig;
+            return;
+        }
+        BOOL containsBeganTouch = NO;
+        BOOL suppress = FLMShouldSuppressDockTouchEvent(
+            event, routeBlocked, &containsBeganTouch);
+        if (!suppress) {
+            %orig;
+            return;
+        }
+        NSSet<UITouch *> *touches = event.allTouches;
+        if (containsBeganTouch) {
+            FLMPublishDiagnosticEvent(
+                FLMDiagnosticRoleApplication,
+                FLMDiagnosticEventInputSuppressed,
+                0,
+                (uint16_t)(FLMCurrentApplicationIdentifierHash() & 0xFFFFULL),
+                (uint16_t)MIN((NSUInteger)UINT16_MAX, touches.count));
+        }
+        // SpringBoard's display-level recognizer still receives this stream
+        // and performs Dock tap/drag/hide control. Returning here removes the
+        // duplicate delivery only from the hosted application's Scene.
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%end
+
+static void FLMScheduleDockInputBarrierRetry(void) {
+    if (FLMDockInputBarrierInstalled ||
+        FLMDockInputBarrierRetryScheduled ||
+        FLMDockInputBarrierRetryCount >= FLMKeyboardIdentityRetryLimit ||
+        FLMProcessIsSpringBoardOrSystemAgent() ||
+        FLMProcessIsKeyboardExtension()) {
+        return;
+    }
+    NSDictionary *extension =
+        [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+    if ([extension isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    FLMDockInputBarrierRetryScheduled = YES;
+    NSUInteger attempt = ++FLMDockInputBarrierRetryCount;
+    NSTimeInterval delay = MIN(1.0, 0.05 * pow(2.0, (double)attempt));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       FLMDockInputBarrierRetryScheduled = NO;
+                       FLMInstallDockInputBarrierIfEligible();
+                   });
+}
+
+static void FLMInstallDockInputBarrierIfEligible(void) {
+    if (FLMDockInputBarrierInstalled) {
+        return;
+    }
+    if (!FLMIsEligibleApplicationProcess() ||
+        FLMCurrentApplicationIdentifierHash() == 0) {
+        FLMScheduleDockInputBarrierRetry();
+        return;
+    }
+    %init(FLMDockInputBarrier);
+    FLMDockInputBarrierInstalled = YES;
 }
 
 %group FLMContentViewportAdapter
@@ -951,49 +1248,67 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
 }
 
 static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
-    if (FLMKeyboardRouteObserversInstalled || !FLMIsEligibleApplicationProcess()) {
+    if (FLMKeyboardRouteObserversInstalled || !FLMIsEligibleApplicationProcess()) return;
+    if (FLMKeyboardRouteToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION, &FLMKeyboardRouteToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardRouteToken = -1;
+    if (FLMKeyboardSceneToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION, &FLMKeyboardSceneToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSceneToken = -1;
+    if (FLMKeyboardSessionToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION, &FLMKeyboardSessionToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSessionToken = -1;
+    if (FLMKeyboardAvoidanceToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION, &FLMKeyboardAvoidanceToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMReloadKeyboardAvoidance();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardAvoidanceToken = -1;
+    if (FLMKeyboardCardGeometryToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION, &FLMKeyboardCardGeometryToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMReloadKeyboardCardGeometry();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardCardGeometryToken = -1;
+    if (FLMKeyboardSharedStateToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION, &FLMKeyboardSharedStateToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSharedStateToken = -1;
+    FLMKeyboardRouteObserversInstalled =
+        FLMKeyboardRouteToken >= 0 &&
+        FLMKeyboardSceneToken >= 0 &&
+        FLMKeyboardSessionToken >= 0 &&
+        FLMKeyboardAvoidanceToken >= 0 &&
+        FLMKeyboardCardGeometryToken >= 0 &&
+        FLMKeyboardSharedStateToken >= 0;
+}
+
+static void FLMRegisterKeyboardDismissObserverIfNeeded(void) {
+    if (FLMKeyboardDismissRequestToken >= 0 ||
+        !FLMIsEligibleApplicationProcess()) {
         return;
     }
-    FLMKeyboardRouteObserversInstalled = YES;
-    notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
-                             &FLMKeyboardRouteToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
-                             &FLMKeyboardSceneToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
-                             &FLMKeyboardSessionToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
-                             &FLMKeyboardAvoidanceToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMReloadKeyboardAvoidance();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
-                             &FLMKeyboardCardGeometryToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMReloadKeyboardCardGeometry();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
-                             &FLMKeyboardSharedStateToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
+    int status = notify_register_dispatch(
+        FLYME_KEYBOARD_DISMISS_REQUEST_NOTIFICATION,
+        &FLMKeyboardDismissRequestToken,
+        dispatch_get_main_queue(),
+        ^(int token) {
+            FLMHandleKeyboardDismissRequest(token);
+        });
+    if (status != NOTIFY_STATUS_OK) {
+        FLMKeyboardDismissRequestToken = -1;
+    }
 }
 
 static void FLMHandleKeyboardRouteNotification(void) {
+    // Registration is independently retryable; a transient failure must not
+    // become permanent merely because the route hooks already initialized.
+    FLMRegisterKeyboardDismissObserverIfNeeded();
     FLMReloadKeyboardRoute();
     if (!FLMKeyboardHooksInstalled && FLMIsEligibleApplicationProcess() &&
         FLMKeyboardTargetApplication) {
@@ -1055,6 +1370,7 @@ static void FLMScheduleKeyboardIdentityRetry(void) {
 }
 
 static void FLMAttemptKeyboardInitialization(void) {
+    FLMRegisterKeyboardDismissObserverIfNeeded();
     if (FLMKeyboardHooksInstalled) {
         return;
     }
@@ -1071,7 +1387,10 @@ static void FLMAttemptKeyboardInitialization(void) {
     FLMRegisterKeyboardRouteObserversIfNeeded();
     FLMReloadKeyboardRoute();
     if (!FLMKeyboardTargetApplication) {
-        FLMScheduleKeyboardIdentityRetry();
+        // A settled non-target identity is not an initialization failure.
+        // Route observers will initialize it when it is actually selected.
+        if (!FLMKeyboardRouteObserversInstalled)
+            FLMScheduleKeyboardIdentityRetry();
         return;
     }
     FLMRegisterKeyboardNotificationsAndInitialize();
@@ -1079,10 +1398,10 @@ static void FLMAttemptKeyboardInitialization(void) {
 
 %ctor {
     @autoreleasepool {
-        // This first call is intentionally safe even when the broad UIKit
-        // filter loads the dylib before the route has selected this app. All
-        // functional setup remains behind the application/process and exact
-        // shared bundle-hash gates.
+        // Install the event boundary in every ordinary UIKit application. It
+        // remains a no-op unless SpringBoard's synchronous state names this
+        // exact bundle; keyboard behavior keeps its independent route gate.
+        FLMInstallDockInputBarrierIfEligible();
         FLMPublishKeyboardRawLoadDiagnostic();
         FLMAttemptKeyboardInitialization();
     }

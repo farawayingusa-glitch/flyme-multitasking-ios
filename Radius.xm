@@ -22,7 +22,7 @@ static const CGFloat FLMRadiusMaximumCardWidth = 360.0;
 static __weak id FLMRadiusController;
 static __weak CALayer *FLMRadiusCardLayer;
 
-static CGFloat FLMRadiusPreferenceValue(void) {
+static CGFloat FLMRadiusReadPreferenceValue(void) {
     CFPropertyListRef value =
         CFPreferencesCopyValue(CFSTR("cardCornerRadius"),
                                 FLMRadiusPreferencesDomain,
@@ -57,7 +57,7 @@ static id FLMRadiusControllerValue(NSString *key) {
     }
 }
 
-static CGFloat FLMRadiusCenteredCardWidth(void) {
+static CGFloat FLMRadiusReadCenteredCardWidth(void) {
     CFPropertyListRef value =
         CFPreferencesCopyValue(CFSTR("centeredCardWidth"),
                                 FLMRadiusPreferencesDomain,
@@ -79,6 +79,16 @@ static CGFloat FLMRadiusCenteredCardWidth(void) {
     return MAX(FLMRadiusMinimumCardWidth,
                MIN(FLMRadiusMaximumCardWidth, width));
 }
+
+static CGFloat FLMRadiusCachedValue = FLMRadiusDefaultValue;
+static CGFloat FLMRadiusCachedCardWidth = FLMRadiusDefaultCardWidth;
+
+static void FLMRadiusReloadCachedPreferences(void) {
+    FLMRadiusCachedValue = FLMRadiusReadPreferenceValue();
+    FLMRadiusCachedCardWidth = FLMRadiusReadCenteredCardWidth();
+}
+static CGFloat FLMRadiusPreferenceValue(void) { return FLMRadiusCachedValue; }
+static CGFloat FLMRadiusCenteredCardWidth(void) { return FLMRadiusCachedCardWidth; }
 
 static CGFloat FLMRadiusDockWidth(void) {
     id value = FLMRadiusControllerValue(@"floatingDockWidth");
@@ -203,6 +213,7 @@ static void FLMRadiusCreateFloatingWindow(id controller, SEL selector) {
 
 static void (*FLMRadiusOriginalReloadPreferences)(id, SEL);
 static void FLMRadiusReloadPreferences(id controller, SEL selector) {
+    FLMRadiusReloadCachedPreferences();
     if (FLMRadiusOriginalReloadPreferences) {
         FLMRadiusOriginalReloadPreferences(controller, selector);
     }
@@ -230,6 +241,7 @@ static void FLMRadiusPreferencesChanged(CFNotificationCenterRef center,
     (void)object;
     (void)userInfo;
     dispatch_async(dispatch_get_main_queue(), ^{
+        FLMRadiusReloadCachedPreferences();
         FLMRadiusSetLayerRadius(FLMRadiusCardLayer);
         FLMRadiusInstallControllerHooks();
     });
@@ -237,11 +249,18 @@ static void FLMRadiusPreferencesChanged(CFNotificationCenterRef center,
 
 static void FLMRadiusInstallControllerHooks(void) {
     static BOOL installed = NO;
+    static BOOL retryScheduled = NO;
+    static NSUInteger retryCount = 0;
+    if (installed) return;
     Class controllerClass = NSClassFromString(@"FLMWheelController");
     if (!controllerClass) {
+        if (retryScheduled || retryCount >= 20) return;
+        retryScheduled = YES;
+        retryCount += 1;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                       (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            retryScheduled = NO;
             FLMRadiusInstallControllerHooks();
         });
         return;
@@ -249,6 +268,11 @@ static void FLMRadiusInstallControllerHooks(void) {
     if (installed) {
         return;
     }
+
+    MSHookMessageEx([CALayer class],
+                    @selector(setCornerRadius:),
+                    (IMP)FLMRadiusSetCornerRadius,
+                    (IMP *)&FLMRadiusOriginalSetCornerRadius);
 
     SEL createSelector = NSSelectorFromString(@"createFloatingWindow");
     if (class_getInstanceMethod(controllerClass, createSelector)) {
@@ -277,10 +301,7 @@ static void FLMRadiusInstallControllerHooks(void) {
 }
 
 %ctor {
-    MSHookMessageEx([CALayer class],
-                    @selector(setCornerRadius:),
-                    (IMP)FLMRadiusSetCornerRadius,
-                    (IMP *)&FLMRadiusOriginalSetCornerRadius);
+    FLMRadiusReloadCachedPreferences();
 
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL,

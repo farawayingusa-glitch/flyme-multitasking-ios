@@ -8,6 +8,7 @@
 #import <notify.h>
 #import <signal.h>
 #import <stdint.h>
+#import "../FLMDiagnostics.h"
 
 #define FLYME_RUNTIME_NOTIFICATION "com.codex.flymemultitasking.runtime"
 #define FLYME_PREFERENCES_NOTIFICATION "com.codex.flymemultitasking.preferences-changed"
@@ -104,8 +105,12 @@ static NSData *FLMCompleteDiagnosticData(void) {
 
 static NSString *FLMDiagnosticStatusText(void) {
     NSString *path = FLMActiveDiagnosticPath();
-    NSData *data = FLMCompleteDiagnosticData();
-    if (path.length == 0 || data.length == 0) {
+    unsigned long long byteCount = 0;
+    for (NSString *candidate in path ? @[path, [path stringByAppendingString:@".previous"]] : @[]) {
+        NSDictionary *info = [[NSFileManager defaultManager] attributesOfItemAtPath:candidate error:nil];
+        byteCount += [info fileSize];
+    }
+    if (path.length == 0 || byteCount == 0) {
         return @"暂无日志";
     }
     NSDictionary *attributes =
@@ -114,7 +119,7 @@ static NSString *FLMDiagnosticStatusText(void) {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
     formatter.dateFormat = @"MM-dd HH:mm";
     NSString *dateText = date ? [formatter stringFromDate:date] : @"未知时间";
-    CGFloat kibibytes = (CGFloat)data.length / 1024.0;
+    CGFloat kibibytes = (CGFloat)byteCount / 1024.0;
     return [NSString stringWithFormat:@"%.1f KB · %@", kibibytes, dateText];
 }
 
@@ -550,9 +555,25 @@ static NSString *FLMNameForIdentifier(
     return FlymeRuntimeIsConnected() ? @"已连接" : @"未连接";
 }
 
+- (NSNumber *)diagnosticCaptureEnabled:(PSSpecifier *)specifier {
+    (void)specifier;
+    id value = FLMCopyPreference(@"diagnosticCaptureEnabled");
+    return @([value isKindOfClass:[NSNumber class]] && [value boolValue]);
+}
+
+- (void)setDiagnosticCaptureEnabled:(NSNumber *)value specifier:(PSSpecifier *)specifier {
+    (void)specifier;
+    BOOL enabled = [value boolValue];
+    FLMSetPreference(@"diagnosticCaptureEnabled", @(enabled));
+    FLMSetDiagnosticCaptureState(enabled);
+    [self reloadSpecifierID:@"diagnostic-status" animated:NO];
+}
+
 - (NSString *)diagnosticStatus:(PSSpecifier *)specifier {
     (void)specifier;
-    return FLMDiagnosticStatusText();
+    return [NSString stringWithFormat:@"%@ · %@",
+        [[self diagnosticCaptureEnabled:nil] boolValue] ? @"捕捉已开启" : @"捕捉已关闭",
+        FLMDiagnosticStatusText()];
 }
 
 - (void)showDiagnosticAlertWithTitle:(NSString *)title
@@ -572,7 +593,7 @@ static NSString *FLMNameForIdentifier(
     NSData *data = FLMCompleteDiagnosticData();
     if (data.length == 0) {
         [self showDiagnosticAlertWithTitle:@"暂无日志"
-                                  message:@"请先复现问题，再点击分享诊断日志。"];
+                                  message:@"请先开启日志捕捉并复现问题，再点击分享诊断日志。"];
         return;
     }
     NSString *snapshotPath =
@@ -603,7 +624,7 @@ static NSString *FLMNameForIdentifier(
     NSData *data = FLMCompleteDiagnosticData();
     NSString *text = data.length > 0
         ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
-        : @"暂无诊断日志。请先复现问题，再返回此页面查看或分享。";
+        : @"暂无诊断日志。请先开启日志捕捉并复现问题，再返回此页面查看或分享。";
     FLMDiagnosticLogController *controller =
         [[FLMDiagnosticLogController alloc] init];
     controller.logText = text ?: @"日志不是有效的 UTF-8 文本。";

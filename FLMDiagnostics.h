@@ -6,9 +6,57 @@
 #import <notify.h>
 #import <stdint.h>
 
+
+// The SpringBoard owner restores the persisted setting at launch. Readers use
+// notify_check's shared-memory change flag; no preference I/O on hot paths.
+#import <os/lock.h>
+#define FLYME_DIAGNOSTIC_CAPTURE_NOTIFICATION \
+    "com.codex.flymemultitasking.diagnostic-capture-v1"
+
+static inline BOOL FLMDiagnosticCaptureEnabled(void) {
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+    static int token = -1;
+    static BOOL enabled = NO;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (notify_register_check(FLYME_DIAGNOSTIC_CAPTURE_NOTIFICATION,
+                                  &token) != NOTIFY_STATUS_OK) token = -1;
+    });
+    os_unfair_lock_lock(&lock);
+    int changed = 0;
+    if (token >= 0 && notify_check(token, &changed) == NOTIFY_STATUS_OK && changed) {
+        uint64_t state = 0;
+        enabled = notify_get_state(token, &state) == NOTIFY_STATUS_OK && state == 1;
+    }
+    BOOL result = enabled;
+    os_unfair_lock_unlock(&lock);
+    return result;
+}
+
+static inline void FLMSetDiagnosticCaptureState(BOOL enabled) {
+    static int token = -1;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (notify_register_check(FLYME_DIAGNOSTIC_CAPTURE_NOTIFICATION,
+                                  &token) != NOTIFY_STATUS_OK) token = -1;
+    });
+    if (token >= 0) {
+        if (notify_set_state(token, enabled ? 1 : 0) == NOTIFY_STATUS_OK)
+            notify_post(FLYME_DIAGNOSTIC_CAPTURE_NOTIFICATION);
+    }
+}
+
+// Guard at the call site so expensive diagnostic arguments are not evaluated.
+#define FLMDiagnosticLog(...) do { \
+    if (FLMDiagnosticCaptureEnabled()) FLMEnqueueDiagnosticLine(__VA_ARGS__); \
+} while (0)
+#define FLMDiagnosticNSLog(...) do { \
+    if (FLMDiagnosticCaptureEnabled()) NSLog(__VA_ARGS__); \
+} while (0)
+
 // SpringBoard owns the diagnostic writer. Auxiliary SpringBoard modules may
 // enqueue lines through this function without creating another file writer.
-void FLMEnqueueDiagnosticLine(NSString *format, ...);
+void FLMEnqueueDiagnosticLine(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
 #define FLYME_DIAGNOSTIC_EVENT_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-event-v2"
@@ -20,6 +68,31 @@ void FLMEnqueueDiagnosticLine(NSString *format, ...);
     "com.codex.flymemultitasking.diagnostic-keyboard-v3"
 #define FLYME_DIAGNOSTIC_UIKIT_OTHER_NOTIFICATION \
     "com.codex.flymemultitasking.diagnostic-uikit-other-v3"
+
+// SpringBoard publishes one exact application target while Dock control owns
+// the card.  The selected application reads this state synchronously at its
+// UIApplication event boundary, so a remote Scene cannot receive the same
+// touch stream that is controlling the Dock card.
+#define FLYME_DOCK_INPUT_BLOCK_NOTIFICATION \
+    "com.codex.flymemultitasking.dock-input-block-v1"
+#define FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK (UINT64_C(1) << 63)
+
+static inline uint64_t FLMDockInputBlockState(uint64_t identifierHash,
+                                              BOOL blocked) {
+    if (!blocked || identifierHash == 0) {
+        return 0;
+    }
+    return FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK |
+           (identifierHash & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK);
+}
+
+static inline BOOL FLMDockInputBlockStateMatches(uint64_t state,
+                                                 uint64_t identifierHash) {
+    return identifierHash != 0 &&
+           (state & FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK) != 0 &&
+           (state & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK) ==
+               (identifierHash & ~FLYME_DOCK_INPUT_BLOCK_ACTIVE_MASK);
+}
 
 typedef NS_ENUM(uint8_t, FLMDiagnosticRole) {
     FLMDiagnosticRoleSpringBoard = 1,
@@ -49,6 +122,7 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventAdapterLoaded = 18,
     FLMDiagnosticEventAdapterCtor = 19,
     FLMDiagnosticEventAdapterReady = 20,
+    FLMDiagnosticEventInputSuppressed = 21,
 };
 
 // Cross-process diagnostics intentionally carry only fixed-width integers.
@@ -59,6 +133,7 @@ static inline void FLMPublishDiagnosticEvent(FLMDiagnosticRole role,
                                              uint64_t sessionGeneration,
                                              uint16_t firstValue,
                                              uint16_t secondValue) {
+    if (!FLMDiagnosticCaptureEnabled()) return;
     static int springBoardToken = -1;
     static int applicationToken = -1;
     static int keyboardToken = -1;

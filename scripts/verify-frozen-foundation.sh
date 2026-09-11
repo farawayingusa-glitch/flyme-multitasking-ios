@@ -76,6 +76,7 @@ for marker in \
     "sb frame-apply rejected=inactive-session" \
     "sb session-end route-cleared" \
     "FLMPublishKeyboardState" \
+    "FLMPublishKeyboardDismissRequest" \
     "FLMPublishKeyboardAvoidance" \
     "FLMPublishKeyboardCardGeometry" \
     "FLMScheduleKeyboardSharedStateWrite" \
@@ -95,6 +96,25 @@ for marker in \
     "floatingDockHideInitialFrame = self.floatingContainer.frame" \
     "if (clearHorizontalIntent)" \
     "finishFloatingDockHiddenGesture" \
+    "displayLink.preferredFrameRateRange" \
+    "maximumFramesPerSecond" \
+    "ensureFloatingDockInputDisplayLink" \
+    "beginFloatingHighRefreshLeaseForDuration" \
+    "minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;" \
+    "CGRect handoffFrame" \
+    "bringSubviewToFront:self.floatingHandle" \
+    "floatingDockControlArmed" \
+    "FLMPublishDockInputBlockState" \
+    "FLMDockInputBlockState" \
+    "FLYME_DOCK_INPUT_BLOCK_NOTIFICATION" \
+    "BOOL remoteInputBlocked = docked || hidden || contentProtected;" \
+    "dock-input-block publish" \
+    "schema=19" \
+    "springboard-ctor-reset" \
+    "dock-control-armed" \
+    "dock-entry-control-handoff" \
+    "floatingDockHiddenFractionForFrame" \
+    "self.floatingHandleBar.alpha = hiddenFraction;" \
     "triggerProgress" \
     "floatingDockFeedbackSent" \
     "updateFloatingFullscreenSnapshotForProgress" \
@@ -141,7 +161,11 @@ for marker in \
     "cornerTriggerBounds" \
     "cornerTriggerPointForGesture:" \
     "cornerTriggerPointForTouch:" \
-    "scene-virtual-viewport"; do
+    "scene-virtual-viewport" \
+    "blocksFloatingContentInput" \
+    "floatingContentInputShieldView" \
+    "card-control-block" \
+    "BOOL prewarmForFloatingSession"; do
     reject_source "$marker"
 done
 
@@ -176,7 +200,20 @@ for marker in \
     "FLMContentLogicalViewportSize" \
     "FLMPhysicalCardSize" \
     "FLMHandleKeyboardRouteNotification" \
+    "FLMHandleKeyboardDismissRequest" \
+    "FLMRegisterKeyboardDismissObserverIfNeeded" \
     "FLMReloadContentViewportSelection" \
+    "%group FLMDockInputBarrier" \
+    "%hook UIApplication" \
+    "sendEvent:(UIEvent *)event" \
+    "FLMDockInputBlockedForCurrentApplication" \
+    "FLMCurrentApplicationIdentifierHash" \
+    "FLMShouldSuppressDockTouchEvent" \
+    "FLMDockInputSuppressedTouches" \
+    "FLMInstallDockInputBarrierIfEligible" \
+    "FLMDockInputBarrierRetryScheduled" \
+    "FLMDiagnosticEventInputSuppressed" \
+    "FLYME_DOCK_INPUT_BLOCK_NOTIFICATION" \
     "BOOL shouldApply = NO;" \
     "if (currentHash == FLMKeyboardTargetSceneHash)"; do
     grep -Fq -- "$marker" "$keyboard_source" || {
@@ -200,8 +237,9 @@ grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
 grep -Fq -- '<string>com.apple.UIKit</string>' "$keyboard_filter"
-if grep -Eq 'com.tencent.xin|<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
-    echo "keyboard filter must remain generic UIKit injection" >&2
+grep -Fq -- '<string>com.tencent.xin</string>' "$keyboard_filter"
+if grep -Eq '<key>Classes</key>|<key>Executables</key>' "$keyboard_filter"; then
+    echo "keyboard filter must remain bundle-scoped" >&2
     exit 1
 fi
 
@@ -228,4 +266,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.x wheel gesture, global Scene routing, full-screen Scene/crop presentation, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Energy repair 0.9.58 reset: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"

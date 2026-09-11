@@ -12,15 +12,15 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = FlymeMultitasking FlymeKeyboard FlymeRadius
 
 FlymeMultitasking_FILES = Tweak.xm SceneLifecycle.xm
-FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeMultitasking_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=format
 FlymeMultitasking_FRAMEWORKS = UIKit QuartzCore CoreGraphics
 
 FlymeKeyboard_FILES = Keyboard.xm
-FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeKeyboard_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=format
 FlymeKeyboard_FRAMEWORKS = UIKit QuartzCore
 
 FlymeRadius_FILES = Radius.xm
-FlymeRadius_CFLAGS = -fobjc-arc -Wall -Wextra
+FlymeRadius_CFLAGS = -fobjc-arc -Wall -Wextra -Werror=format
 FlymeRadius_FRAMEWORKS = UIKit QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
