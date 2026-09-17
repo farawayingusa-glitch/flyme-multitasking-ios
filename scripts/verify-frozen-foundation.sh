@@ -100,7 +100,7 @@ for marker in \
     "maximumFramesPerSecond" \
     "ensureFloatingDockInputDisplayLink" \
     "beginFloatingHighRefreshLeaseForDuration" \
-    "minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;" \
+    "CAFrameRateRangeMake(maximumRate, maximumRate, maximumRate);" \
     "CGRect handoffFrame" \
     "bringSubviewToFront:self.floatingHandle" \
     "floatingDockControlArmed" \
@@ -266,4 +266,4 @@ if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]
     echo "first-frame guard registration order changed" >&2
     exit 1
 fi
-echo "Energy repair 0.9.62 idle/poll repair: 1 Hz lock monitor with Darwin lock-state trigger and geometric scene/presenter poll backoff; 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"
+echo "Refresh and scene handoff 0.9.63: active paths request maximum refresh without a 60 Hz plugin cap, idle leases release, presenter teardown precedes symmetric Scene backgrounding; 0.9.41 portrait foundation, responder cleanup, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified"

@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Energy repair 0.9.62 (live hidden mode)"
+#define FLMLogBuildString @"Refresh and scene handoff 0.9.63 (active max refresh)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -1182,6 +1182,23 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 
 @end
 
+static void FLMBeginWheelRefreshLease(NSTimeInterval duration) {
+    Class controllerClass = NSClassFromString(@"FLMWheelController");
+    SEL sharedSelector = NSSelectorFromString(@"sharedController");
+    if (!controllerClass || ![controllerClass respondsToSelector:sharedSelector]) {
+        return;
+    }
+    id controller =
+        ((id (*)(id, SEL))objc_msgSend)(controllerClass, sharedSelector);
+    SEL leaseSelector =
+        NSSelectorFromString(@"beginFloatingHighRefreshLeaseForDuration:");
+    if (!controller || ![controller respondsToSelector:leaseSelector]) {
+        return;
+    }
+    ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(
+        controller, leaseSelector, duration);
+}
+
 @interface FLMWheelItemView : UIView
 @property(nonatomic, copy) NSString *identifier;
 @property(nonatomic, strong) UIImageView *iconView;
@@ -1229,6 +1246,7 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
         return;
     }
     _highlighted = highlighted;
+    FLMBeginWheelRefreshLease(0.28);
     CGFloat scale = highlighted ? 1.24 : 1.0;
     self.layer.shadowOpacity = highlighted ? 0.32 : 0.18;
     [UIView animateWithDuration:0.28
@@ -3391,6 +3409,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.overlayWindow.hidden = NO;
     self.wheelContainer.alpha = 1.0;
+    [self beginFloatingHighRefreshLeaseForDuration:0.56];
     [self.itemViews enumerateObjectsUsingBlock:^(
                         FLMWheelItemView *item, NSUInteger index, BOOL *stop) {
         (void)stop;
@@ -3456,6 +3475,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.wheelTapGesture.enabled = YES;
     }
     [self beginLockMonitoring];
+    [self beginFloatingHighRefreshLeaseForDuration:0.44];
     [UIView animateWithDuration:0.32
                           delay:0.0
          usingSpringWithDamping:0.76
@@ -3812,23 +3832,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     if (maximumFramesPerSecond <= 0) {
         maximumFramesPerSecond = 60;
     }
-    if ([NSProcessInfo processInfo].lowPowerModeEnabled ||
-        [NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) {
-        maximumFramesPerSecond = MIN(maximumFramesPerSecond, 60);
-    }
+    // Active gestures and animations are never voluntarily reduced to 60 Hz.
+    // Idle power is controlled by invalidating these display links, not by
+    // lowering the refresh target while the user can see motion.
     if ([displayLink respondsToSelector:@selector(setPreferredFramesPerSecond:)]) {
         displayLink.preferredFramesPerSecond = maximumFramesPerSecond;
     }
     if (@available(iOS 15.0, *)) {
-        // Keep the upper end at the physical panel maximum, but do not pin the
-        // minimum to 120. A fixed 120/120/120 range can be rejected by the
-        // system while ProMotion is transitioning between refresh states.
-        // 80..max with max preferred asks for 120 Hz on ProMotion while still
-        // allowing the system to enter that state cleanly.
         float maximumRate = (float)maximumFramesPerSecond;
-        float minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;
         displayLink.preferredFrameRateRange =
-            CAFrameRateRangeMake(minimumRate, maximumRate, maximumRate);
+            CAFrameRateRangeMake(maximumRate, maximumRate, maximumRate);
     }
 }
 
@@ -3850,13 +3863,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)beginFloatingHighRefreshLeaseForDuration:(NSTimeInterval)duration {
-    if ([NSProcessInfo processInfo].lowPowerModeEnabled ||
-        [NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) {
-        [self.floatingHighRefreshDisplayLink invalidate];
-        self.floatingHighRefreshDisplayLink = nil;
-        self.floatingHighRefreshDeadline = 0;
-        return;
-    }
     duration = isfinite(duration) ? MIN(2.0, MAX(0.08, duration)) : 0.08;
     self.floatingHighRefreshDeadline = MAX(self.floatingHighRefreshDeadline,
                                           CACurrentMediaTime() + duration + 0.12);
@@ -3895,9 +3901,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink {
-    // No pending input means no work. A new touch sample resumes the link
-    // synchronously; a held finger must not keep an empty 120 Hz loop alive.
-    displayLink.paused = YES;
+    (void)displayLink;
+    // Keep one uninterrupted max-refresh cadence for the complete gesture.
+    // Pausing after every vsync and waiting for the next touch sample creates
+    // visible cadence gaps on ProMotion devices. The link is invalidated by
+    // the gesture terminal path instead.
     if (!self.floatingDockInputSessionActive || self.floatingWindow.hidden) {
         [self cancelFloatingDockInputUpdates];
         return;
@@ -4748,6 +4756,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         [feedback impactOccurred];
     }
+    [self beginFloatingHighRefreshLeaseForDuration:0.30];
     [UIView animateWithDuration:0.10
                      animations:^{
                          self.floatingHandleBar.alpha = 1.0;
@@ -5292,6 +5301,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         }
         return;
     }
+    [self beginFloatingHighRefreshLeaseForDuration:0.34];
     [UIView animateWithDuration:0.34
                           delay:0.0
          usingSpringWithDamping:0.78
@@ -6317,6 +6327,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingRevealRetryCount = 0;
         [self.floatingHostView setNeedsLayout];
         [self.floatingHostView layoutIfNeeded];
+        [self beginFloatingHighRefreshLeaseForDuration:FLMFloatingLaunchCoverFadeDuration];
         [UIView animateWithDuration:FLMFloatingLaunchCoverFadeDuration
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
@@ -7705,6 +7716,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     @try {
+        // Opening activates both the Scene and its presenter. Closing must
+        // unwind that ownership symmetrically so SpringBoard can later hand
+        // the same Scene to a notification or a normal application launch.
+        if ([scene respondsToSelector:@selector(deactivate)]) {
+            [scene deactivate];
+        }
         id settings = [scene respondsToSelector:@selector(settings)]
                           ? [scene settings]
                           : nil;
@@ -8614,11 +8631,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     NSString *queuedIdentifier = [self.floatingQueuedIdentifier copy];
     [host removeFromSuperview];
     self.floatingHostView = nil;
-    if (keepApplication) {
-        [self backgroundFloatingScene:scene];
-    } else {
-        FLMClearProtectedScene(scene);
-    }
+    // Tear down SpringBoard's remote presenter before asking the Scene to
+    // background. The previous order let the Scene receive a background
+    // transaction while its old presenter still owned the remote surface,
+    // which could leave notification activation and reply delivery attached
+    // to a stale hosting generation.
     @try {
         if ([presenter respondsToSelector:@selector(deactivate)]) {
             [presenter deactivate];
@@ -8627,6 +8644,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             [presenter invalidate];
         }
     } @catch (__unused NSException *exception) {
+    }
+    if (keepApplication) {
+        [self backgroundFloatingScene:scene];
+    } else {
+        FLMClearProtectedScene(scene);
     }
     // Keep the application blocked through the close animation and host
     // teardown. Clearing here prevents a fading Dock card from receiving one

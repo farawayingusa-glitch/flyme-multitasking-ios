@@ -30,15 +30,36 @@ def function(source, signature):
 
 background = function(tweak, '- (void)backgroundFloatingScene:(id)scene {')
 assert background.index('FLMClearProtectedScene(scene);') < background.index('updateSettings:mutableSettings')
+assert '[scene deactivate]' in background
 flush = function(tweak, '- (void)flushFloatingDockInputFrame:(CADisplayLink *)displayLink {')
-assert 'displayLink.paused = YES;' in flush
+assert 'displayLink.paused = YES;' not in flush
+assert '[self cancelFloatingDockInputUpdates];' in flush
 ensure = function(tweak, '- (void)ensureFloatingDockInputDisplayLink {')
 assert 'self.floatingDockInputDisplayLink.paused = NO;' in ensure
 lease = function(tweak, '- (void)beginFloatingHighRefreshLeaseForDuration:(NSTimeInterval)duration {')
 assert 'MIN(2.0, MAX(0.08, duration))' in lease and 'dispatch_after' not in lease
+assert 'lowPowerModeEnabled' not in lease
+configure = function(tweak, '- (void)configureFloatingDisplayLinkForMaximumRefresh:(CADisplayLink *)displayLink {')
+assert 'lowPowerModeEnabled' not in configure
+assert 'CAFrameRateRangeMake(maximumRate, maximumRate, maximumRate)' in configure
 tick = function(tweak, '- (void)tickFloatingHighRefreshDisplayLink:(CADisplayLink *)displayLink {')
 assert 'CACurrentMediaTime() >= self.floatingHighRefreshDeadline' in tick
 assert '[displayLink invalidate]' in tick
+finish_close = function(tweak, '- (void)finishFloatingCloseWithToken:(NSUInteger)token {')
+assert finish_close.index('[presenter invalidate]') < finish_close.index('backgroundFloatingScene:scene')
+animation_lines = tweak.splitlines()
+for index, line in enumerate(animation_lines):
+    if 'UIView animateWithDuration' not in line:
+        continue
+    method_start = 0
+    for candidate in range(index - 1, -1, -1):
+        if animation_lines[candidate].startswith('- (') and \
+                animation_lines[candidate].rstrip().endswith('{'):
+            method_start = candidate
+            break
+    context = '\n'.join(animation_lines[method_start:index + 1])
+    assert 'beginFloatingHighRefreshLeaseForDuration' in context or \
+           'FLMBeginWheelRefreshLease' in context, line
 writer = function(tweak, 'static void FLMScheduleKeyboardSharedStateWrite(void) {')
 assert 'FLMKeyboardPendingSnapshot = snapshot;' in writer
 assert 'isEqualToDictionary:FLMKeyboardLastRequestedSnapshot' in writer

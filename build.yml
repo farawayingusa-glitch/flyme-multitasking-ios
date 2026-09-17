@@ -1,4 +1,4 @@
-name: Build 0.9.62 energy repair candidate
+name: Build 0.9.63 refresh and scene handoff candidate
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_energy-0.9.62_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_refresh-0.9.63_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-energy-0.9.62-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_energy-0.9.62_iphoneos-arm64.deb
+          name: flyme-multitasking-refresh-0.9.63-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_refresh-0.9.63_iphoneos-arm64.deb
           if-no-files-found: error

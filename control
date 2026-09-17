@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.62 Energy Repair
-Description: Follow-up energy repair: 1 Hz lock monitor plus Darwin lock-state trigger, geometric scene/presenter poll backoff. Retains 0.9.58 coalesced state I/O, cached input/keyboard reads, bounded refresh/retries, and release-before-background scene lifecycle. Live hidden mode retained.
+Name: Flyme Multitasking - 0.9.63 Refresh and Scene Handoff
+Description: Active gesture and animation paths request the display maximum without a 60 Hz plugin cap; idle work releases all refresh leases. Dock dragging keeps one uninterrupted display-link cadence. Scene teardown now invalidates the remote presenter before backgrounding and deactivates the application Scene symmetrically for reliable notification activation and reply delivery.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.62
+Version: 0.9.63
