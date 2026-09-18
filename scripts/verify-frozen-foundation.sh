@@ -363,12 +363,26 @@ for marker in \
     "sb kbd-discover" \
     "sb kbd-pair-attempt" \
     "sb kbd-hide-cause" \
-    "Landscape Canvas Unification 0.9.71" \
+    "SpringBoard Scene Bounds 0.9.72" \
     "CGRect wheelWindowBounds = windowBounds;" \
     "self.floatingWindow.frame = wheelWindowBounds"; do
     require_source "$marker"
 done
 require_keyboard "route-reload targetHash=%llu"
+
+# 0.9.72 fixes the real root cause the 0.9.71 capture exposed. SpringBoard's
+# window scene stays portrait while the physical display is landscape and the
+# system rotates the scene onto the panel, so a window sized from the physical
+# bounds covers only part of the panel and never enters the rotate branch. The
+# window must use the scene size, i.e. the transposed physical bounds.
+for marker in \
+    "FLMBoundsAreLandscape(screenBounds)" \
+    "return CGRectMake(0.0, 0.0, height, width);" \
+    "FLMLogUnrotatedLandscapeCanvas" \
+    "sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait" \
+    "SpringBoard Scene Bounds 0.9.72"; do
+    require_source "$marker"
+done
 
 reject_source "FLMOverlayWindowBounds"
 reject_source "itemCountsByRingForCount:"
@@ -412,4 +426,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Canvas Unification 0.9.71: frozen portrait route, scene-space windows, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"
+echo "SpringBoard Scene Bounds 0.9.72: transposed window bounds, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"

@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.71 Landscape Canvas Unification
+Name: Flyme Multitasking - 0.9.72 SpringBoard Scene Bounds
 Description: Puts every landscape overlay window back on SpringBoard's own scene bounds so the system rotation is applied once by a rotated presentation canvas instead of tilting the wheel and the card, solves the wheel arc from the real notch and corner geometry with an even per-ring distribution, and keeps the keyboard in the session-locked landscape reference.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.71
+Version: 0.9.72

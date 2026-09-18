@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Canvas Unification 0.9.71 (scene-space windows, rotated canvas, wheel solver, keyboard space)"
+#define FLMLogBuildString @"SpringBoard Scene Bounds 0.9.72 (transposed window bounds, rotated canvas, wheel solver, keyboard space)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -540,17 +540,34 @@ static CGRect FLMVisualScreenBounds(void) {
     return CGRectMake(0.0, 0.0, width, height);
 }
 
+static BOOL FLMBoundsAreLandscape(CGRect bounds);
+
 static CGRect FLMSpringBoardWindowBounds(void) {
-    // UIWindow geometry belongs to SpringBoard's own scene coordinate space.
-    // On the affected iOS 16 path that space intentionally remains portrait
-    // (for example 390x844) even while the physical display presentation is
-    // landscape (844x390). Never size a SpringBoard UIWindow with the physical
-    // landscape bounds; only the child presentation canvas is rotated.
-    CGRect bounds = [UIScreen mainScreen].bounds;
-    CGFloat width = CGRectGetWidth(bounds);
-    CGFloat height = CGRectGetHeight(bounds);
+    // SpringBoard's own window scene stays portrait (390x844) even while an
+    // application owns the physical display in landscape (844x390), and the
+    // system rotates that whole scene onto the panel. Measured on device as
+    // window (wx, wy) -> display (wy, shortSide - wx), so a window sized from
+    // the physical bounds is rotated out of the panel and covers only part of
+    // it: the 0.9.70/0.9.71 logs show a 844x390 window mapping to
+    // {{0,-454},{390,844}} in screen space, with the wheel canvas therefore
+    // never entering the rotate branch. The window must use the scene size,
+    // which is the transpose of the physical bounds; only the child
+    // presentation canvas is rotated into the physical space.
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat width = CGRectGetWidth(screenBounds);
+    CGFloat height = CGRectGetHeight(screenBounds);
     if (width < 1.0 || height < 1.0) {
-        return FLMVisualScreenBounds();
+        CGRect visualBounds = FLMVisualScreenBounds();
+        CGFloat visualWidth = CGRectGetWidth(visualBounds);
+        CGFloat visualHeight = CGRectGetHeight(visualBounds);
+        if (visualWidth < 1.0 || visualHeight < 1.0) {
+            return CGRectMake(0.0, 0.0, FLMVirtualViewportWidth,
+                              FLMVirtualViewportHeight);
+        }
+        return CGRectMake(0.0, 0.0, visualHeight, visualWidth);
+    }
+    if (FLMBoundsAreLandscape(screenBounds)) {
+        return CGRectMake(0.0, 0.0, height, width);
     }
     return CGRectMake(0.0, 0.0, width, height);
 }
@@ -695,6 +712,24 @@ static void FLMLogCanvasVerification(UIView *canvas,
         rotated ? 1 : 0, corrected ? 1 : 0);
 }
 
+static void FLMLogUnrotatedLandscapeCanvas(UIView *canvas,
+                                           CGRect rootBounds,
+                                           CGRect visualBounds) {
+    static CGRect lastRoot = {{0.0, 0.0}, {0.0, 0.0}};
+    static CGRect lastVisual = {{0.0, 0.0}, {0.0, 0.0}};
+    static BOOL hasLogged = NO;
+    if (hasLogged && CGRectEqualToRect(lastRoot, rootBounds) &&
+        CGRectEqualToRect(lastVisual, visualBounds)) {
+        return;
+    }
+    hasLogged = YES;
+    lastRoot = rootBounds;
+    lastVisual = visualBounds;
+    FLMEnqueueDiagnosticLine(
+        @"sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait",
+        NSStringFromCGRect(rootBounds), NSStringFromCGRect(visualBounds));
+}
+
 static void FLMConfigureVisualCanvas(UIView *canvas,
                                      UIView *rootView,
                                      CGRect visualBounds,
@@ -727,6 +762,15 @@ static void FLMConfigureVisualCanvas(UIView *canvas,
         }
         FLMLogCanvasVerification(canvas, visualBounds, sign, YES, corrected);
         return;
+    }
+    if (FLMBoundsAreLandscape(visualBounds)) {
+        // The visual space is landscape but the rotate branch above was skipped,
+        // which only happens when the root view is landscape too. That means the
+        // window was sized from the physical display instead of SpringBoard's
+        // scene: the system rotation then passes straight through and every
+        // landscape canvas renders as portrait. Log it once per geometry so the
+        // next capture names the cause instead of showing the symptom.
+        FLMLogUnrotatedLandscapeCanvas(canvas, rootBounds, visualBounds);
     }
     canvas.transform = CGAffineTransformIdentity;
     canvas.frame = rootBounds;

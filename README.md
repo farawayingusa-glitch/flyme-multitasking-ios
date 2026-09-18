@@ -1,4 +1,4 @@
-# Flyme Multitasking 0.9.71 - landscape canvas unification
+# Flyme Multitasking 0.9.72 - springboard scene bounds
 
 以 0.9.63 竖屏稳定版为冻结基线，新增最小横屏路径：
 
@@ -24,6 +24,10 @@
 0.9.71 撤回 0.9.70 的坐标地基并修正轮盘分布与键盘坐标。0.9.70 把窗口改成物理 `844x390` 之后，`FLMConfigureVisualCanvas` 的「横屏视觉 + 竖屏 root」旋转分支永远不成立，于是系统那 90° 被原样输出，轮盘和小窗在物理横屏屏上一并变成竖屏形态 —— 这正是实测反馈的方向错误。现在窗口与各自的 root view 全部回到 SpringBoard 的 Scene 坐标（`FLMSpringBoardWindowBounds`），只把 presentation canvas 旋转进物理显示空间；画布旋转方向不再假定，而是配置完用 `screen.coordinateSpace` 实测一次原点落点，落错就翻符号重设，并打印 `sb canvas-verify`。轮盘分布改由统一的求解器算出：按刘海两测内缩得到安全盒，对每个半径求可用角窗 `spanMax(R)` 与最小间距所需角窗 `spanNeed(R)`，两者都不单调所以用 64 点扫描取仍满足间距的最大半径，单环放不下时按几何容量自然开第二环，圆心不再夹取，因此间距均匀且两侧都不压刘海。键盘转发窗口回到 Scene 坐标并在 root view 上套旋转画布，命中测试与 `FLMHomeDockWindow` 都先把窗口坐标换算到物理显示坐标；`keyboardFrameWillChange:` 改用本次会话锁定的横屏参考尺寸判定，不再实时重读会翻回竖屏的 `FLMVisualScreenBounds` —— 这是「键盘闪一下就没」的直接来源。
 
 新增诊断：`sb canvas-verify canvas=%@ visual=%@ screen=%@ sign=%d rotated=%d corrected=%d` 验证画布旋转，`sb landscape-wheel-rings` 打印多环拆分，`sb kbd-discover` 打印远程键盘 Scene 的能力，`sb kbd-pair-attempt route=%@ error=%@ applied=%d` 打印配对异常文本，`sb kbd-hide-cause` 打印隐藏时的会话状态，应用侧打印 `[FlymeKeyboard] route-reload`。
+
+0.9.72 修 0.9.71 实测暴露的真正根因：`FLMSpringBoardWindowBounds` 在这台设备上取的是 `[UIScreen mainScreen].bounds`，而它本身就等于物理横屏 `844x390`，不是假定的竖屏 `390x844`。日志两个独立探针点（`probeInWindow` → `probeInScreen`、`containerInScreen={{0,-454},{390,844}}`）都精确吻合同一映射 `screen = (wy, 390 − wx)`：SpringBoard 的窗口 scene 相对物理屏幕被系统整体转了 90°。用物理尺寸建窗口，它在屏幕上只覆盖左半屏，`FLMConfigureVisualCanvas` 的「横屏视觉 + 竖屏 root」分支条件 `width(root) ≤ height(root)+1` 因此永不成立 —— 实测 `canvas-verify` 出现 0 次，系统那 90° 被原样输出，轮盘与卡片一起呈竖屏。现在窗口改用 scene 尺寸（物理 bounds 的转置 `390x844`），窗口才真正覆盖整屏，画布旋转分支恢复生效，画布局部坐标重新恒等于物理显示坐标 `(u,v)`。新增 `sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait`：一旦该分支再次被跳过就直接报出根因，而不是只留下症状。
+
+键盘侧本轮拿到了具体失效点：`sb kbd-pair-attempt route=mutable-settings error=FBScene has no updateClientSettingsWithBlock: applied=0`（20 次全失败），`sb kbd-hide-cause notification=UIKeyboardDidHideNotification pendingFrame={{0,70},{844,320}} visible=1` 随即被隐藏。本版先修窗口几何（键盘 Host 视图也挂在该窗口上），配对 API 留到下一版按这个错误改写。
 
 保留功能：
 
