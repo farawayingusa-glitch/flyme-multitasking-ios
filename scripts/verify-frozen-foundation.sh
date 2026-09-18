@@ -345,4 +345,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Coordinate Repair 0.9.65: 0.9.64 minimal landscape plus first-session safe-area fallback and portrait-to-landscape touch normalization verified"
+echo "Landscape Ingress Rebuild 0.9.67: 0.9.65 triggerable ingress restored and measured landscape keyboard-frame fixes verified"

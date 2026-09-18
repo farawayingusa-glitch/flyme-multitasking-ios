@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.65 Landscape Coordinate Repair
-Description: Repairs the first landscape session safe-area fallback and normalizes SpringBoard keyboard-space touches back to the physical landscape display. Keeps the 0.9.64 minimal landscape scope: corner wheels, fixed left portrait-ratio card, tap-outside close, and system keyboard above the card.
+Name: Flyme Multitasking - 0.9.67 Landscape Ingress Rebuild
+Description: Restores the 0.9.65 landscape wheel ingress that remained triggerable, keeps portrait Scene and content-strip separation, and incorporates only the measured landscape keyboard-frame fixes from 0.9.66 with the broken fixed-screen ingress rewrite removed.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.65
+Version: 0.9.67

@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Coordinate Repair 0.9.65 (safe-area and portrait touch normalization)"
+#define FLMLogBuildString @"Landscape Ingress Rebuild 0.9.67 (0.9.65 ingress restored, tested keyboard frames)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -7499,8 +7499,10 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardSessionGeneration,
         CGRectGetMaxY(self.floatingContainer.frame),
         contentVisualScale,
-        [self effectiveCenteredCardWidth],
-        [self effectiveCenteredCardHeight],
+        [self isLandscapeFloatingSession] ? targetSize.width
+                                          : [self effectiveCenteredCardWidth],
+        [self isLandscapeFloatingSession] ? targetSize.height
+                                          : [self effectiveCenteredCardHeight],
         !self.floatingWindow.hidden && !self.floatingDocked &&
             self.floatingKeyboardSessionGeneration != 0 &&
             !self.floatingSceneCardGeometryPending);
@@ -8132,21 +8134,32 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             (__bridge void *)self.floatingKeyboardLayerHostView,
             adapterAccepted, adapterPID, getpid());
         [self beginFloatingKeyboardInteractionSession];
+        BOOL landscape = [self isLandscapeFloatingSession];
         CGFloat reportedHeight = CGRectGetHeight(frame);
-        if (reportedHeight < 180.0) {
-            reportedHeight = self.lastPortraitKeyboardHeight;
+        CGFloat height = reportedHeight;
+        if (landscape) {
+            frame = CGRectIntersection(frame, bounds);
+            if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) {
+                return;
+            }
+            height = CGRectGetHeight(frame);
+            self.floatingKeyboardMaximumVisibleHeight = height;
         } else {
-            self.lastPortraitKeyboardHeight = reportedHeight;
+            if (reportedHeight < 180.0) {
+                reportedHeight = self.lastPortraitKeyboardHeight;
+            } else {
+                self.lastPortraitKeyboardHeight = reportedHeight;
+            }
+            reportedHeight =
+                MIN(CGRectGetHeight(bounds), MAX(216.0, reportedHeight));
+            self.floatingKeyboardMaximumVisibleHeight =
+                MAX(self.floatingKeyboardMaximumVisibleHeight, reportedHeight);
+            height = self.floatingKeyboardMaximumVisibleHeight;
+            frame = CGRectMake(0.0,
+                               CGRectGetHeight(bounds) - height,
+                               CGRectGetWidth(bounds),
+                               height);
         }
-        reportedHeight =
-            MIN(CGRectGetHeight(bounds), MAX(216.0, reportedHeight));
-        self.floatingKeyboardMaximumVisibleHeight =
-            MAX(self.floatingKeyboardMaximumVisibleHeight, reportedHeight);
-        CGFloat height = self.floatingKeyboardMaximumVisibleHeight;
-        frame = CGRectMake(0.0,
-                           CGRectGetHeight(bounds) - height,
-                           CGRectGetWidth(bounds),
-                           height);
         self.floatingKeyboardVisible = YES;
         self.floatingKeyboardFrame = frame;
         CGRect interactionFrame = [self floatingKeyboardInteractionFrame];
@@ -8263,6 +8276,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return CGRectNull;
     }
     CGRect bounds = [self floatingLayoutView].bounds;
+    if ([self isLandscapeFloatingSession]) {
+        return self.floatingKeyboardVisible
+            ? CGRectIntersection(bounds, self.floatingKeyboardFrame)
+            : CGRectNull;
+    }
     CGRect keyboardFrame = CGRectNull;
     if (self.floatingKeyboardVisible &&
         !CGRectIsNull(self.floatingKeyboardFrame) &&
@@ -8371,6 +8389,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
     CGRect frame = frameValue.CGRectValue;
     CGRect bounds = FLMVisualScreenBounds();
+    if ([self isLandscapeFloatingSession] &&
+        fabs(CGRectGetWidth(frame) - CGRectGetWidth(bounds)) > 2.0) {
+        FLMDiagnosticLog(
+            @"sb keyboard-frame ignored=foreign-coordinate-space frame=%@ display=%@",
+            NSStringFromCGRect(frame), NSStringFromCGRect(bounds));
+        return;
+    }
     BOOL visible = CGRectIntersectsRect(bounds, frame) &&
                    CGRectGetMinY(frame) < CGRectGetHeight(bounds);
     FLMDiagnosticLog(
