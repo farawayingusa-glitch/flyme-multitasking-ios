@@ -1,6 +1,6 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.73 Landscape Edge Wheel
-Description: Measures the landscape housing per side so the wheel hugs the summoned physical edge and the bottom edge while keeping every icon clear of the notch, re-applies the rotated presentation canvas the moment the overlay window becomes visible so the first landscape summon is never drawn in portrait, and keys the keyboard route on the resolved target tuple so the held application actually installs it.
+Name: Flyme Multitasking - 0.9.74 Display Space Unification
+Description: Carries the landscape coordinates through the one identity the system's scene rotation and the presentation canvas rotation actually compose to, so the App's portrait keyboard lands as a full-height band on the physical wall instead of a misplaced portrait strip and blank-space taps close the card, judges the canvas sign from its display bounding box so the first landscape open is never mirrored, and stands the card beside a visible keyboard band.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
