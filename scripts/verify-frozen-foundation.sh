@@ -243,14 +243,10 @@ require_keyboard "FLMKeyboardContentStrip"
 
 
 
-# 0.9.70 puts every landscape overlay window into one physical display space.
-# The floating card, the dock gate and the keyboard forwarding window are sized
-# with the same 844x390 bounds the wheel already used, so the card is no longer
-# a rotated portrait window. Wheel item centres are bridged through
-# UIScreen.coordinateSpace and re-derived after layout, portrait-space keyboard
-# frames are converted instead of discarded, and the remote keyboard Scene is
-# routed through mutable settings because FBScene has no
-# updateClientSettingsWithBlock:.
+# 0.9.70 introduced the single landscape window space and the machinery that
+# 0.9.71 still relies on: the notch-aware safe insets, the visual canvas
+# configuration helper, the root-point to visual-point bridge and the landscape
+# keyboard frame conversion.
 for marker in \
     "FLMPhysicalLandscapeSafeInsets" \
     "FLMConfigureVisualCanvas" \
@@ -270,7 +266,6 @@ for marker in \
     "floatingCloseArmAt" \
     "sb wheel-pinned selectionRoute=%@" \
     "sb wheel-window-select" \
-    "FLMOverlayWindowBounds" \
     "landscapeWheelLocalPointFromVisualPoint" \
     "landscapeWheelVisualCenters" \
     "synchronizeLandscapeWheelItemCenters" \
@@ -337,6 +332,47 @@ done
 
 require_source "sb host-update rejected=alternate-host"
 
+# 0.9.71 withdraws the 0.9.70 physical window space. Windows and their root
+# views are back at the SpringBoard scene bounds so the rotated presentation
+# canvas branch can actually fire again; the canvas measures where its own
+# origin lands in screen space and flips the rotation sign when it lands on the
+# far corner. The wheel is laid out by a geometry solver that insets both sides
+# by the notch and scans for the largest radius whose arc still satisfies the
+# minimum icon pitch. The keyboard forwarding window is back at the scene
+# bounds with a rotated canvas and hit-tests in physical display space.
+for marker in \
+    "FLMCanvasScreenSpace" \
+    "FLMCanvasOriginLandedOnFarCorner" \
+    "FLMLogCanvasVerification" \
+    "sb canvas-verify canvas=%@" \
+    "FLMWheelMaximumRings" \
+    "FLMWheelSpanMaximum" \
+    "FLMWheelAnglePitch" \
+    "FLMWheelSpanNeeded" \
+    "FLMWheelResolveRadius" \
+    "FLMWheelRingSpan" \
+    "FLMWheelHorizontalAngle" \
+    "FLMWheelResolvePlan" \
+    "FLMWheelRingPoint" \
+    "sb landscape-wheel-rings" \
+    "FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot," \
+    "FLMConfigureVisualCanvas(self.floatingPresentationView," \
+    "FLMConfigureVisualCanvas(rootView, window, visualBounds, orientation);" \
+    "floatingSessionVisualBounds" \
+    "configureKeyboardForwardingWindowGeometry:" \
+    "sb kbd-discover" \
+    "sb kbd-pair-attempt" \
+    "sb kbd-hide-cause" \
+    "Landscape Canvas Unification 0.9.71" \
+    "CGRect wheelWindowBounds = windowBounds;" \
+    "self.floatingWindow.frame = wheelWindowBounds"; do
+    require_source "$marker"
+done
+require_keyboard "route-reload targetHash=%llu"
+
+reject_source "FLMOverlayWindowBounds"
+reject_source "itemCountsByRingForCount:"
+
 grep -Fq -- 'host.clipsToBounds = NO' "$source_file"
 grep -Fq -- 'centered-preserved=%d' "$source_file"
 grep -Fq -- '<key>Bundles</key>' "$keyboard_filter"
@@ -376,4 +412,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Physical Coordinate Unification 0.9.70: frozen portrait route, one landscape window space, wheel screen bridge, keyboard frame conversion verified"
+echo "Landscape Canvas Unification 0.9.71: frozen portrait route, scene-space windows, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"

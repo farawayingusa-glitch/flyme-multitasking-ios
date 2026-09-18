@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.70 Physical Coordinate Unification
-Description: Puts every landscape overlay window (wheel, floating card, dock gate) into the same physical display coordinate space so the card stops rendering as a rotated portrait window on a landscape display, bridges wheel item centres through UIScreen.coordinateSpace and re-syncs them after layout, converts portrait-space keyboard frames instead of discarding them, routes the remote keyboard Scene through FBScene mutable settings, and stops publishing a saturated keyboard avoidance to the target App.
+Name: Flyme Multitasking - 0.9.71 Landscape Canvas Unification
+Description: Puts every landscape overlay window back on SpringBoard's own scene bounds so the system rotation is applied once by a rotated presentation canvas instead of tilting the wheel and the card, solves the wheel arc from the real notch and corner geometry with an even per-ring distribution, and keeps the keyboard in the session-locked landscape reference.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.70
+Version: 0.9.71

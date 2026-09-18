@@ -716,6 +716,16 @@ static void FLMReloadKeyboardRoute(void) {
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
+    // The App side is where the route silently stayed inactive: the remote
+    // keyboard Scene never reached this process, so targetHash never matched
+    // and every geometry decision below was skipped. Log the whole tuple so a
+    // missing pairing can be told apart from a rejected one.
+    FLMDiagnosticNSLog(
+        @"[FlymeKeyboard] route-reload targetHash=%llu currentHash=%llu session=%llu eligible=%d sharedState=%d bundle=%@",
+        targetHash, currentHash, sessionGeneration,
+        FLMIsEligibleApplicationProcess() ? 1 : 0,
+        sharedStateAvailable ? 1 : 0,
+        [NSBundle mainBundle].bundleIdentifier ?: @"<none>");
     if (FLMKeyboardTargetApplication && sessionGeneration != 0) {
         FLMKeyboardLastTargetSessionGeneration = sessionGeneration;
     }

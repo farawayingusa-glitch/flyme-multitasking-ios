@@ -1,4 +1,4 @@
-# Flyme Multitasking 0.9.70 - physical coordinate unification
+# Flyme Multitasking 0.9.71 - landscape canvas unification
 
 以 0.9.63 竖屏稳定版为冻结基线，新增最小横屏路径：
 
@@ -20,6 +20,10 @@
 0.9.70 修三个 0.9.69 实测问题。第一，0.9.69 只有轮盘窗口是物理 `844x390`，卡片窗口仍是 SpringBoard 的竖屏 `390x844`，再把 `844x390` 画布旋转 90° 塞进去，于是物理横屏屏上出现"竖屏窗口 + 旋转内容"。现在卡片、挂靠门、键盘转发窗口与轮盘共用同一个物理显示坐标空间，卡片仍按竖屏设置推导竖屏比例尺寸，只是不再旋转。第二，轮盘项中心不再直接写入容器坐标，改为经 `UIScreen.coordinateSpace` 从物理显示坐标换算到容器坐标，并在布局变化后按记录的物理中心重新同步；命中测试同时打印 window 坐标。第三，键盘不再丢弃竖屏坐标空间的 frame，而是把 `screen.coordinateSpace`、`screen.fixedCoordinateSpace` 与原始 frame 一起比较、取真正落在屏幕上的一帧；remote keyboard Scene 改用 `FBScene` 的 mutable settings 路由（`FBScene` 不实现 `updateClientSettingsWithBlock:`），并停止向目标 App 发布饱和的 607.68 避让值（键盘在卡片前置，微信自己处理输入框避让）。
 
 新增诊断：`sb landscape-wheel-space` 打印 `windowScene.interfaceOrientation`、scene/window/root 变换、`screen.coordinateSpace.bounds`、容器在屏幕坐标空间的 rect 以及某个 item 的 window/screen rect；`sb notification=%@ rawFrame=%@ convertedFrame=%@` 打印键盘 frame 的换算结果；`sb scene-pair ... route=mutable-settings` 打印键盘 Scene 配对走的路径。
+
+0.9.71 撤回 0.9.70 的坐标地基并修正轮盘分布与键盘坐标。0.9.70 把窗口改成物理 `844x390` 之后，`FLMConfigureVisualCanvas` 的「横屏视觉 + 竖屏 root」旋转分支永远不成立，于是系统那 90° 被原样输出，轮盘和小窗在物理横屏屏上一并变成竖屏形态 —— 这正是实测反馈的方向错误。现在窗口与各自的 root view 全部回到 SpringBoard 的 Scene 坐标（`FLMSpringBoardWindowBounds`），只把 presentation canvas 旋转进物理显示空间；画布旋转方向不再假定，而是配置完用 `screen.coordinateSpace` 实测一次原点落点，落错就翻符号重设，并打印 `sb canvas-verify`。轮盘分布改由统一的求解器算出：按刘海两测内缩得到安全盒，对每个半径求可用角窗 `spanMax(R)` 与最小间距所需角窗 `spanNeed(R)`，两者都不单调所以用 64 点扫描取仍满足间距的最大半径，单环放不下时按几何容量自然开第二环，圆心不再夹取，因此间距均匀且两侧都不压刘海。键盘转发窗口回到 Scene 坐标并在 root view 上套旋转画布，命中测试与 `FLMHomeDockWindow` 都先把窗口坐标换算到物理显示坐标；`keyboardFrameWillChange:` 改用本次会话锁定的横屏参考尺寸判定，不再实时重读会翻回竖屏的 `FLMVisualScreenBounds` —— 这是「键盘闪一下就没」的直接来源。
+
+新增诊断：`sb canvas-verify canvas=%@ visual=%@ screen=%@ sign=%d rotated=%d corrected=%d` 验证画布旋转，`sb landscape-wheel-rings` 打印多环拆分，`sb kbd-discover` 打印远程键盘 Scene 的能力，`sb kbd-pair-attempt route=%@ error=%@ applied=%d` 打印配对异常文本，`sb kbd-hide-cause` 打印隐藏时的会话状态，应用侧打印 `[FlymeKeyboard] route-reload`。
 
 保留功能：
 

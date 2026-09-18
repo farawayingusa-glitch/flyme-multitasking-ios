@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Physical Coordinate Unification 0.9.70 (one landscape window space, wheel screen bridge, keyboard frame conversion)"
+#define FLMLogBuildString @"Landscape Canvas Unification 0.9.71 (scene-space windows, rotated canvas, wheel solver, keyboard space)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -563,21 +563,6 @@ static BOOL FLMDisplayIsLandscape(void) {
     return FLMBoundsAreLandscape(FLMVisualScreenBounds());
 }
 
-// Every Flyme overlay window shares one coordinate space so that a point
-// measured in the wheel can be compared with a point measured in the card.
-// The landscape route therefore sizes the floating card, the dock and the
-// keyboard forwarding window with the physical display bounds (844x390) and
-// lets the card scale its portrait-proportion content instead of rotating it.
-// The portrait route keeps SpringBoard's own scene bounds untouched.
-static CGRect FLMOverlayWindowBounds(void) {
-    CGRect visualBounds = FLMVisualScreenBounds();
-    if (FLMBoundsAreLandscape(visualBounds)) {
-        return CGRectMake(0.0, 0.0, CGRectGetWidth(visualBounds),
-                          CGRectGetHeight(visualBounds));
-    }
-    return FLMSpringBoardWindowBounds();
-}
-
 static UIInterfaceOrientation FLMReportedSceneOrientation(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) {
@@ -652,6 +637,64 @@ static CGPoint FLMVisualPointFromRootPoint(CGPoint rootPoint,
     return CGPointMake(rootPoint.y, visualHeight - rootPoint.x);
 }
 
+static id<UICoordinateSpace> FLMCanvasScreenSpace(UIView *canvas) {
+    UIScreen *screen = canvas.window.screen ?: [UIScreen mainScreen];
+    return screen ? screen.coordinateSpace : nil;
+}
+
+static BOOL FLMCanvasOriginLandedOnFarCorner(UIView *canvas,
+                                             CGRect visualBounds) {
+    // A rotated canvas can be mounted with either sign and both put an 844x390
+    // bounding box on the display, so only an asymmetric point tells them
+    // apart. When the sign matches what the system already applies between the
+    // window scene and the display, the canvas' own origin lands on the visual
+    // origin; when it does not, it lands on the opposite corner.
+    id<UICoordinateSpace> screenSpace = FLMCanvasScreenSpace(canvas);
+    if (!screenSpace) {
+        return NO;
+    }
+    CGPoint measured = [canvas convertPoint:CGPointZero
+                         toCoordinateSpace:screenSpace];
+    CGPoint expected = visualBounds.origin;
+    CGPoint opposite = CGPointMake(CGRectGetMaxX(visualBounds),
+                                   CGRectGetMaxY(visualBounds));
+    CGFloat expectedDistance = hypot(measured.x - expected.x,
+                                     measured.y - expected.y);
+    CGFloat oppositeDistance = hypot(measured.x - opposite.x,
+                                     measured.y - opposite.y);
+    return oppositeDistance + 1.0 < expectedDistance;
+}
+
+static void FLMLogCanvasVerification(UIView *canvas,
+                                     CGRect visualBounds,
+                                     int sign,
+                                     BOOL rotated,
+                                     BOOL corrected) {
+    id<UICoordinateSpace> screenSpace = FLMCanvasScreenSpace(canvas);
+    CGRect canvasInScreen =
+        screenSpace ? [canvas convertRect:canvas.bounds
+                        toCoordinateSpace:screenSpace]
+                    : CGRectNull;
+    static CGRect lastCanvasInScreen = {{0.0, 0.0}, {0.0, 0.0}};
+    static int lastSign = 0;
+    static BOOL lastCorrected = NO;
+    static BOOL hasLogged = NO;
+    if (hasLogged && lastSign == sign && lastCorrected == corrected &&
+        CGRectEqualToRect(lastCanvasInScreen, canvasInScreen)) {
+        return;
+    }
+    hasLogged = YES;
+    lastSign = sign;
+    lastCorrected = corrected;
+    lastCanvasInScreen = canvasInScreen;
+    UIScreen *screen = canvas.window.screen ?: [UIScreen mainScreen];
+    FLMEnqueueDiagnosticLine(
+        @"sb canvas-verify canvas=%@ visual=%@ screen=%@ sign=%d rotated=%d corrected=%d",
+        NSStringFromCGRect(canvasInScreen), NSStringFromCGRect(visualBounds),
+        NSStringFromCGRect(screen ? screen.bounds : CGRectNull), sign,
+        rotated ? 1 : 0, corrected ? 1 : 0);
+}
+
 static void FLMConfigureVisualCanvas(UIView *canvas,
                                      UIView *rootView,
                                      CGRect visualBounds,
@@ -669,11 +712,20 @@ static void FLMConfigureVisualCanvas(UIView *canvas,
                                    CGRectGetHeight(visualBounds));
         canvas.center = CGPointMake(CGRectGetMidX(rootBounds),
                                     CGRectGetMidY(rootBounds));
-        CGFloat angle =
-            orientation == UIInterfaceOrientationLandscapeLeft
-                ? -(CGFloat)M_PI_2
-                : (CGFloat)M_PI_2;
-        canvas.transform = CGAffineTransformMakeRotation(angle);
+        int sign = orientation == UIInterfaceOrientationLandscapeLeft ? -1 : 1;
+        canvas.transform =
+            CGAffineTransformMakeRotation((CGFloat)sign * (CGFloat)M_PI_2);
+        BOOL corrected = NO;
+        // The system already rotates between the window scene and the display,
+        // so the direction that pairs with it depends on the live orientation
+        // pair. Measure instead of assuming one of the two landscape cases.
+        if (FLMCanvasOriginLandedOnFarCorner(canvas, visualBounds)) {
+            sign = -sign;
+            canvas.transform =
+                CGAffineTransformMakeRotation((CGFloat)sign * (CGFloat)M_PI_2);
+            corrected = YES;
+        }
+        FLMLogCanvasVerification(canvas, visualBounds, sign, YES, corrected);
         return;
     }
     canvas.transform = CGAffineTransformIdentity;
@@ -961,8 +1013,23 @@ static BOOL FLMPointInsideCornerTrigger(CGPoint point,
 @implementation FLMKeyboardForwardingWindow
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    // `keyboardInteractionFrame` is measured in the physical display space the
+    // keyboard canvas renders in, while `point` arrives in this window's scene
+    // space. Bridge them through the screen coordinate space instead of
+    // comparing two different spaces.
+    CGRect visualBounds = FLMVisualScreenBounds();
+    CGPoint visualPoint = point;
+    if (FLMBoundsAreLandscape(visualBounds)) {
+        UIScreen *screen = self.screen ?: [UIScreen mainScreen];
+        id<UICoordinateSpace> screenSpace =
+            screen ? screen.coordinateSpace : nil;
+        if (screenSpace) {
+            visualPoint =
+                [self convertPoint:point toCoordinateSpace:screenSpace];
+        }
+    }
     if (CGRectIsNull(self.keyboardInteractionFrame) ||
-        !CGRectContainsPoint(self.keyboardInteractionFrame, point)) {
+        !CGRectContainsPoint(self.keyboardInteractionFrame, visualPoint)) {
         return nil;
     }
     UIView *hitView = [super hitTest:point withEvent:event];
@@ -1145,7 +1212,23 @@ static BOOL FLMHomeDockZoneHitTest(CGRect bounds, CGPoint point);
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!FLMHomeDockZoneHitTest(self.bounds, point)) {
+    // The window itself is on SpringBoard's portrait scene bounds, so the
+    // home-indicator zone has to be tested in the physical display space the
+    // user actually sees. Convert through the screen coordinate space the same
+    // way the presentation canvases are placed, instead of assuming the window
+    // and the display share an origin.
+    CGRect visualBounds = FLMVisualScreenBounds();
+    CGPoint visualPoint = point;
+    if (FLMBoundsAreLandscape(visualBounds)) {
+        UIScreen *screen = self.screen ?: [UIScreen mainScreen];
+        id<UICoordinateSpace> screenSpace =
+            screen ? screen.coordinateSpace : nil;
+        if (screenSpace) {
+            visualPoint =
+                [self convertPoint:point toCoordinateSpace:screenSpace];
+        }
+    }
+    if (!FLMHomeDockZoneHitTest(visualBounds, visualPoint)) {
         return nil;
     }
     return [super hitTest:point withEvent:event];
@@ -1844,7 +1927,6 @@ static void FLMBeginWheelRefreshLease(NSTimeInterval duration) {
 - (void)handleHomeDockGesture:(FLMDockGestureRecognizer *)gesture;
 - (void)activateDockedFrontmostApplication;
 - (BOOL)shouldActivateWheelAtPoint:(CGPoint)point;
-- (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count;
 - (void)presentWheelFromRight:(BOOL)fromRight;
 - (void)updateHighlightForPoint:(CGPoint)point;
 - (void)pinWheel;
@@ -2739,7 +2821,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)createWindows {
-    CGRect bounds = FLMOverlayWindowBounds();
+    CGRect bounds = FLMSpringBoardWindowBounds();
     self.overlayWindow = (FLMOverlayWindow *)FLMCreateWindow(bounds);
     self.overlayWindow.windowLevel = UIWindowLevelAlert + 91.0;
     self.overlayWindow.backgroundColor = [UIColor clearColor];
@@ -2983,7 +3065,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 - (void)createFloatingWindow {
-    CGRect bounds = FLMOverlayWindowBounds();
+    CGRect bounds = FLMSpringBoardWindowBounds();
     self.floatingWindow = FLMCreateFloatingWindow(bounds);
     self.floatingWindow.windowLevel = UIWindowLevelAlert + 92.0;
     self.floatingWindow.backgroundColor = [UIColor clearColor];
@@ -3303,7 +3385,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGRect visualBounds = FLMVisualScreenBounds();
     CGRect windowBounds = FLMSpringBoardWindowBounds();
     BOOL landscape = FLMBoundsAreLandscape(visualBounds);
-    CGRect wheelWindowBounds = landscape ? visualBounds : windowBounds;
+    CGRect wheelWindowBounds = windowBounds;
     UIView *overlayRoot = self.overlayWindow.rootViewController.view;
     [overlayRoot layoutIfNeeded];
     UIInterfaceOrientation orientation =
@@ -3312,16 +3394,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             : UIInterfaceOrientationPortrait;
 
     self.overlayWindow.frame = wheelWindowBounds;
-    if (landscape) {
-        // The isolated landscape route uses the physical 844x390 display
-        // bounds directly. There is no portrait canvas to rotate or translate.
-        overlayRoot.frame = self.overlayWindow.bounds;
-        self.wheelContainer.transform = CGAffineTransformIdentity;
-        self.wheelContainer.frame = overlayRoot.bounds;
-    } else {
-        FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, visualBounds,
-                                 orientation);
-    }
+    // The root view must stay on SpringBoard's own scene bounds. That is what
+    // lets FLMConfigureVisualCanvas recognise the portrait-root/landscape-visual
+    // pair and rotate only the child canvas; the system already supplies the
+    // rotation between the scene and the display.
+    overlayRoot.frame = self.overlayWindow.bounds;
+    FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, visualBounds,
+                             orientation);
 
     self.hotspotWindow.frame = wheelWindowBounds;
     self.hotspotWindow.rootViewController.view.frame =
@@ -3331,18 +3410,16 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
     self.homeDockWindow.frame = wheelWindowBounds;
 
-    // 0.9.69 kept the card window at SpringBoard's portrait scene bounds even
-    // in the landscape route, then rotated an 844x390 presentation canvas into
-    // that 390x844 window. The result is a portrait-shaped window showing
-    // rotated content on a physically landscape display. Size the whole
-    // floating stack with the same physical bounds the wheel already uses; the
-    // card still keeps its portrait-proportion content because
-    // `landscapeFloatingFrame` derives it from the portrait card settings.
+    // The floating stack shares the wheel window's scene bounds, and its
+    // presentation canvas is rotated the same way. The card still keeps its
+    // portrait-proportion content because `landscapeFloatingFrame` derives it
+    // from the portrait card settings.
     self.floatingWindow.frame = wheelWindowBounds;
     FLMFloatingWindow *floatingWindow =
         (FLMFloatingWindow *)self.floatingWindow;
     floatingWindow.visualBounds = visualBounds;
     floatingWindow.visualOrientation = orientation;
+    self.floatingWindow.rootViewController.view.frame = self.floatingWindow.bounds;
     FLMConfigureVisualCanvas(self.floatingPresentationView,
                              self.floatingWindow.rootViewController.view,
                              visualBounds, orientation);
@@ -3361,7 +3438,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         CGRect visualBounds = FLMVisualScreenBounds();
         CGRect windowBounds = FLMSpringBoardWindowBounds();
         BOOL landscape = FLMBoundsAreLandscape(visualBounds);
-        CGRect wheelWindowBounds = landscape ? visualBounds : windowBounds;
+        CGRect wheelWindowBounds = windowBounds;
         UIView *overlayRoot = self.overlayWindow.rootViewController.view;
         [overlayRoot layoutIfNeeded];
         UIInterfaceOrientation orientation =
@@ -3372,18 +3449,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
         // SpringBoard's UIWindow/root coordinate space can remain portrait
         // (390x844) while a foreground application owns the display in
-        // landscape (844x390). Do not overwrite the root view's geometry with
-        // the physical bounds. Instead rotate only our presentation canvases
-        // into a stable physical-display coordinate space.
+        // landscape (844x390). Keep the windows and their root views on that
+        // scene space; only the presentation canvases are rotated into a stable
+        // physical-display coordinate space.
         self.overlayWindow.frame = wheelWindowBounds;
-        if (landscape) {
-            overlayRoot.frame = self.overlayWindow.bounds;
-            self.wheelContainer.transform = CGAffineTransformIdentity;
-            self.wheelContainer.frame = overlayRoot.bounds;
-        } else {
-            FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot,
-                                     visualBounds, orientation);
-        }
+        overlayRoot.frame = self.overlayWindow.bounds;
+        FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot,
+                                 visualBounds, orientation);
 
         self.hotspotWindow.frame = wheelWindowBounds;
         self.hotspotWindow.rootViewController.view.frame =
@@ -3398,6 +3470,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 (FLMFloatingWindow *)self.floatingWindow;
             floatingWindow.visualBounds = visualBounds;
             floatingWindow.visualOrientation = orientation;
+            self.floatingWindow.rootViewController.view.frame =
+                self.floatingWindow.bounds;
             FLMConfigureVisualCanvas(
                 self.floatingPresentationView,
                 self.floatingWindow.rootViewController.view,
@@ -3434,8 +3508,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             CGRect settledBounds = FLMVisualScreenBounds();
             CGRect settledWindowBounds = FLMSpringBoardWindowBounds();
             BOOL settledLandscape = FLMBoundsAreLandscape(settledBounds);
-            CGRect settledWheelWindowBounds =
-                settledLandscape ? settledBounds : settledWindowBounds;
+            CGRect settledWheelWindowBounds = settledWindowBounds;
             UIView *settledRoot =
                 self.overlayWindow.rootViewController.view;
             [settledRoot layoutIfNeeded];
@@ -3446,14 +3519,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                     : UIInterfaceOrientationPortrait;
 
             self.overlayWindow.frame = settledWheelWindowBounds;
-            if (settledLandscape) {
-                settledRoot.frame = self.overlayWindow.bounds;
-                self.wheelContainer.transform = CGAffineTransformIdentity;
-                self.wheelContainer.frame = settledRoot.bounds;
-            } else {
-                FLMConfigureVisualCanvas(self.wheelContainer, settledRoot,
-                                         settledBounds, settledOrientation);
-            }
+            settledRoot.frame = self.overlayWindow.bounds;
+            FLMConfigureVisualCanvas(self.wheelContainer, settledRoot,
+                                     settledBounds, settledOrientation);
 
             self.hotspotWindow.frame = settledWheelWindowBounds;
             self.hotspotWindow.rootViewController.view.frame =
@@ -3467,6 +3535,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 (FLMFloatingWindow *)self.floatingWindow;
             floatingWindow.visualBounds = settledBounds;
             floatingWindow.visualOrientation = settledOrientation;
+            self.floatingWindow.rootViewController.view.frame =
+                self.floatingWindow.bounds;
             FLMConfigureVisualCanvas(
                 self.floatingPresentationView,
                 self.floatingWindow.rootViewController.view,
@@ -4316,17 +4386,228 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
            (inwardMovement >= 4.0 || upwardMovement >= 4.0);
 }
 
-- (NSArray<NSNumber *> *)itemCountsByRingForCount:(NSUInteger)count {
-    NSMutableArray<NSNumber *> *counts = [NSMutableArray array];
-    NSUInteger remaining = count;
-    NSUInteger capacity = 4;
-    while (remaining > 0) {
-        NSUInteger ringCount = MIN(remaining, capacity);
-        [counts addObject:@(ringCount)];
-        remaining -= ringCount;
-        capacity += 1;
+// The wheel is solved in the visual display space. `anchor` is the bottom
+// corner the arc grows out of, `inward` points away from that screen edge, and
+// every ring carries its own radius plus the angle window it may occupy.
+#define FLMWheelMaximumRings 6
+
+typedef struct {
+    CGFloat radius;
+    CGFloat startAngle;
+    CGFloat endAngle;
+    NSUInteger count;
+} FLMWheelRingPlan;
+
+typedef struct {
+    FLMWheelRingPlan rings[FLMWheelMaximumRings];
+    NSUInteger ringCount;
+    CGPoint anchor;
+    CGFloat inward;
+    CGPoint degenerateCenter;
+    BOOL degenerate;
+} FLMWheelPlan;
+
+static CGFloat FLMWheelClampUnit(CGFloat value) {
+    return MIN(1.0, MAX(0.0, value));
+}
+
+// Largest angle window a ring of `radius` can use inside a corner box of
+// `horizontalRoom` x `verticalRoom`, with the arc spanning (−90°, 0°).
+static CGFloat FLMWheelSpanMaximum(CGFloat radius,
+                                   CGFloat horizontalRoom,
+                                   CGFloat verticalRoom) {
+    if (radius <= 0.0 || horizontalRoom <= 0.0 || verticalRoom <= 0.0) {
+        return 0.0;
     }
-    return counts;
+    CGFloat thetaVertical =
+        radius <= verticalRoom
+            ? (CGFloat)M_PI_2
+            : asin(FLMWheelClampUnit(verticalRoom / radius));
+    CGFloat thetaHorizontal =
+        radius <= horizontalRoom
+            ? 0.0
+            : acos(FLMWheelClampUnit(horizontalRoom / radius));
+    return MAX(0.0, thetaVertical - thetaHorizontal);
+}
+
+// Angular step that keeps two centres on the ring at least `minimumChord`
+// apart.
+static CGFloat FLMWheelAnglePitch(CGFloat radius, CGFloat minimumChord) {
+    if (radius <= 0.0 || minimumChord <= 0.0) {
+        return 0.0;
+    }
+    CGFloat ratio = minimumChord / (2.0 * radius);
+    if (ratio >= 1.0) {
+        return (CGFloat)M_PI;
+    }
+    return 2.0 * asin(ratio);
+}
+
+static CGFloat FLMWheelSpanNeeded(CGFloat radius,
+                                  CGFloat minimumChord,
+                                  NSUInteger count) {
+    if (count < 2) {
+        return 0.0;
+    }
+    return (CGFloat)(count - 1) * FLMWheelAnglePitch(radius, minimumChord);
+}
+
+// Radius at which one ring can hold `count` items, or 0 when no single ring
+// can. The preferred radius wins when it already fits so the user setting is
+// respected; otherwise scan for the widest radius that still keeps the gap.
+// `span needed` and `span available` both shrink with R at different rates, so
+// the difference is not monotone and a bisection would miss solutions.
+static CGFloat FLMWheelResolveRadius(NSUInteger count,
+                                     CGFloat preferredRadius,
+                                     CGFloat iconSize,
+                                     CGFloat horizontalRoom,
+                                     CGFloat verticalRoom) {
+    if (count == 0) {
+        return 0.0;
+    }
+    CGFloat minimumChord = iconSize + 6.0;
+    CGFloat diagonal = sqrt(horizontalRoom * horizontalRoom +
+                            verticalRoom * verticalRoom);
+    CGFloat maximum = MAX(1.0, diagonal);
+    CGFloat minimum = MAX(0.5, minimumChord * 0.5);
+    if (maximum < minimum) {
+        return 0.0;
+    }
+    CGFloat preferred = MIN(preferredRadius, maximum);
+    if (preferred >= minimum &&
+        FLMWheelSpanNeeded(preferred, minimumChord, count) <=
+            FLMWheelSpanMaximum(preferred, horizontalRoom, verticalRoom)) {
+        return preferred;
+    }
+    const NSUInteger samples = 64;
+    CGFloat best = 0.0;
+    for (NSUInteger index = 0; index <= samples; index++) {
+        CGFloat radius = minimum + (maximum - minimum) *
+                                       (CGFloat)index / (CGFloat)samples;
+        if (FLMWheelSpanNeeded(radius, minimumChord, count) <=
+            FLMWheelSpanMaximum(radius, horizontalRoom, verticalRoom)) {
+            best = radius;
+        }
+    }
+    return best;
+}
+
+// Angle window one ring actually uses for `count` items. 72° is the design
+// cap carried over from the historical 82°..10° arc, but it never shrinks
+// below what the minimum gap needs.
+static CGFloat FLMWheelRingSpan(CGFloat radius,
+                                CGFloat iconSize,
+                                NSUInteger count,
+                                CGFloat horizontalRoom,
+                                CGFloat verticalRoom) {
+    CGFloat available =
+        FLMWheelSpanMaximum(radius, horizontalRoom, verticalRoom);
+    CGFloat needed =
+        FLMWheelSpanNeeded(radius, iconSize + 6.0, count);
+    CGFloat preferred = 72.0 * (CGFloat)M_PI / 180.0;
+    return MIN(available, MAX(preferred, needed));
+}
+
+static CGFloat FLMWheelHorizontalAngle(CGFloat radius,
+                                       CGFloat horizontalRoom) {
+    if (radius <= horizontalRoom) {
+        return 0.0;
+    }
+    return acos(FLMWheelClampUnit(horizontalRoom / radius));
+}
+
+static FLMWheelPlan FLMWheelResolvePlan(NSUInteger count,
+                                        CGFloat preferredRadius,
+                                        CGFloat iconSize,
+                                        BOOL fromRight,
+                                        CGFloat safeLeft,
+                                        CGFloat safeTop,
+                                        CGFloat safeRight,
+                                        CGFloat safeBottom) {
+    FLMWheelPlan plan;
+    memset(&plan, 0, sizeof(plan));
+    plan.anchor = CGPointMake(fromRight ? safeRight : safeLeft, safeBottom);
+    plan.inward = fromRight ? -1.0 : 1.0;
+    plan.degenerateCenter =
+        CGPointMake((safeLeft + safeRight) * 0.5, (safeTop + safeBottom) * 0.5);
+    if (count == 0) {
+        return plan;
+    }
+    CGFloat horizontalRoom = safeRight - safeLeft;
+    CGFloat verticalRoom = safeBottom - safeTop;
+    if (horizontalRoom <= 1.0 || verticalRoom <= 1.0) {
+        plan.degenerate = YES;
+        plan.ringCount = 1;
+        plan.rings[0].count = count;
+        return plan;
+    }
+    CGFloat radius = FLMWheelResolveRadius(count, preferredRadius, iconSize,
+                                           horizontalRoom, verticalRoom);
+    if (radius > 0.0) {
+        plan.ringCount = 1;
+        plan.rings[0].radius = radius;
+        plan.rings[0].endAngle = -FLMWheelHorizontalAngle(radius, horizontalRoom);
+        plan.rings[0].startAngle =
+            plan.rings[0].endAngle -
+            FLMWheelRingSpan(radius, iconSize, count, horizontalRoom,
+                             verticalRoom);
+        plan.rings[0].count = count;
+        return plan;
+    }
+    // No single ring can hold every item. Fill rings outward, each one sized
+    // from its own geometry rather than a fixed per-ring allowance.
+    CGFloat ringSpacing = iconSize + 20.0;
+    CGFloat diagonal = sqrt(horizontalRoom * horizontalRoom +
+                            verticalRoom * verticalRoom);
+    CGFloat ringRadius = MIN(preferredRadius, MAX(1.0, diagonal));
+    if (ringRadius < (iconSize + 6.0) * 0.5) {
+        ringRadius = (iconSize + 6.0) * 0.5;
+    }
+    NSUInteger remaining = count;
+    while (remaining > 0 && plan.ringCount < FLMWheelMaximumRings) {
+        CGFloat available =
+            FLMWheelSpanMaximum(ringRadius, horizontalRoom, verticalRoom);
+        CGFloat preferredSpan = 72.0 * (CGFloat)M_PI / 180.0;
+        CGFloat capacitySpan = MIN(available, preferredSpan);
+        CGFloat pitch = FLMWheelAnglePitch(ringRadius, iconSize + 6.0);
+        NSUInteger capacity =
+            capacitySpan > 0.0 && pitch > 0.0
+                ? (NSUInteger)floor(capacitySpan / pitch) + 1
+                : 1;
+        NSUInteger ringCount = MIN(remaining, MAX((NSUInteger)1, capacity));
+        FLMWheelRingPlan *slot = &plan.rings[plan.ringCount];
+        slot->radius = ringRadius;
+        slot->endAngle = -FLMWheelHorizontalAngle(ringRadius, horizontalRoom);
+        slot->startAngle =
+            slot->endAngle -
+            FLMWheelRingSpan(ringRadius, iconSize, ringCount, horizontalRoom,
+                             verticalRoom);
+        slot->count = ringCount;
+        plan.ringCount += 1;
+        remaining -= ringCount;
+        ringRadius += ringSpacing;
+    }
+    if (remaining > 0) {
+        // Ring budget exhausted. Keep the overflow visible on the last ring
+        // instead of dropping applications.
+        plan.rings[plan.ringCount - 1].count += remaining;
+    }
+    return plan;
+}
+
+static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
+                                 FLMWheelRingPlan ring,
+                                 NSUInteger position) {
+    if (plan.degenerate) {
+        return plan.degenerateCenter;
+    }
+    CGFloat fraction = ring.count <= 1
+                           ? 0.5
+                           : (CGFloat)position / (CGFloat)(ring.count - 1);
+    CGFloat angle =
+        ring.startAngle + fraction * (ring.endAngle - ring.startAngle);
+    return CGPointMake(plan.anchor.x + plan.inward * ring.radius * cos(angle),
+                       plan.anchor.y + ring.radius * sin(angle));
 }
 
 - (void)presentWheelFromRight:(BOOL)fromRight {
@@ -4364,69 +4645,37 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             : rawSafeInsets;
     CGFloat safeLeft = MAX(4.0, safeInsets.left + 4.0);
     CGFloat safeRight = MIN(width - 4.0, width - safeInsets.right - 4.0);
+    CGFloat safeTop = MAX(4.0, safeInsets.top + 4.0);
     CGFloat safeBottom = MIN(height - 4.0, height - safeInsets.bottom - 4.0);
     CGPoint anchor = CGPointMake(fromRight ? safeRight : safeLeft, safeBottom);
+    // Portrait shares the solver with the landscape route, so the arc stays
+    // inside the real safe area and the per-ring counts come from geometry
+    // instead of a fixed 4, 5, 6 allowance.
+    FLMWheelPlan plan = FLMWheelResolvePlan(
+        self.itemIdentifiers.count, self.wheelRadius, self.wheelIconSize,
+        fromRight, safeLeft, safeTop, safeRight, safeBottom);
     if (FLMBoundsAreLandscape(bounds)) {
         FLMEnqueueDiagnosticLine(
-            @"sb wheel-landscape-layout side=%@ bounds=%@ rawSafe={%.1f,%.1f,%.1f,%.1f} physicalSafe={%.1f,%.1f,%.1f,%.1f} orientation=%ld anchor={%.1f,%.1f}",
+            @"sb wheel-landscape-layout side=%@ bounds=%@ rawSafe={%.1f,%.1f,%.1f,%.1f} physicalSafe={%.1f,%.1f,%.1f,%.1f} orientation=%ld anchor={%.1f,%.1f} rings=%lu radius=%.1f",
             fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
             rawSafeInsets.top, rawSafeInsets.left, rawSafeInsets.bottom,
             rawSafeInsets.right, safeInsets.top, safeInsets.left,
             safeInsets.bottom, safeInsets.right,
-            (long)presentationOrientation, anchor.x, anchor.y);
-    }
-    NSArray<NSNumber *> *ringCounts =
-        [self itemCountsByRingForCount:self.itemIdentifiers.count];
-    CGFloat fullStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullAngleSpan = fullEndAngle - fullStartAngle;
-    CGFloat safeCenterMargin = self.wheelIconSize * 0.5 + 10.0;
-    CGFloat horizontalRoom = fromRight
-                                 ? safeRight - safeInsets.left
-                                 : width - safeInsets.right - safeLeft;
-    CGFloat verticalRoom = safeBottom - safeInsets.top;
-    CGFloat maximumRadiusByWidth =
-        MAX(1.0, horizontalRoom - safeCenterMargin) / cos(fullEndAngle);
-    CGFloat maximumRadiusByHeight =
-        MAX(1.0, verticalRoom - safeCenterMargin) / fabs(sin(fullStartAngle));
-    CGFloat maximumRadius = MAX(120.0, MIN(maximumRadiusByWidth,
-                                           maximumRadiusByHeight));
-    CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);
-    CGFloat ringSpacing = 0.0;
-    if (ringCounts.count > 1) {
-        CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
-        CGFloat desiredSpacing = self.wheelIconSize + 20.0;
-        CGFloat minimumSpacing = self.wheelIconSize + 6.0;
-        CGFloat desiredOuterRadius = firstRadius + desiredSpacing * ringIntervals;
-        if (desiredOuterRadius <= maximumRadius) {
-            ringSpacing = desiredSpacing;
-        } else {
-            firstRadius =
-                MIN(firstRadius,
-                    MAX(132.0, maximumRadius - minimumSpacing * ringIntervals));
-            ringSpacing = (maximumRadius - firstRadius) / ringIntervals;
-        }
+            (long)presentationOrientation, anchor.x, anchor.y,
+            (unsigned long)plan.ringCount, plan.rings[0].radius);
     }
 
     NSUInteger itemIndex = 0;
-    for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
-        NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
-        CGFloat radius = firstRadius + (CGFloat)ring * ringSpacing;
-        for (NSUInteger position = 0; position < ringCount; position++) {
-            CGFloat fraction = ringCount == 1
-                                   ? 0.5
-                                   : (CGFloat)position / (CGFloat)(ringCount - 1);
-            CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
-            CGFloat inwardX = radius * cos(angle);
-            CGFloat centerX = fromRight ? anchor.x - inwardX
-                                        : anchor.x + inwardX;
-            CGFloat centerY = anchor.y + radius * sin(angle);
+    for (NSUInteger ring = 0; ring < plan.ringCount; ring++) {
+        FLMWheelRingPlan ringPlan = plan.rings[ring];
+        for (NSUInteger position = 0; position < ringPlan.count; position++) {
+            CGPoint visualCenter = FLMWheelRingPoint(plan, ringPlan, position);
             NSString *identifier = self.itemIdentifiers[itemIndex++];
             FLMWheelItemView *item =
                 [[FLMWheelItemView alloc] initWithIdentifier:identifier
                                                        image:FLMApplicationIcon(identifier)
                                                         size:self.wheelIconSize];
-            item.center = CGPointMake(centerX, centerY);
+            item.center = visualCenter;
             item.alpha = 0.0;
             item.transform = CGAffineTransformMakeScale(0.42, 0.42);
             [self.wheelContainer addSubview:item];
@@ -4456,25 +4705,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 // The landscape wheel geometry is solved in the physical display space
-// (844x390). The wheel container, however, lives inside a SpringBoard window
-// whose own coordinate space is not guaranteed to match that space. Bridge the
-// two through UIScreen.coordinateSpace the way the historical landscape
-// controller did, instead of assigning the display-space point straight to
-// `item.center` and hoping the container happens to share the same origin.
+// (844x390), and the wheel container IS that space: it is an 844x390 canvas
+// rotated into SpringBoard's portrait scene bounds, so one canvas-local point
+// maps onto exactly one physical display point. Converting through
+// UIScreen.coordinateSpace would apply the system rotation a second time.
 - (CGPoint)landscapeWheelLocalPointFromVisualPoint:(CGPoint)visualPoint {
-    UIWindow *wheelWindow = self.overlayWindow;
-    UIView *container = self.wheelContainer;
-    if (!wheelWindow || !container) {
-        return visualPoint;
-    }
-    UIScreen *screen = wheelWindow.screen ?: [UIScreen mainScreen];
-    id<UICoordinateSpace> screenSpace = screen ? screen.coordinateSpace : nil;
-    if (!screenSpace) {
-        return visualPoint;
-    }
-    CGPoint windowPoint =
-        [screenSpace convertPoint:visualPoint toCoordinateSpace:wheelWindow];
-    return [container convertPoint:windowPoint fromView:wheelWindow];
+    return visualPoint;
 }
 
 - (void)synchronizeLandscapeWheelItemCenters {
@@ -4528,56 +4764,17 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         safeBottom = height - centerMargin;
     }
     CGPoint anchor = CGPointMake(fromRight ? safeRight : safeLeft, safeBottom);
-
-    NSArray<NSNumber *> *ringCounts =
-        [self itemCountsByRingForCount:self.itemIdentifiers.count];
-    CGFloat fullStartAngle = -82.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullEndAngle = -10.0 * (CGFloat)M_PI / 180.0;
-    CGFloat fullAngleSpan = fullEndAngle - fullStartAngle;
-    CGFloat horizontalRoom =
-        fromRight ? anchor.x - safeLeft : safeRight - anchor.x;
-    CGFloat verticalRoom = anchor.y - safeTop;
-    CGFloat maximumRadiusByWidth =
-        MAX(1.0, horizontalRoom) / MAX(0.05, cos(fullEndAngle));
-    CGFloat maximumRadiusByHeight =
-        MAX(1.0, verticalRoom) / MAX(0.05, fabs(sin(fullStartAngle)));
-    CGFloat maximumRadius =
-        MAX(120.0, MIN(maximumRadiusByWidth, maximumRadiusByHeight));
-    CGFloat firstRadius = MIN(self.wheelRadius, maximumRadius);
-    CGFloat ringSpacing = 0.0;
-    if (ringCounts.count > 1) {
-        CGFloat ringIntervals = (CGFloat)(ringCounts.count - 1);
-        CGFloat desiredSpacing = self.wheelIconSize + 20.0;
-        CGFloat minimumSpacing = self.wheelIconSize + 6.0;
-        if (firstRadius + desiredSpacing * ringIntervals <= maximumRadius) {
-            ringSpacing = desiredSpacing;
-        } else {
-            firstRadius =
-                MIN(firstRadius,
-                    MAX(120.0, maximumRadius - minimumSpacing * ringIntervals));
-            ringSpacing = MAX(0.0,
-                              (maximumRadius - firstRadius) / ringIntervals);
-        }
-    }
+    FLMWheelPlan plan = FLMWheelResolvePlan(
+        self.itemIdentifiers.count, self.wheelRadius, self.wheelIconSize,
+        fromRight, safeLeft, safeTop, safeRight, safeBottom);
 
     NSMutableArray<FLMWheelItemView *> *views = [NSMutableArray array];
     NSMutableArray<NSValue *> *visualCenters = [NSMutableArray array];
     NSUInteger itemIndex = 0;
-    for (NSUInteger ring = 0; ring < ringCounts.count; ring++) {
-        NSUInteger ringCount = ringCounts[ring].unsignedIntegerValue;
-        CGFloat radius = firstRadius + (CGFloat)ring * ringSpacing;
-        for (NSUInteger position = 0; position < ringCount; position++) {
-            CGFloat fraction =
-                ringCount == 1
-                    ? 0.5
-                    : (CGFloat)position / (CGFloat)(ringCount - 1);
-            CGFloat angle = fullStartAngle + fraction * fullAngleSpan;
-            CGFloat inwardX = radius * cos(angle);
-            CGFloat centerX = fromRight ? anchor.x - inwardX
-                                        : anchor.x + inwardX;
-            CGFloat centerY = anchor.y + radius * sin(angle);
-            centerX = MIN(safeRight, MAX(safeLeft, centerX));
-            centerY = MIN(safeBottom, MAX(safeTop, centerY));
+    for (NSUInteger ring = 0; ring < plan.ringCount; ring++) {
+        FLMWheelRingPlan ringPlan = plan.rings[ring];
+        for (NSUInteger position = 0; position < ringPlan.count; position++) {
+            CGPoint visualCenter = FLMWheelRingPoint(plan, ringPlan, position);
             NSString *identifier = self.itemIdentifiers[itemIndex++];
             FLMWheelItemView *item =
                 [[FLMWheelItemView alloc] initWithIdentifier:identifier
@@ -4591,7 +4788,6 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             itemTap.delaysTouchesBegan = NO;
             itemTap.delaysTouchesEnded = NO;
             [item addGestureRecognizer:itemTap];
-            CGPoint visualCenter = CGPointMake(centerX, centerY);
             [visualCenters addObject:[NSValue valueWithCGPoint:visualCenter]];
             item.center = [self landscapeWheelLocalPointFromVisualPoint:visualCenter];
             item.alpha = 0.0;
@@ -4627,14 +4823,33 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                          completion:nil];
     }];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-wheel-present side=%@ bounds=%@ notchInset=%.1f safe={%.1f,%.1f,%.1f,%.1f} anchor={%.1f,%.1f} radius=%.1f mode=%@ rawInsets={%.1f,%.1f,%.1f,%.1f} overlay=%@ root=%@",
+        @"sb landscape-wheel-present side=%@ bounds=%@ notchInset=%.1f safe={%.1f,%.1f,%.1f,%.1f} anchor={%.1f,%.1f} rings=%lu radius=%.1f span=%.1f count=%lu mode=%@ rawInsets={%.1f,%.1f,%.1f,%.1f} overlay=%@ root=%@",
         fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
         notchInset, safeTop, safeLeft, safeBottom, safeRight,
-        anchor.x, anchor.y, firstRadius,
+        anchor.x, anchor.y, (unsigned long)plan.ringCount,
+        plan.rings[0].radius,
+        (plan.rings[0].endAngle - plan.rings[0].startAngle) * 180.0 /
+            (CGFloat)M_PI,
+        (unsigned long)plan.rings[0].count,
         FLMLandscapeRawCoordinateModeName(self.landscapeIngressRawMode),
         rawSafeInsets.top, rawSafeInsets.left, rawSafeInsets.bottom,
         rawSafeInsets.right, NSStringFromCGRect(self.overlayWindow.frame),
         NSStringFromCGRect(self.wheelContainer.frame));
+    if (plan.ringCount > 1) {
+        NSMutableString *ringSummary = [NSMutableString string];
+        for (NSUInteger ring = 0; ring < plan.ringCount; ring++) {
+            [ringSummary
+                appendFormat:@"%@r%lu=%.1f/%.1f/%lu",
+                             ring == 0 ? @"" : @";", (unsigned long)ring,
+                             plan.rings[ring].radius,
+                             (plan.rings[ring].endAngle -
+                              plan.rings[ring].startAngle) *
+                                 180.0 / (CGFloat)M_PI,
+                             (unsigned long)plan.rings[ring].count];
+        }
+        FLMEnqueueDiagnosticLine(@"sb landscape-wheel-rings side=%@ %@",
+                                 fromRight ? @"right" : @"left", ringSummary);
+    }
 
     // The wheel's bounds are not proof that it renders in the right place. Log
     // the scene orientation, both transforms and the container's rect in the
@@ -7226,6 +7441,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         (FLMFloatingWindow *)self.floatingWindow;
     floatingWindow.visualBounds = bounds;
     floatingWindow.visualOrientation = orientation;
+    rootView.frame = self.floatingWindow.bounds;
     FLMConfigureVisualCanvas(self.floatingPresentationView, rootView, bounds,
                              orientation);
     self.floatingDimView.frame = self.floatingPresentationView.bounds;
@@ -8297,6 +8513,50 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     }
 }
 
+// Pins down what the remote keyboard Scene actually offers before any pairing
+// attempt, so a failure can be attributed to the Scene instead of guessed at.
+static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
+                                         id preferredHostIdentity) {
+    if (!keyboardScene) {
+        return;
+    }
+    static void *lastLoggedScene = NULL;
+    void *currentScene = (__bridge void *)keyboardScene;
+    if (lastLoggedScene == currentScene) {
+        return;
+    }
+    lastLoggedScene = currentScene;
+    BOOL hasUpdateSettings =
+        [keyboardScene
+            respondsToSelector:NSSelectorFromString(
+                                   @"updateClientSettingsWithBlock:")];
+    BOOL hasMutableSettings =
+        [keyboardScene respondsToSelector:NSSelectorFromString(
+                                              @"mutableSettings")] ||
+        [keyboardScene
+            respondsToSelector:NSSelectorFromString(@"clientSettings")];
+    NSString *settingsClass = @"<none>";
+    @try {
+        id settings = nil;
+        @try {
+            settings = [keyboardScene valueForKey:@"settings"];
+        } @catch (__unused NSException *exception) {
+        }
+        if (settings) {
+            settingsClass = NSStringFromClass([settings class]);
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    FLMDiagnosticLog(
+        @"sb kbd-discover scene=%@ settingsClass=%@ hasUpdateSettings=%d hasMutableSettings=%d preferredHost=%p identityClass=%@",
+        FLMSceneIdentifier(keyboardScene) ?: @"<none>", settingsClass,
+        hasUpdateSettings, hasMutableSettings,
+        (__bridge void *)preferredHostIdentity,
+        preferredHostIdentity
+            ? NSStringFromClass([preferredHostIdentity class])
+            : @"<none>");
+}
+
 - (BOOL)propagateFloatingKeyboardScenePairing:(id)keyboardScene
                          preferredHostIdentity:(id)preferredHostIdentity
                              sessionGeneration:(NSUInteger)sessionGeneration {
@@ -8305,6 +8565,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingWindow.hidden || self.floatingDocked) {
         return NO;
     }
+    FLMLogKeyboardSceneDiscovery(keyboardScene, preferredHostIdentity);
     if (self.floatingKeyboardScene == keyboardScene &&
         self.floatingKeyboardPreferredHostIdentity == preferredHostIdentity &&
         self.floatingKeyboardPairingSessionGeneration == sessionGeneration) {
@@ -8320,6 +8581,12 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         BOOL applied = [self setFloatingKeyboardPreferredHostIdentity:
                                  preferredHostIdentity
                                                            scene:keyboardScene];
+        FLMDiagnosticLog(
+            @"sb kbd-pair-attempt route=mutable-settings error=%@ applied=%d session=%lu keyboardScene=%@",
+            applied ? @"<none>"
+                    : @"FBScene has no updateClientSettingsWithBlock:",
+            applied, (unsigned long)sessionGeneration,
+            FLMSceneIdentifier(keyboardScene) ?: @"<none>");
         FLMDiagnosticLog(
             @"sb scene-pair apply=%d session=%lu keyboardScene=%@ class=%@ preferredClass=%@ preferred=%p route=mutable-settings",
             applied, (unsigned long)sessionGeneration,
@@ -8365,7 +8632,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
             }
             applied = YES;
         } @catch (NSException *exception) {
-            failure = exception.name ?: @"exception";
+            failure = exception.reason ?: exception.name ?: @"exception";
         }
     };
     @try {
@@ -8373,13 +8640,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                              updateSelector,
                                              settingsBlock);
     } @catch (NSException *exception) {
-        failure = exception.name ?: @"exception";
+        failure = exception.reason ?: exception.name ?: @"exception";
     }
     if (!applied) {
         self.floatingKeyboardScene = nil;
         self.floatingKeyboardPreferredHostIdentity = nil;
         self.floatingKeyboardPairingSessionGeneration = 0;
     }
+    FLMDiagnosticLog(
+        @"sb kbd-pair-attempt route=mutable-settings error=%@ applied=%d session=%lu keyboardScene=%@ preferred=%p",
+        failure ?: @"<none>", applied, (unsigned long)sessionGeneration,
+        FLMSceneIdentifier(keyboardScene) ?: @"<none>",
+        (__bridge void *)preferredHostIdentity);
     FLMDiagnosticLog(
         @"sb scene-pair apply=%d session=%lu keyboardScene=%@ preferredClass=%@ preferred=%p failure=%@",
         applied, (unsigned long)sessionGeneration,
@@ -8451,6 +8723,29 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.floatingKeyboardPairingSessionGeneration = 0;
 }
 
+- (void)configureKeyboardForwardingWindowGeometry:
+    (FLMKeyboardForwardingWindow *)window {
+    if (!window) {
+        return;
+    }
+    // The forwarding window belongs to SpringBoard's own scene, so it keeps the
+    // portrait scene bounds and carries the remote keyboard in a rotated
+    // display-sized canvas, exactly like the wheel and the card. Sizing the
+    // window with the physical bounds instead would tilt the keyboard.
+    window.frame = FLMSpringBoardWindowBounds();
+    UIView *rootView = window.rootViewController.view;
+    if (!rootView) {
+        return;
+    }
+    CGRect visualBounds = FLMVisualScreenBounds();
+    UIInterfaceOrientation orientation =
+        FLMBoundsAreLandscape(visualBounds)
+            ? FLMLandscapeOrientationForSafeInsets(window.safeAreaInsets)
+            : UIInterfaceOrientationPortrait;
+    rootView.frame = window.bounds;
+    FLMConfigureVisualCanvas(rootView, window, visualBounds, orientation);
+}
+
 - (void)prepareKeyboardForwardingWindowIfNeeded {
     UIWindowScene *targetWindowScene = self.floatingWindow.windowScene;
     if (!targetWindowScene) {
@@ -8470,18 +8765,15 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         existingWindow = nil;
     }
     if (existingWindow) {
-        CGRect bounds = FLMVisualScreenBounds();
-        existingWindow.frame = bounds;
-        existingWindow.rootViewController.view.frame = existingWindow.bounds;
+        [self configureKeyboardForwardingWindowGeometry:existingWindow];
         existingWindow.windowLevel = self.floatingWindow.windowLevel + 1.0;
         return;
     }
 
-    CGRect bounds = FLMVisualScreenBounds();
     FLMKeyboardForwardingWindow *window =
         [[FLMKeyboardForwardingWindow alloc]
             initWithWindowScene:targetWindowScene];
-    window.frame = bounds;
+    window.frame = FLMSpringBoardWindowBounds();
     // TrollOpen's level 45 sits above its own content hierarchy. Flyme's card
     // is itself an alert-level SpringBoard window, so the same absolute level
     // incorrectly places the native keyboard underneath it. Keep the keyboard
@@ -8494,10 +8786,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     FLMOverlayViewController *rootController =
         [[FLMOverlayViewController alloc] init];
     rootController.view.backgroundColor = [UIColor clearColor];
-    rootController.view.frame = window.bounds;
-    rootController.view.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     window.rootViewController = rootController;
+    [self configureKeyboardForwardingWindowGeometry:window];
     SEL autorotationSelector =
         NSSelectorFromString(@"setAutorotates:forceUpdateInterfaceOrientation:");
     if ([window respondsToSelector:autorotationSelector]) {
@@ -9202,63 +9492,64 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 }
 
 // A keyboard notification frame can arrive in the target App's portrait Scene
-// space (for example 390 wide) while the physical display is landscape (844
-// wide). Dropping those frames hides a keyboard that is genuinely on screen,
-// which is how 0.9.69 turned a live WeChat keyboard into
-// `computedVisible=0` and then a teardown. Convert every candidate through the
-// screen coordinate spaces and keep the one that actually lands on the
-// display, the way the historical landscape controller scored
-// `screen.coordinateSpace` and `screen.fixedCoordinateSpace`.
+// contract (390x844, the size `floatingSystemSceneReferenceSize` reports for a
+// landscape session) while the locked display box is 844x390. Convert those
+// frames with the same corner mapping the card uses; leave frames that already
+// match the display box alone. The reference box is the one this session
+// locked in when the card opened, never a live re-read: `FLMVisualScreenBounds`
+// can flip back to portrait mid-transaction, and judging a landscape frame
+// against a portrait box reports a keyboard sitting entirely below the screen
+// as visible — the flicker-then-vanish the device log shows.
+- (CGRect)floatingSessionVisualBounds {
+    CGSize systemSize = self.floatingLandscapeSystemSize;
+    if (self.floatingLandscapeSession && systemSize.width > 1.0 &&
+        systemSize.height > 1.0) {
+        return CGRectMake(0.0, 0.0, systemSize.width, systemSize.height);
+    }
+    return FLMVisualScreenBounds();
+}
+
 - (CGRect)landscapeKeyboardFrameFromScreenFrame:(CGRect)screenFrame
                                          bounds:(CGRect)bounds {
     CGRect direct = CGRectStandardize(screenFrame);
     if (![self isLandscapeFloatingSession] || CGRectIsEmpty(bounds)) {
         return direct;
     }
-    CGFloat widthTolerance = MAX(3.0, CGRectGetWidth(bounds) * 0.06);
-    BOOL spansPhysicalWidth =
-        fabs(CGRectGetWidth(direct) - CGRectGetWidth(bounds)) <= widthTolerance &&
-        fabs(CGRectGetMinX(direct) - CGRectGetMinX(bounds)) <= 12.0;
-    if (spansPhysicalWidth) {
+    CGSize appReference = [self floatingSystemSceneReferenceSize];
+    CGFloat appTolerance = MAX(3.0, appReference.width * 0.06);
+    BOOL matchesAppReference =
+        appReference.width > 1.0 && appReference.height > 1.0 &&
+        fabs(CGRectGetWidth(direct) - appReference.width) <= appTolerance;
+    if (!matchesAppReference) {
         return direct;
     }
-    UIScreen *screen = self.floatingWindow.screen ?: [UIScreen mainScreen];
-    if (!screen) {
-        return direct;
+    CGRect appBounds = CGRectMake(0.0, 0.0, appReference.width,
+                                  appReference.height);
+    UIInterfaceOrientation orientation =
+        self.floatingLandscapeInterfaceOrientation;
+    if (!UIInterfaceOrientationIsLandscape(orientation)) {
+        orientation =
+            FLMLandscapeOrientationForSafeInsets(
+                self.floatingLandscapeSafeInsets);
     }
-    NSMutableArray<NSValue *> *candidates = [NSMutableArray array];
-    if (screen.coordinateSpace) {
-        [candidates addObject:
-            [NSValue valueWithCGRect:
-                [screen.coordinateSpace convertRect:screenFrame
-                                  toCoordinateSpace:self.floatingWindow]]];
+    CGPoint corners[4] = {
+        CGPointMake(CGRectGetMinX(direct), CGRectGetMinY(direct)),
+        CGPointMake(CGRectGetMaxX(direct), CGRectGetMinY(direct)),
+        CGPointMake(CGRectGetMinX(direct), CGRectGetMaxY(direct)),
+        CGPointMake(CGRectGetMaxX(direct), CGRectGetMaxY(direct)),
+    };
+    CGRect converted = CGRectNull;
+    for (NSUInteger index = 0; index < 4; index++) {
+        CGPoint visualPoint =
+            FLMVisualPointFromRootPoint(corners[index], appBounds, bounds,
+                                        orientation);
+        CGRect cornerRect =
+            CGRectMake(visualPoint.x, visualPoint.y, 0.0, 0.0);
+        converted = CGRectIsNull(converted)
+                        ? cornerRect
+                        : CGRectUnion(converted, cornerRect);
     }
-    if (screen.fixedCoordinateSpace) {
-        [candidates addObject:
-            [NSValue valueWithCGRect:
-                [screen.fixedCoordinateSpace convertRect:screenFrame
-                                       toCoordinateSpace:self.floatingWindow]]];
-    }
-    [candidates addObject:[NSValue valueWithCGRect:direct]];
-    CGRect best = direct;
-    CGFloat bestScore = -CGFLOAT_MAX;
-    for (NSValue *candidate in candidates) {
-        CGRect rect = CGRectStandardize(candidate.CGRectValue);
-        CGRect intersection = CGRectIntersection(bounds, rect);
-        if (CGRectIsNull(intersection) || CGRectIsEmpty(intersection)) {
-            continue;
-        }
-        CGFloat score =
-            CGRectGetWidth(intersection) * CGRectGetHeight(intersection);
-        if (CGRectGetMinY(rect) < CGRectGetMaxY(bounds) - 1.0) {
-            score += 1.0;
-        }
-        if (score > bestScore) {
-            bestScore = score;
-            best = rect;
-        }
-    }
-    return best;
+    return CGRectIsNull(converted) ? direct : converted;
 }
 
 - (void)keyboardFrameWillChange:(NSNotification *)notification {
@@ -9267,7 +9558,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         return;
     }
     CGRect frame = frameValue.CGRectValue;
-    CGRect bounds = FLMVisualScreenBounds();
+    CGRect bounds = [self floatingSessionVisualBounds];
     CGRect converted =
         [self landscapeKeyboardFrameFromScreenFrame:frame bounds:bounds];
     BOOL visible = CGRectIntersectsRect(bounds, converted) &&
@@ -9291,6 +9582,18 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 - (void)keyboardDidHide:(NSNotification *)notification {
     FLMDiagnosticLog(@"sb notification=%@ did-hide",
                              notification.name);
+    // Record what the session looked like when the hide arrived. A hide that
+    // lands right after a frame the coordinator accepted is the flicker path;
+    // a hide with no frame at all is a different failure.
+    FLMDiagnosticLog(
+        @"sb kbd-hide-cause notification=%@ pendingFrame=%@ visible=%d host=%p session=%lu",
+        notification.name,
+        CGRectIsNull(self.floatingKeyboardFrame)
+            ? @"<null>"
+            : NSStringFromCGRect(self.floatingKeyboardFrame),
+        self.floatingKeyboardVisible,
+        (__bridge void *)self.floatingKeyboardLayerHostView,
+        (unsigned long)self.floatingKeyboardSessionGeneration);
     [self applyKeyboardFrame:CGRectNull visible:NO];
     [self finalizeKeyboardDismissalProtection];
 }
