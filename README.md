@@ -1,4 +1,4 @@
-# Flyme Multitasking 0.9.72 - springboard scene bounds
+# Flyme Multitasking 0.9.73 - landscape edge wheel
 
 以 0.9.63 竖屏稳定版为冻结基线，新增最小横屏路径：
 
@@ -28,6 +28,10 @@
 0.9.72 修 0.9.71 实测暴露的真正根因：`FLMSpringBoardWindowBounds` 在这台设备上取的是 `[UIScreen mainScreen].bounds`，而它本身就等于物理横屏 `844x390`，不是假定的竖屏 `390x844`。日志两个独立探针点（`probeInWindow` → `probeInScreen`、`containerInScreen={{0,-454},{390,844}}`）都精确吻合同一映射 `screen = (wy, 390 − wx)`：SpringBoard 的窗口 scene 相对物理屏幕被系统整体转了 90°。用物理尺寸建窗口，它在屏幕上只覆盖左半屏，`FLMConfigureVisualCanvas` 的「横屏视觉 + 竖屏 root」分支条件 `width(root) ≤ height(root)+1` 因此永不成立 —— 实测 `canvas-verify` 出现 0 次，系统那 90° 被原样输出，轮盘与卡片一起呈竖屏。现在窗口改用 scene 尺寸（物理 bounds 的转置 `390x844`），窗口才真正覆盖整屏，画布旋转分支恢复生效，画布局部坐标重新恒等于物理显示坐标 `(u,v)`。新增 `sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait`：一旦该分支再次被跳过就直接报出根因，而不是只留下症状。
 
 键盘侧本轮拿到了具体失效点：`sb kbd-pair-attempt route=mutable-settings error=FBScene has no updateClientSettingsWithBlock: applied=0`（20 次全失败），`sb kbd-hide-cause notification=UIKeyboardDidHideNotification pendingFrame={{0,70},{844,320}} visible=1` 随即被隐藏。本版先修窗口几何（键盘 Host 视图也挂在该窗口上），配对 API 留到下一版按这个错误改写。
+
+0.9.73 修 0.9.72 实测反馈的三个问题。第一，第一次横屏呼出画出来仍是竖屏轮盘：根因是自校正发生在 `overlayWindow.hidden` 还是 `YES` 的时候，此时 `UIScreen.coordinateSpace` 读不出有效落点，`FLMCanvasOriginLandedOnFarCorner` 拿不到正确符号，错误符号被当成正确结果接受（`corrected=0`）。现在初始方向不再猜，直接取本次会话锁定的 `landscapeIngressRawMode`；并在 `overlayWindow.hidden = NO` 之后立刻重新执行一次 `FLMConfigureVisualCanvas`，让校正发生在窗口可见、屏幕坐标空间真正有效的时刻。第二，图标离物理屏幕边缘太远：两个数值原因 —— 51pt 的刘海内缩被同时加到左右两侧（实测 `safe={33,84,357,760}`、`anchor=(84,357)`），把轮盘从干净的那一侧推离边缘整整 51pt；72° 弧度上限又让弧线提前收尾（最上面图标停在 `x=145`）。现在按锁定的横屏方向逐侧计算 housing 内缩（刘海在左就只缩左、刘海在右就只缩右），并且横屏允许用满整个可行象限（`M_PI_2`），于是 `R ≤ H` 且 `R ≤ V` 时弧线正好取 `[-π/2, 0]`，两个端点精确贴住呼出侧物理边缘与底部边缘，"贴着真实屏幕的左侧和底部"由几何保证而不是靠调参。第三，小窗显示正确但键盘仍然无法调用：日志证明系统其实早已把远程键盘 Scene 配对到卡片 Scene（`host-native paired=1` 十条、21 次 `host-update enter`、0 次拒绝或推迟），失败点不在这里；真正的问题在应用侧 —— 整份日志里 `role=application` 的 `route-reload` 事件为 0 次，`sb adapter-handshake ctor={reg:0} ready={valid:0}` 说明目标门控初始化从未运行。根因是 `FLMReloadKeyboardRoute` 的缓存版本门：`FLMKeyboardSharedCacheRevision` 只在物理重读 plist 时前进，一份缓存快照会让目标更新被永久吞掉。现在改为直接比对已解析的 route tuple（`targetHash` / `sceneHash` / `sessionGeneration`），并新增 `route-tuple` 诊断事件（`a` = 发布方 targetHash 低 16 位，`b` = 本进程自身 hash 低 16 位），下一份日志可直接判断是 hash 不匹配还是刷新根本没触发。同时 `setFloatingKeyboardPreferredHostIdentity:scene:outReason:` 不再返回硬编码文本，`kbd-pair-attempt` 打印真实失败原因。
+
+新增诊断：`sb landscape-wheel-present` 增加 `orientation`、`housing={左,右}`、`safe={上,左,下,右}` 字段，可直接核对两侧内缩是否对称、弧线端点是否落在物理边缘；应用侧新增 `route-tuple` 事件。
 
 保留功能：
 

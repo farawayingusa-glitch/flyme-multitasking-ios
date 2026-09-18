@@ -67,9 +67,18 @@ assert writer.index('FLMKeyboardPendingSnapshot = snapshot;') < writer.index('if
 reader = function(keyboard, 'static NSDictionary *FLMReadKeyboardSharedState(void) {')
 assert reader.index('return FLMKeyboardCachedSharedState;') < reader.index('dictionaryWithContentsOfFile:')
 route = function(keyboard, 'static void FLMReloadKeyboardRoute(void) {')
-assert 'FLMKeyboardSharedCacheRevision' in route
 assert 'FLMKeyboardFallbackReadFailed = YES;' in route
-assert route.index('do not commit a partial tuple') < route.index('lastAppliedRevision = FLMKeyboardSharedCacheRevision;')
+fallback = route.index('FLMKeyboardFallbackReadFailed = YES;')
+assert 'return;' in route[fallback:fallback + 200], 'a failed read must not commit a partial tuple'
+assert 'do not commit a partial tuple' in route[fallback:fallback + 200]
+# The guard must key on the resolved tuple itself. A shared-state cache
+# revision only advances on a physical plist re-read, which let a target
+# update stay unapplied forever in the 0.9.72 capture.
+assert 'FLMKeyboardSharedCacheRevision' not in route
+for field in ['targetHash == lastRouteHash', 'sceneHash == lastSceneHash',
+              'sessionGeneration == lastSessionGeneration']:
+    assert field in route, field
+assert route.index('hasAppliedTuple = YES;') < route.index('FLMKeyboardRouteActive =')
 retry = function(radius, 'static void FLMRadiusInstallControllerHooks(void) {')
 assert 'retryCount >= 20' in retry and 'retryScheduled' in retry
 assert retry.index('if (!controllerClass)') < retry.index('MSHookMessageEx([CALayer class]')

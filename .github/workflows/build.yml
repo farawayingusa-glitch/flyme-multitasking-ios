@@ -1,4 +1,4 @@
-name: Build 0.9.72 springboard scene bounds
+name: Build 0.9.73 landscape edge wheel
 
 on:
   workflow_dispatch:
@@ -55,11 +55,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_springboard-scene-bounds-0.9.72_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_landscape-edge-wheel-0.9.73_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-springboard-scene-bounds-0.9.72-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_springboard-scene-bounds-0.9.72_iphoneos-arm64.deb
+          name: flyme-multitasking-landscape-edge-wheel-0.9.73-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_landscape-edge-wheel-0.9.73_iphoneos-arm64.deb
           if-no-files-found: error

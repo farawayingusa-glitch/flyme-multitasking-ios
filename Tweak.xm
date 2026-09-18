@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"SpringBoard Scene Bounds 0.9.72 (transposed window bounds, rotated canvas, wheel solver, keyboard space)"
+#define FLMLogBuildString @"Landscape Edge Wheel 0.9.73 (per-side housing inset, full-quadrant arc, canvas re-applied on show, resolved keyboard route tuple)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -118,6 +118,7 @@ static const char *FLMDiagnosticEventName(uint8_t event) {
         case FLMDiagnosticEventAdapterCtor: return "adapter-ctor";
         case FLMDiagnosticEventAdapterReady: return "adapter-ready";
         case FLMDiagnosticEventInputSuppressed: return "input-suppressed";
+        case FLMDiagnosticEventRouteTuple: return "route-tuple";
         default: return "unknown-event";
     }
 }
@@ -4535,20 +4536,22 @@ static CGFloat FLMWheelResolveRadius(NSUInteger count,
     return best;
 }
 
-// Angle window one ring actually uses for `count` items. 72° is the design
-// cap carried over from the historical 82°..10° arc, but it never shrinks
-// below what the minimum gap needs.
+// Angle window one ring actually uses for `count` items. Portrait keeps the
+// historical 72° design cap; the landscape route asks for the whole feasible
+// quadrant so the first and last icons land on the box edges the user points
+// at. The result never shrinks below what the minimum gap needs, and never
+// exceeds the arc that still fits inside the box.
 static CGFloat FLMWheelRingSpan(CGFloat radius,
                                 CGFloat iconSize,
                                 NSUInteger count,
                                 CGFloat horizontalRoom,
-                                CGFloat verticalRoom) {
+                                CGFloat verticalRoom,
+                                CGFloat preferredSpan) {
     CGFloat available =
         FLMWheelSpanMaximum(radius, horizontalRoom, verticalRoom);
     CGFloat needed =
         FLMWheelSpanNeeded(radius, iconSize + 6.0, count);
-    CGFloat preferred = 72.0 * (CGFloat)M_PI / 180.0;
-    return MIN(available, MAX(preferred, needed));
+    return MIN(available, MAX(preferredSpan, needed));
 }
 
 static CGFloat FLMWheelHorizontalAngle(CGFloat radius,
@@ -4562,6 +4565,7 @@ static CGFloat FLMWheelHorizontalAngle(CGFloat radius,
 static FLMWheelPlan FLMWheelResolvePlan(NSUInteger count,
                                         CGFloat preferredRadius,
                                         CGFloat iconSize,
+                                        CGFloat preferredSpan,
                                         BOOL fromRight,
                                         CGFloat safeLeft,
                                         CGFloat safeTop,
@@ -4593,7 +4597,7 @@ static FLMWheelPlan FLMWheelResolvePlan(NSUInteger count,
         plan.rings[0].startAngle =
             plan.rings[0].endAngle -
             FLMWheelRingSpan(radius, iconSize, count, horizontalRoom,
-                             verticalRoom);
+                             verticalRoom, preferredSpan);
         plan.rings[0].count = count;
         return plan;
     }
@@ -4610,7 +4614,6 @@ static FLMWheelPlan FLMWheelResolvePlan(NSUInteger count,
     while (remaining > 0 && plan.ringCount < FLMWheelMaximumRings) {
         CGFloat available =
             FLMWheelSpanMaximum(ringRadius, horizontalRoom, verticalRoom);
-        CGFloat preferredSpan = 72.0 * (CGFloat)M_PI / 180.0;
         CGFloat capacitySpan = MIN(available, preferredSpan);
         CGFloat pitch = FLMWheelAnglePitch(ringRadius, iconSize + 6.0);
         NSUInteger capacity =
@@ -4624,7 +4627,7 @@ static FLMWheelPlan FLMWheelResolvePlan(NSUInteger count,
         slot->startAngle =
             slot->endAngle -
             FLMWheelRingSpan(ringRadius, iconSize, ringCount, horizontalRoom,
-                             verticalRoom);
+                             verticalRoom, preferredSpan);
         slot->count = ringCount;
         plan.ringCount += 1;
         remaining -= ringCount;
@@ -4696,7 +4699,8 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
     // instead of a fixed 4, 5, 6 allowance.
     FLMWheelPlan plan = FLMWheelResolvePlan(
         self.itemIdentifiers.count, self.wheelRadius, self.wheelIconSize,
-        fromRight, safeLeft, safeTop, safeRight, safeBottom);
+        72.0 * (CGFloat)M_PI / 180.0, fromRight, safeLeft, safeTop, safeRight,
+        safeBottom);
     if (FLMBoundsAreLandscape(bounds)) {
         FLMEnqueueDiagnosticLine(
             @"sb wheel-landscape-layout side=%@ bounds=%@ rawSafe={%.1f,%.1f,%.1f,%.1f} physicalSafe={%.1f,%.1f,%.1f,%.1f} orientation=%ld anchor={%.1f,%.1f} rings=%lu radius=%.1f",
@@ -4792,12 +4796,32 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
     self.landscapeIngressBounds = bounds;
     UIEdgeInsets rawSafeInsets = self.overlayWindow.safeAreaInsets;
     CGFloat notchInset = FLMLandscapeNotchAvoidanceInset(rawSafeInsets);
+    // The sensor housing occupies exactly one physical short edge in landscape,
+    // so only that edge is inset. Insetting both pushed the wheel 51pt off the
+    // clean edge even when nothing covers it, which is what made the icons look
+    // like they floated away from the panel.
+    UIInterfaceOrientation orientation;
+    switch (self.landscapeIngressRawMode) {
+        case FLMLandscapeRawCoordinateModeFixedLandscapeLeft:
+            orientation = UIInterfaceOrientationLandscapeLeft;
+            break;
+        case FLMLandscapeRawCoordinateModeFixedLandscapeRight:
+            orientation = UIInterfaceOrientationLandscapeRight;
+            break;
+        default:
+            orientation = FLMLandscapeOrientationForSafeInsets(rawSafeInsets);
+            break;
+    }
+    CGFloat housingInsetLeft =
+        orientation == UIInterfaceOrientationLandscapeLeft ? notchInset : 0.0;
+    CGFloat housingInsetRight =
+        orientation == UIInterfaceOrientationLandscapeLeft ? 0.0 : notchInset;
     CGFloat width = CGRectGetWidth(bounds);
     CGFloat height = CGRectGetHeight(bounds);
     CGFloat iconHalf = self.wheelIconSize * 0.5;
     CGFloat centerMargin = iconHalf + 8.0;
-    CGFloat safeLeft = notchInset + centerMargin;
-    CGFloat safeRight = width - notchInset - centerMargin;
+    CGFloat safeLeft = housingInsetLeft + centerMargin;
+    CGFloat safeRight = width - housingInsetRight - centerMargin;
     CGFloat safeTop = centerMargin;
     CGFloat safeBottom = height - centerMargin;
     if (safeRight <= safeLeft || safeBottom <= safeTop) {
@@ -4807,9 +4831,12 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
         safeBottom = height - centerMargin;
     }
     CGPoint anchor = CGPointMake(fromRight ? safeRight : safeLeft, safeBottom);
+    // A full quadrant is the only span whose first icon sits on the summoned
+    // edge and whose last icon sits on the bottom edge, which is the placement
+    // the landscape design asks for at both corners.
     FLMWheelPlan plan = FLMWheelResolvePlan(
         self.itemIdentifiers.count, self.wheelRadius, self.wheelIconSize,
-        fromRight, safeLeft, safeTop, safeRight, safeBottom);
+        (CGFloat)M_PI_2, fromRight, safeLeft, safeTop, safeRight, safeBottom);
 
     NSMutableArray<FLMWheelItemView *> *views = [NSMutableArray array];
     NSMutableArray<NSValue *> *visualCenters = [NSMutableArray array];
@@ -4843,6 +4870,19 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
     self.landscapeWheelVisualCenters = visualCenters;
     self.overlayWindow.hidden = NO;
     self.wheelContainer.alpha = 1.0;
+    // The first landscape summon used to keep a portrait wheel because the
+    // rotation sign was chosen while the overlay window was still hidden:
+    // FLMCanvasOriginLandedOnFarCorner measures through the screen coordinate
+    // space, which is not yet valid off screen, so it accepted the wrong sign
+    // and only corrected it on the second summon. Re-configure now that the
+    // window is on screen so the measurement — and the correction — runs on the
+    // very first presentation too.
+    UIView *overlayRoot = self.overlayWindow.rootViewController.view;
+    if (overlayRoot) {
+        overlayRoot.frame = self.overlayWindow.bounds;
+        FLMConfigureVisualCanvas(self.wheelContainer, overlayRoot, bounds,
+                                 orientation);
+    }
     // Showing the window can trigger one more layout pass that moves the
     // container, so re-derive every item centre from its stored physical point
     // and keep rendering and hit-testing in the same space.
@@ -4866,9 +4906,10 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
                          completion:nil];
     }];
     FLMEnqueueDiagnosticLine(
-        @"sb landscape-wheel-present side=%@ bounds=%@ notchInset=%.1f safe={%.1f,%.1f,%.1f,%.1f} anchor={%.1f,%.1f} rings=%lu radius=%.1f span=%.1f count=%lu mode=%@ rawInsets={%.1f,%.1f,%.1f,%.1f} overlay=%@ root=%@",
+        @"sb landscape-wheel-present side=%@ bounds=%@ orientation=%ld housing={%.1f,%.1f} notchInset=%.1f safe={%.1f,%.1f,%.1f,%.1f} anchor={%.1f,%.1f} rings=%lu radius=%.1f span=%.1f count=%lu mode=%@ rawInsets={%.1f,%.1f,%.1f,%.1f} overlay=%@ root=%@",
         fromRight ? @"right" : @"left", NSStringFromCGRect(bounds),
-        notchInset, safeTop, safeLeft, safeBottom, safeRight,
+        (long)orientation, housingInsetLeft, housingInsetRight, notchInset,
+        safeTop, safeLeft, safeBottom, safeRight,
         anchor.x, anchor.y, (unsigned long)plan.ringCount,
         plan.rings[0].radius,
         (plan.rings[0].endAngle - plan.rings[0].startAngle) * 180.0 /
@@ -7467,11 +7508,16 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
     }
     CGFloat notchInset =
         landscape ? FLMLandscapeNotchAvoidanceInset(rawSafeInsets) : 0.0;
+    // Only the physical edge that carries the sensor housing is inset. The card
+    // lives on the physical left edge, so with the housing on the right it now
+    // reaches the real panel edge instead of standing 51pt off it.
+    BOOL housingOnLeft =
+        orientation != UIInterfaceOrientationLandscapeRight;
     UIEdgeInsets physicalSafeInsets =
         landscape
-            ? UIEdgeInsetsMake(0.0, notchInset,
+            ? UIEdgeInsetsMake(0.0, housingOnLeft ? notchInset : 0.0,
                                MIN(21.0, MAX(0.0, rawSafeInsets.bottom)),
-                               notchInset)
+                               housingOnLeft ? 0.0 : notchInset)
             : rawSafeInsets;
 
     self.floatingLandscapeSession = landscape;
@@ -8515,45 +8561,69 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
 // the `updateClientSettingsWithBlock:` convenience, which FrontBoard's FBScene
 // does not implement. The identity lives on the Scene's mutable settings, so
 // mutate a copy and push it back the same way the App Scene frame is applied.
+// `outReason` receives the exact failure so the log names the real cause; the
+// earlier diagnostic printed a fixed string that blamed a selector which had
+// already been ruled out.
 - (BOOL)setFloatingKeyboardPreferredHostIdentity:(id)identity
-                                           scene:(id)scene {
-    if (!scene ||
-        ![scene respondsToSelector:
-                  NSSelectorFromString(@"updateSettings:withTransitionContext:")]) {
-        return NO;
-    }
-    id mutableSettings = nil;
-    @try {
-        id settings = [scene respondsToSelector:NSSelectorFromString(@"settings")]
-                          ? [scene settings]
-                          : nil;
-        mutableSettings = [settings mutableCopy];
-        if (!mutableSettings &&
-            [scene respondsToSelector:NSSelectorFromString(@"mutableSettings")]) {
-            mutableSettings = [scene mutableSettings];
+                                           scene:(id)scene
+                                       outReason:(NSString **)outReason {
+    NSString *reason = @"<none>";
+    BOOL result = NO;
+    if (!scene) {
+        reason = @"no-scene";
+    } else if (![scene respondsToSelector:NSSelectorFromString(
+                                              @"updateSettings:withTransitionContext:")]) {
+        reason = @"scene-has-no-updateSettings:withTransitionContext:";
+    } else {
+        id mutableSettings = nil;
+        @try {
+            id settings =
+                [scene respondsToSelector:NSSelectorFromString(@"settings")]
+                    ? [scene settings]
+                    : nil;
+            mutableSettings = [settings mutableCopy];
+            if (!mutableSettings &&
+                [scene respondsToSelector:NSSelectorFromString(
+                                              @"mutableSettings")]) {
+                mutableSettings = [scene mutableSettings];
+            }
+        } @catch (NSException *exception) {
+            reason = [NSString stringWithFormat:@"settings-copy:%@",
+                                               exception.name ?: @"exception"];
         }
-    } @catch (__unused NSException *exception) {
-        mutableSettings = nil;
-    }
-    if (!mutableSettings) {
-        return NO;
-    }
-    @try {
-        SEL setter = NSSelectorFromString(@"setPreferredSceneHostIdentity:");
-        if ([mutableSettings respondsToSelector:setter]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(mutableSettings, setter,
-                                                 identity);
-        } else {
-            [mutableSettings setValue:identity
-                               forKey:@"preferredSceneHostIdentity"];
+        if (!mutableSettings && [reason isEqualToString:@"<none>"]) {
+            reason = @"no-mutable-settings";
         }
-        ((void (*)(id, SEL, id, id))objc_msgSend)(
-            scene, NSSelectorFromString(@"updateSettings:withTransitionContext:"),
-            mutableSettings, nil);
-        return YES;
-    } @catch (NSException *exception) {
-        return NO;
+        if (mutableSettings) {
+            @try {
+                SEL setter = NSSelectorFromString(
+                    @"setPreferredSceneHostIdentity:");
+                if ([mutableSettings respondsToSelector:setter]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(mutableSettings,
+                                                         setter, identity);
+                } else {
+                    [mutableSettings setValue:identity
+                                       forKey:@"preferredSceneHostIdentity"];
+                }
+                ((void (*)(id, SEL, id, id))objc_msgSend)(
+                    scene,
+                    NSSelectorFromString(
+                        @"updateSettings:withTransitionContext:"),
+                    mutableSettings, nil);
+                result = YES;
+                reason = @"<none>";
+            } @catch (NSException *exception) {
+                reason = [NSString
+                    stringWithFormat:@"apply:%@",
+                                     exception.reason ?: exception.name
+                                                      ?: @"exception"];
+            }
+        }
     }
+    if (outReason) {
+        *outReason = reason;
+    }
+    return result;
 }
 
 // Pins down what the remote keyboard Scene actually offers before any pairing
@@ -8618,16 +8688,19 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
     SEL updateSelector = NSSelectorFromString(@"updateClientSettingsWithBlock:");
     if (![keyboardScene respondsToSelector:updateSelector]) {
         // `scene-pair apply=unsupported ... class=FBScene` is where 0.9.69 gave
-        // up. The remote keyboard Scene then stayed unpaired, the App-side
-        // input session never accepted (`adapterAccepted=0`), and a keyboard
-        // that was genuinely on screen was reported hidden a moment later.
+        // up. This route is not on the critical path — the 0.9.72 capture shows
+        // the system already pairing the keyboard Scene to the card's own Scene
+        // (`host-native ... paired=1`, 21 host updates, 0 rejections) — so it is
+        // only a best-effort nudge and the reason it declined is now reported
+        // verbatim instead of being blamed on a selector already ruled out.
+        NSString *pairFailure = nil;
         BOOL applied = [self setFloatingKeyboardPreferredHostIdentity:
                                  preferredHostIdentity
-                                                           scene:keyboardScene];
+                                                           scene:keyboardScene
+                                                       outReason:&pairFailure];
         FLMDiagnosticLog(
             @"sb kbd-pair-attempt route=mutable-settings error=%@ applied=%d session=%lu keyboardScene=%@",
-            applied ? @"<none>"
-                    : @"FBScene has no updateClientSettingsWithBlock:",
+            pairFailure ?: @"<none>",
             applied, (unsigned long)sessionGeneration,
             FLMSceneIdentifier(keyboardScene) ?: @"<none>");
         FLMDiagnosticLog(
@@ -8753,8 +8826,13 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
     }
     if (owned && !cleared &&
         ![keyboardScene respondsToSelector:updateSelector]) {
+        NSString *clearReason = nil;
         cleared = [self setFloatingKeyboardPreferredHostIdentity:nil
-                                                          scene:keyboardScene];
+                                                          scene:keyboardScene
+                                                      outReason:&clearReason];
+        if (!cleared && clearReason.length > 0) {
+            failure = clearReason;
+        }
     }
     FLMDiagnosticLog(
         @"sb scene-pair clear=%d owned=%d session=%lu keyboardScene=%@ failure=%@",

@@ -363,12 +363,13 @@ for marker in \
     "sb kbd-discover" \
     "sb kbd-pair-attempt" \
     "sb kbd-hide-cause" \
-    "SpringBoard Scene Bounds 0.9.72" \
+    "Landscape Edge Wheel 0.9.73" \
     "CGRect wheelWindowBounds = windowBounds;" \
     "self.floatingWindow.frame = wheelWindowBounds"; do
     require_source "$marker"
 done
 require_keyboard "route-reload targetHash=%llu"
+require_keyboard "FLMDiagnosticEventRouteTuple"
 
 # 0.9.72 fixes the real root cause the 0.9.71 capture exposed. SpringBoard's
 # window scene stays portrait while the physical display is landscape and the
@@ -380,10 +381,20 @@ for marker in \
     "return CGRectMake(0.0, 0.0, height, width);" \
     "FLMLogUnrotatedLandscapeCanvas" \
     "sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait" \
-    "SpringBoard Scene Bounds 0.9.72"; do
+    "Landscape Edge Wheel 0.9.73"; do
     require_source "$marker"
 done
 
+# 0.9.73 measures the landscape housing per side and spends the whole feasible
+# quadrant, so the icons land on the summoned physical edge and on the bottom
+# edge instead of stopping 51pt short of a clean edge. It also re-applies the
+# rotated canvas once the overlay window is actually visible, because the
+# first-summon self-correction reads UIScreen.coordinateSpace while hidden.
+for marker in     "housingInsetLeft"     "housingInsetRight"     "housingOnLeft"     "FLMDiagnosticEventRouteTuple: return \"route-tuple\";"     "Landscape Edge Wheel 0.9.73"; do
+    require_source "$marker"
+done
+
+reject_source "FLMKeyboardSharedCacheRevision"
 reject_source "FLMOverlayWindowBounds"
 reject_source "itemCountsByRingForCount:"
 
@@ -426,4 +437,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "SpringBoard Scene Bounds 0.9.72: transposed window bounds, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"
+echo "Landscape Edge Wheel 0.9.73: transposed window bounds, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"

@@ -123,6 +123,10 @@ typedef NS_ENUM(uint8_t, FLMDiagnosticEvent) {
     FLMDiagnosticEventAdapterCtor = 19,
     FLMDiagnosticEventAdapterReady = 20,
     FLMDiagnosticEventInputSuppressed = 21,
+    // Resolved keyboard route tuple: a = low 16 bits of the published target
+    // hash, b = low 16 bits of this process' own hash. Published from the App
+    // side so a route that never matched can be read straight out of the log.
+    FLMDiagnosticEventRouteTuple = 22,
 };
 
 // Cross-process diagnostics intentionally carry only fixed-width integers.

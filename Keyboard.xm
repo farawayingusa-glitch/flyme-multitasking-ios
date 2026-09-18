@@ -131,7 +131,6 @@ static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
 static int FLMKeyboardSharedCheckToken = -1;
 static NSDictionary *FLMKeyboardCachedSharedState;
 static BOOL FLMKeyboardSharedCacheLoaded = NO;
-static uint64_t FLMKeyboardSharedCacheRevision = 0;
 
 static NSDictionary *FLMReadKeyboardSharedState(void) {
     // notify_check uses a change flag. The plist is read once per committed
@@ -158,7 +157,6 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
     FLMKeyboardCachedSharedState =
         version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION ? state : nil;
     FLMKeyboardSharedCacheLoaded = checkOK;
-    FLMKeyboardSharedCacheRevision += 1;
     return FLMKeyboardCachedSharedState;
 }
 
@@ -640,39 +638,15 @@ static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
     });
 }
 
-// The shared plist can be unreadable in a sandboxed client. Keep the legacy
-// fallback cheap too: separate check tokens avoid server state reads on each
-// UIKit geometry query while retaining synchronous change detection.
+// The shared plist can be unreadable in a sandboxed client, in which case the
+// legacy notify tuple below is the only source of the route.
 static BOOL FLMKeyboardFallbackReadFailed = NO;
-
-static BOOL FLMKeyboardFallbackStateChanged(void) {
-    static int tokens[5] = {-1, -1, -1, -1, -1};
-    const char *names[5] = {FLYME_KEYBOARD_NOTIFICATION,
-        FLYME_KEYBOARD_SCENE_NOTIFICATION, FLYME_KEYBOARD_SESSION_NOTIFICATION,
-        FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION, FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION};
-    BOOL anyChanged = NO;
-    for (NSUInteger i = 0; i < 5; i++) {
-        if (tokens[i] < 0 && notify_register_check(names[i], &tokens[i]) != NOTIFY_STATUS_OK) {
-            tokens[i] = -1;
-            anyChanged = YES;
-            continue;
-        }
-        int changed = 0;
-        if (notify_check(tokens[i], &changed) != NOTIFY_STATUS_OK || changed)
-            anyChanged = YES;
-    }
-    return anyChanged;
-}
 
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
     uint64_t sceneHash = 0;
     NSDictionary *sharedState = FLMReadKeyboardSharedState();
-    static uint64_t lastAppliedRevision = UINT64_MAX;
-    BOOL fallbackChanged = !sharedState && FLMKeyboardFallbackStateChanged();
-    if (lastAppliedRevision == FLMKeyboardSharedCacheRevision &&
-        (sharedState || (!fallbackChanged && !FLMKeyboardFallbackReadFailed))) return;
     FLMKeyboardFallbackReadFailed = NO;
     BOOL sharedStateAvailable = sharedState != nil;
     BOOL sharedStateActive =
@@ -699,7 +673,26 @@ static void FLMReloadKeyboardRoute(void) {
             return; // do not commit a partial tuple or consume the retry
         }
     }
-    lastAppliedRevision = FLMKeyboardSharedCacheRevision;
+
+    // Guard on the resolved route tuple, not on the shared-state cache
+    // revision. The revision only advances when the plist is physically
+    // re-read, so a cached snapshot left the target update unapplied forever:
+    // the App process never learned it had become the wheel target, never
+    // installed the keyboard route, and published no route-reload event at all
+    // in the 0.9.72 capture. Comparing the tuple itself cannot get stuck.
+    static uint64_t lastRouteHash = 0;
+    static uint64_t lastSceneHash = 0;
+    static uint64_t lastSessionGeneration = 0;
+    static BOOL hasAppliedTuple = NO;
+    if (hasAppliedTuple && targetHash == lastRouteHash &&
+        sceneHash == lastSceneHash &&
+        sessionGeneration == lastSessionGeneration) {
+        return;
+    }
+    lastRouteHash = targetHash;
+    lastSceneHash = sceneHash;
+    lastSessionGeneration = sessionGeneration;
+    hasAppliedTuple = YES;
 
     BOOL previousTargetApplication = FLMKeyboardTargetApplication;
     uint64_t previousGeneration = FLMKeyboardSessionGeneration;
@@ -716,10 +709,17 @@ static void FLMReloadKeyboardRoute(void) {
         (FLMKeyboardExtensionProcess && sessionGeneration != 0 && targetHash != 0);
     FLMKeyboardSessionGeneration = sessionGeneration;
     FLMKeyboardTargetSceneHash = sceneHash;
-    // The App side is where the route silently stayed inactive: the remote
-    // keyboard Scene never reached this process, so targetHash never matched
-    // and every geometry decision below was skipped. Log the whole tuple so a
-    // missing pairing can be told apart from a rejected one.
+    // App-side route activation is the link that stayed silent across 0.9.65
+    // through 0.9.72: the hosted App never reported itself as the keyboard
+    // target, so nothing downstream could run. Publish the resolved tuple into
+    // the diagnostic file (NSLog alone never reached it) so a hash mismatch and
+    // a missing reload can be told apart.
+    FLMPublishDiagnosticEvent(
+        FLMDiagnosticRoleApplication,
+        FLMDiagnosticEventRouteTuple,
+        sessionGeneration,
+        (uint16_t)(targetHash & 0xFFFFULL),
+        (uint16_t)(currentHash & 0xFFFFULL));
     FLMDiagnosticNSLog(
         @"[FlymeKeyboard] route-reload targetHash=%llu currentHash=%llu session=%llu eligible=%d sharedState=%d bundle=%@",
         targetHash, currentHash, sessionGeneration,
@@ -760,14 +760,14 @@ static void FLMReloadKeyboardRoute(void) {
         uint16_t flags =
             (FLMKeyboardRouteActive ? 1U : 0U) |
             (FLMKeyboardTargetApplication ? 2U : 0U) |
-             (FLMKeyboardExtensionProcess ? 4U : 0U) |
-             (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
-             (sceneHash != 0 ? 16U : 0U) |
+            (FLMKeyboardExtensionProcess ? 4U : 0U) |
+            (FLMRemoteKeyboardGeometryInstalled ? 8U : 0U) |
+            (sceneHash != 0 ? 16U : 0U) |
             ((applicationIdentityFlags & 1U) != 0 ? 32U : 0U) |
             ((applicationIdentityFlags & 2U) != 0 ? 64U : 0U) |
             ((applicationIdentityFlags & 4U) != 0 ? 128U : 0U) |
-             (sharedStateAvailable ? 256U : 0U) |
-             (sharedStateActive ? 512U : 0U);
+            (sharedStateAvailable ? 256U : 0U) |
+            (sharedStateActive ? 512U : 0U);
         FLMPublishDiagnosticEvent(
             role,
             FLMDiagnosticEventRouteReload,
