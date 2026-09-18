@@ -1,4 +1,4 @@
-name: Build 0.9.69 landscape isolated ingress
+name: Build 0.9.70 physical coordinate unification
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_landscape-isolated-ingress-0.9.69_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_physical-coordinate-unification-0.9.70_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-landscape-isolated-ingress-0.9.69-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_landscape-isolated-ingress-0.9.69_iphoneos-arm64.deb
+          name: flyme-multitasking-physical-coordinate-unification-0.9.70-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_physical-coordinate-unification-0.9.70_iphoneos-arm64.deb
           if-no-files-found: error

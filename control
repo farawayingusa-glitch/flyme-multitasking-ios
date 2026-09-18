@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.69 Landscape Isolated Ingress
-Description: Keeps portrait on the frozen 0.9.63 recognizer path, moves landscape wheel ingress to an independent physical-coordinate session, adds left/right notch avoidance, and arms card-close input only after the wheel selection touch has ended.
+Name: Flyme Multitasking - 0.9.70 Physical Coordinate Unification
+Description: Puts every landscape overlay window (wheel, floating card, dock gate) into the same physical display coordinate space so the card stops rendering as a rotated portrait window on a landscape display, bridges wheel item centres through UIScreen.coordinateSpace and re-syncs them after layout, converts portrait-space keyboard frames instead of discarding them, routes the remote keyboard Scene through FBScene mutable settings, and stops publishing a saturated keyboard avoidance to the target App.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.69
+Version: 0.9.70

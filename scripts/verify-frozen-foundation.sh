@@ -243,11 +243,14 @@ require_keyboard "FLMKeyboardContentStrip"
 
 
 
-# 0.9.69 keeps portrait on the 0.9.63 path and gives landscape its own physical
-# 844x390 wheel window. Raw system-manager coordinates are resolved at touch
-# time, the chosen mode is locked for the session, and both side edges reserve
-# notch space. The card-close recognizers stay disabled until the selection
-# stream is over.
+# 0.9.70 puts every landscape overlay window into one physical display space.
+# The floating card, the dock gate and the keyboard forwarding window are sized
+# with the same 844x390 bounds the wheel already used, so the card is no longer
+# a rotated portrait window. Wheel item centres are bridged through
+# UIScreen.coordinateSpace and re-derived after layout, portrait-space keyboard
+# frames are converted instead of discarded, and the remote keyboard Scene is
+# routed through mutable settings because FBScene has no
+# updateClientSettingsWithBlock:.
 for marker in \
     "FLMPhysicalLandscapeSafeInsets" \
     "FLMConfigureVisualCanvas" \
@@ -266,7 +269,18 @@ for marker in \
     "floatingCloseInputArmed" \
     "floatingCloseArmAt" \
     "sb wheel-pinned selectionRoute=%@" \
-    "sb wheel-window-select"; do
+    "sb wheel-window-select" \
+    "FLMOverlayWindowBounds" \
+    "landscapeWheelLocalPointFromVisualPoint" \
+    "landscapeWheelVisualCenters" \
+    "synchronizeLandscapeWheelItemCenters" \
+    "sb landscape-wheel-space sceneOrientation=%ld" \
+    "landscapeKeyboardFrameFromScreenFrame" \
+    "setFloatingKeyboardPreferredHostIdentity" \
+    "route=mutable-settings" \
+    "convertedFrame=%@" \
+    "self.floatingWindow.frame = wheelWindowBounds" \
+    "self.floatingWindow.frame = settledWheelWindowBounds"; do
     require_source "$marker"
 done
 
@@ -362,4 +376,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Isolated Ingress 0.9.69: frozen portrait route, physical landscape coordinates, notch avoidance, and armed close input verified"
+echo "Physical Coordinate Unification 0.9.70: frozen portrait route, one landscape window space, wheel screen bridge, keyboard frame conversion verified"

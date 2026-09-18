@@ -1,4 +1,4 @@
-# Flyme Multitasking 0.9.69 - landscape isolated ingress
+# Flyme Multitasking 0.9.70 - physical coordinate unification
 
 以 0.9.63 竖屏稳定版为冻结基线，新增最小横屏路径：
 
@@ -16,6 +16,10 @@
 0.9.67 撤回 0.9.66 中导致横屏 Hotspot 完全失效的入口重写，恢复 0.9.65 可触发的横屏轮盘路径；保留 0.9.66 中经过测量验证的横屏键盘 frame、交互区域和卡片实际几何修正。
 
 0.9.69 将竖屏继续冻结在 0.9.63 路径，横屏改用独立物理坐标会话：全局与窗口两套横屏识别器只处理物理左下角/右下角，运行时验证 `current`、`fixed-left`、`fixed-right` 三种原始坐标模式并锁定本次会话模式。轮盘画布不再旋转竖屏窗口，左右两侧都按刘海安全宽度内缩，卡片关闭输入在轮盘选择手势结束后才重新启用。
+
+0.9.70 修三个 0.9.69 实测问题。第一，0.9.69 只有轮盘窗口是物理 `844x390`，卡片窗口仍是 SpringBoard 的竖屏 `390x844`，再把 `844x390` 画布旋转 90° 塞进去，于是物理横屏屏上出现"竖屏窗口 + 旋转内容"。现在卡片、挂靠门、键盘转发窗口与轮盘共用同一个物理显示坐标空间，卡片仍按竖屏设置推导竖屏比例尺寸，只是不再旋转。第二，轮盘项中心不再直接写入容器坐标，改为经 `UIScreen.coordinateSpace` 从物理显示坐标换算到容器坐标，并在布局变化后按记录的物理中心重新同步；命中测试同时打印 window 坐标。第三，键盘不再丢弃竖屏坐标空间的 frame，而是把 `screen.coordinateSpace`、`screen.fixedCoordinateSpace` 与原始 frame 一起比较、取真正落在屏幕上的一帧；remote keyboard Scene 改用 `FBScene` 的 mutable settings 路由（`FBScene` 不实现 `updateClientSettingsWithBlock:`），并停止向目标 App 发布饱和的 607.68 避让值（键盘在卡片前置，微信自己处理输入框避让）。
+
+新增诊断：`sb landscape-wheel-space` 打印 `windowScene.interfaceOrientation`、scene/window/root 变换、`screen.coordinateSpace.bounds`、容器在屏幕坐标空间的 rect 以及某个 item 的 window/screen rect；`sb notification=%@ rawFrame=%@ convertedFrame=%@` 打印键盘 frame 的换算结果；`sb scene-pair ... route=mutable-settings` 打印键盘 Scene 配对走的路径。
 
 保留功能：
 
