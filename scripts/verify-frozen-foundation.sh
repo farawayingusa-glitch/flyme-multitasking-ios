@@ -37,8 +37,8 @@ for marker in \
     "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
     "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
     "if (!self.hotspotsEnabled)" \
-    "self.hotspotWindow.hotspotsEnabled = canReceive &&" \
-    "self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;" \
+    "canReceive && !self.usesSystemGestureManager;" \
+    "!self.enabled || self.usesSystemGestureManager;" \
     "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" \
     "refreshWheelPriorityWindow" \
     "wheel-priority-touch" \
@@ -211,7 +211,7 @@ for marker in \
     "self.floatingDockInputGesture.enabled = NO;" \
     "FLMKeyboardSharedContentStrip" \
     "return CGSizeMake(FLMVirtualViewportWidth, FLMVirtualViewportHeight);" \
-    "self.cornerGuardGesture.enabled = self.enabled && !landscape;" \
+    "self.cornerGuardGesture.enabled = self.enabled;" \
     "portraitBounds = CGRectMake" \
     "candidateLeft" \
     "candidateRight" \
@@ -219,7 +219,7 @@ for marker in \
     "hotspotRoot.safeAreaInsets" \
     "beginGeneratingDeviceOrientationNotifications" \
     "displayGeometryDidChange:" \
-    "needsWindowIngress = landscape || !self.usesSystemGestureManager" \
+    "self.landscapeCornerGuardGesture.enabled = self.enabled;" \
     "sb display-geometry-refresh" \
     "sb wheel-should-begin" \
     "landscape-window-opener"; do
@@ -247,7 +247,7 @@ for marker in \
     "overlayRoot=%@" \
     "FLMSpringBoardWindowBounds" \
     "self.overlayWindow.frame = windowBounds" \
-    "self.cornerGesture.enabled = self.enabled && !landscape" \
+    "self.cornerGesture.enabled = self.enabled;" \
     "sb wheel-pinned selectionRoute=%@" \
     "sb wheel-window-select"; do
     require_source "$marker"
@@ -345,4 +345,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Ingress Rebuild 0.9.67: 0.9.65 triggerable ingress restored and measured landscape keyboard-frame fixes verified"
+echo "Portrait Restore and Landscape Direction 0.9.68: frozen portrait recognizer route plus swapped landscape canvas and close guard verified"

@@ -1,4 +1,4 @@
-name: Build 0.9.67 landscape ingress rebuild
+name: Build 0.9.68 portrait restore and landscape direction
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_landscape-ingress-rebuild-0.9.67_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_portrait-restore-landscape-direction-0.9.68_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-landscape-ingress-rebuild-0.9.67-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_landscape-ingress-rebuild-0.9.67_iphoneos-arm64.deb
+          name: flyme-multitasking-portrait-restore-landscape-direction-0.9.68-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_portrait-restore-landscape-direction-0.9.68_iphoneos-arm64.deb
           if-no-files-found: error

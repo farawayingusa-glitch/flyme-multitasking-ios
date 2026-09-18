@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Ingress Rebuild 0.9.67 (0.9.65 ingress restored, tested keyboard frames)"
+#define FLMLogBuildString @"Portrait Restore and Landscape Direction 0.9.68 (frozen portrait route, swapped landscape canvas)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -609,7 +609,7 @@ static CGPoint FLMVisualPointFromRootPoint(CGPoint rootPoint,
     }
     CGFloat visualWidth = CGRectGetWidth(visualBounds);
     CGFloat visualHeight = CGRectGetHeight(visualBounds);
-    if (orientation == UIInterfaceOrientationLandscapeRight) {
+    if (orientation == UIInterfaceOrientationLandscapeLeft) {
         return CGPointMake(visualWidth - rootPoint.y, rootPoint.x);
     }
     return CGPointMake(rootPoint.y, visualHeight - rootPoint.x);
@@ -633,7 +633,7 @@ static void FLMConfigureVisualCanvas(UIView *canvas,
         canvas.center = CGPointMake(CGRectGetMidX(rootBounds),
                                     CGRectGetMidY(rootBounds));
         CGFloat angle =
-            orientation == UIInterfaceOrientationLandscapeRight
+            orientation == UIInterfaceOrientationLandscapeLeft
                 ? -(CGFloat)M_PI_2
                 : (CGFloat)M_PI_2;
         canvas.transform = CGAffineTransformMakeRotation(angle);
@@ -1648,6 +1648,7 @@ static void FLMBeginWheelRefreshLease(NSTimeInterval duration) {
 @property(nonatomic, assign) NSUInteger floatingDockContentProtectionGeneration;
 @property(nonatomic, assign) CGPoint floatingExclusiveStartPoint;
 @property(nonatomic, assign) NSTimeInterval floatingExclusiveStartTimestamp;
+@property(nonatomic, assign) NSTimeInterval floatingOpenCloseGuardUntil;
 @property(nonatomic, assign) BOOL floatingExclusiveTapEligible;
 @property(nonatomic, assign) BOOL floatingInteractiveFullscreenTransition;
 @property(nonatomic, assign) BOOL floatingInteractiveScenePrepared;
@@ -3140,24 +3141,28 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                       !self.wheelPinned &&
                       self.itemIdentifiers.count > 0;
     BOOL landscape = FLMDisplayIsLandscape();
-
-    // Portrait keeps the proven 0.9.57 private system-manager route. In
-    // landscape, use exactly one coordinate owner: the SpringBoard hotspot
-    // window. Mixing the system-manager's display-space stream with a rotated
-    // SpringBoard root caused 0.9.60 to open from the wrong physical corner and
-    // left wheel selection in a different coordinate space.
-    BOOL needsWindowIngress = landscape || !self.usesSystemGestureManager;
-    self.hotspotWindow.hotspotsEnabled = canReceive && needsWindowIngress;
-    self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
+    if (!landscape) {
+        // Portrait follows the frozen 0.9.63 route exactly. Its recognizers
+        // are never toggled by orientation bookkeeping.
+        self.hotspotWindow.hotspotsEnabled =
+            canReceive && !self.usesSystemGestureManager;
+        self.hotspotWindow.hidden =
+            !self.enabled || self.usesSystemGestureManager;
+        self.cornerGuardGesture.enabled = self.enabled;
+        self.cornerGesture.enabled = self.enabled;
+        self.landscapeCornerGuardGesture.enabled = NO;
+        self.landscapeCornerGesture.enabled = NO;
+        return;
+    }
 
-    // Landscape must have exactly one coordinate owner: the visible
-    // SpringBoard hotspot window. Never leave the portrait recognizer pair
-    // active here, even when the private system gesture manager is absent.
-    self.cornerGuardGesture.enabled = self.enabled && !landscape;
-    self.cornerGesture.enabled = self.enabled && !landscape;
-    self.landscapeCornerGuardGesture.enabled = self.enabled && landscape;
-    self.landscapeCornerGesture.enabled = self.enabled && landscape;
+    // Landscape uses exactly one coordinate owner: the visible hotspot window.
+    self.hotspotWindow.hotspotsEnabled = canReceive;
+    self.hotspotWindow.hidden = !self.enabled;
+    self.cornerGuardGesture.enabled = NO;
+    self.cornerGesture.enabled = NO;
+    self.landscapeCornerGuardGesture.enabled = self.enabled;
+    self.landscapeCornerGesture.enabled = self.enabled;
 }
 
 - (void)updateWindowFrames {
@@ -4189,7 +4194,8 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         self.floatingKeyboardInteractionSessionActive,
         NSStringFromCGRect([self floatingKeyboardInteractionFrame]),
         NSStringFromCGRect(self.floatingContainer.frame));
-    if (outsideGesture.outsideCloseAuthorized) {
+    if (outsideGesture.outsideCloseAuthorized &&
+        CACurrentMediaTime() >= self.floatingOpenCloseGuardUntil) {
         FLMDiagnosticLog(@"sb close-reason=backdrop-tap");
         [self closeFloatingWindowKeepingApplication:YES];
     }
@@ -4233,6 +4239,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
         case UIGestureRecognizerStateEnded: {
             BOOL shouldClose =
                 self.floatingExclusiveTapEligible &&
+                CACurrentMediaTime() >= self.floatingOpenCloseGuardUntil &&
                 CACurrentMediaTime() - self.floatingExclusiveStartTimestamp <= 0.35 &&
                 hypot(point.x - self.floatingExclusiveStartPoint.x,
                       point.y - self.floatingExclusiveStartPoint.y) <= 12.0;
@@ -8976,6 +8983,9 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     // session. This prevents stale portrait reports from flipping coordinates
     // after a wheel icon is tapped.
     [self captureFloatingOrientationContract];
+    // Ignore the tail of the wheel-selection gesture so a newly opened card
+    // cannot be mistaken for an outside tap and immediately closed.
+    self.floatingOpenCloseGuardUntil = CACurrentMediaTime() + 0.55;
 
     self.floatingDockWidth = [self effectiveDockedPresentationWidth];
     self.floatingReconnectSuppressed = NO;

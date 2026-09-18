@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.67 Landscape Ingress Rebuild
-Description: Restores the 0.9.65 landscape wheel ingress that remained triggerable, keeps portrait Scene and content-strip separation, and incorporates only the measured landscape keyboard-frame fixes from 0.9.66 with the broken fixed-screen ingress rewrite removed.
+Name: Flyme Multitasking - 0.9.68 Portrait Restore and Landscape Direction
+Description: Restores the frozen 0.9.63 portrait recognizer path without orientation toggles, swaps the landscape presentation/touch direction contract, keeps the 0.9.65 triggerable hotspot ingress, and adds a short post-open close guard.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.67
+Version: 0.9.68
