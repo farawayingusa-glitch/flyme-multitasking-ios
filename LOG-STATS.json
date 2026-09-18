@@ -1,0 +1,16 @@
+{
+  "durationSeconds": 36.525,
+  "lines": 930,
+  "bytes": 145122,
+  "opens": 6,
+  "closes": 6,
+  "sharedWrites": 66,
+  "sharedPublishes": 66,
+  "routePublishes": 36,
+  "routeReloads": 204,
+  "handshakeRejects": 54,
+  "dockDisplayLinkStarts": 0,
+  "energySamples": 0,
+  "adjacentIdenticalSharedPublishes": 32,
+  "maxLinesInOneSecond": 71
+}

@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - Landscape Experimental 0.9.61
-Description: Landscape Experimental 0.9.61 on the stable 0.9.57 portrait baseline, keeping the landscape Scene/portrait-content contract while restoring SpringBoard UIWindow ownership to its native coordinate space, making the landscape hotspot the single wheel ingress and using in-window wheel selection so card launch no longer depends on mixed display-space routing.
+Name: Flyme Multitasking - 0.9.64 Landscape Minimal
+Description: Minimal landscape mode on the stable 0.9.63 portrait baseline. Landscape adds physical-coordinate corner wheels, a fixed left-side portrait-ratio card, tap-outside close, and a system keyboard layer above the card. Landscape does not add bars, docking, dragging, hiding, or fullscreen handoff.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.61
+Version: 0.9.64

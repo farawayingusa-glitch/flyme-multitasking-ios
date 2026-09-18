@@ -1,0 +1,128 @@
+{
+  "compiler": "clang 22.1.7",
+  "sdk": "iPhoneOS16.5.sdk",
+  "deploymentTarget": "iOS 16.0",
+  "architectures": [
+    "arm64",
+    "arm64e"
+  ],
+  "sourceCommits": {
+    "sdks": "0222fd5413cf4b9af096f37b4621afa2688572f7",
+    "logos": "777925d1add4ee3485a2432a6f6d5e3ded59de7b",
+    "theos-headers": "13c1f17176d7efe6871551cd69a75b71ac4eeaf1"
+  },
+  "syntaxChecks": [
+    {
+      "module": "Tweak",
+      "arch": "arm64",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Tweak",
+      "arch": "arm64e",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Keyboard",
+      "arch": "arm64",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Keyboard",
+      "arch": "arm64e",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "SceneLifecycle",
+      "arch": "arm64",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "SceneLifecycle",
+      "arch": "arm64e",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Radius",
+      "arch": "arm64",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Radius",
+      "arch": "arm64e",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Preferences",
+      "arch": "arm64",
+      "passed": true,
+      "warnings": ""
+    },
+    {
+      "module": "Preferences",
+      "arch": "arm64e",
+      "passed": true,
+      "warnings": ""
+    }
+  ],
+  "finalChecks": [
+    {
+      "status": "fulfilled",
+      "value": [
+        {
+          "arch": "arm64",
+          "stdout": "",
+          "stderr": ""
+        },
+        {
+          "arch": "arm64e",
+          "stdout": "",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "stdout": "Energy repair 0.9.58 reset: 0.9.41 portrait foundation, responder cleanup, full-lifecycle maximum-refresh Dock rendering, application-process Dock input isolation, first-hide handle handoff repair, keyboard routing, launch recovery, hidden dock, and card foundation verified\n",
+        "stderr": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "stdout": "scene lifecycle, full-screen crop presentation, single-host keyboard route, bounded launch recovery, and hidden-dock interaction verified\r\n",
+        "stderr": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "contracts": "PASS: source/lifecycle/performance contracts\r\nCOMPILED (runner required): actual C helpers; 20,000 unchanged touch reads; 10,000 duplicate publications; target isolation; initial zero publication; read/check/set/post failure recovery\r\n",
+        "behavior": "Actual C notify helper tests: PASS\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "stdout": "",
+        "stderr": ""
+      }
+    }
+  ],
+  "notPerformed": [
+    "Theos package link",
+    "ldid signing",
+    "DEB verification",
+    "device installation",
+    "device energy/thermal measurement"
+  ]
+}

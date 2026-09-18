@@ -127,7 +127,24 @@ static void FLMPublishKeyboardAppLifecycleStage(const char *notificationName,
                               (uint16_t)(getpid() & 0xFFFF));
 }
 
+static int FLMKeyboardSharedCheckToken = -1;
+static NSDictionary *FLMKeyboardCachedSharedState;
+static BOOL FLMKeyboardSharedCacheLoaded = NO;
+static uint64_t FLMKeyboardSharedCacheRevision = 0;
+
 static NSDictionary *FLMReadKeyboardSharedState(void) {
+    // notify_check uses a change flag. The plist is read once per committed
+    // snapshot, never three times on every UIKit geometry/intersection query.
+    if (FLMKeyboardSharedCheckToken < 0) {
+        if (notify_register_check(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
+                                 &FLMKeyboardSharedCheckToken) != NOTIFY_STATUS_OK)
+            FLMKeyboardSharedCheckToken = -1;
+    }
+    int changed = 0;
+    BOOL checkOK = FLMKeyboardSharedCheckToken >= 0 &&
+        notify_check(FLMKeyboardSharedCheckToken, &changed) == NOTIFY_STATUS_OK;
+    if (checkOK && !changed && FLMKeyboardSharedCacheLoaded)
+        return FLMKeyboardCachedSharedState;
     NSDictionary *state =
         [NSDictionary dictionaryWithContentsOfFile:FLMKeyboardSharedStatePath];
     if (![state isKindOfClass:[NSDictionary class]]) {
@@ -137,9 +154,11 @@ static NSDictionary *FLMReadKeyboardSharedState(void) {
     NSNumber *version = [state[@"version"] isKindOfClass:[NSNumber class]]
                             ? state[@"version"]
                             : nil;
-    return version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION
-               ? state
-               : nil;
+    FLMKeyboardCachedSharedState =
+        version.integerValue >= FLYME_KEYBOARD_SHARED_STATE_VERSION ? state : nil;
+    FLMKeyboardSharedCacheLoaded = checkOK;
+    FLMKeyboardSharedCacheRevision += 1;
+    return FLMKeyboardCachedSharedState;
 }
 
 static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
@@ -207,13 +226,21 @@ static BOOL FLMDockInputBlockedForCurrentApplication(void) {
         FLMDockInputBlockToken = -1;
         return NO;
     }
-    uint64_t state = 0;
-    if (notify_get_state(FLMDockInputBlockToken, &state) !=
-        NOTIFY_STATUS_OK) {
-        return NO;
+    static uint64_t cachedState = 0;
+    static BOOL needsRead = YES;
+    int changed = 0;
+    if (notify_check(FLMDockInputBlockToken, &changed) != NOTIFY_STATUS_OK)
+        needsRead = YES;
+    if (changed) needsRead = YES;
+    if (needsRead) {
+        uint64_t state = 0;
+        if (notify_get_state(FLMDockInputBlockToken, &state) != NOTIFY_STATUS_OK)
+            return NO;
+        cachedState = state;
+        needsRead = NO;
     }
     return FLMDockInputBlockStateMatches(
-        state, FLMCurrentApplicationIdentifierHash());
+        cachedState, FLMCurrentApplicationIdentifierHash());
 }
 
 static BOOL FLMShouldSuppressDockTouchEvent(UIEvent *event,
@@ -609,11 +636,40 @@ static void FLMSuppressRestoredApplicationResponder(uint64_t generation) {
     });
 }
 
+// The shared plist can be unreadable in a sandboxed client. Keep the legacy
+// fallback cheap too: separate check tokens avoid server state reads on each
+// UIKit geometry query while retaining synchronous change detection.
+static BOOL FLMKeyboardFallbackReadFailed = NO;
+
+static BOOL FLMKeyboardFallbackStateChanged(void) {
+    static int tokens[5] = {-1, -1, -1, -1, -1};
+    const char *names[5] = {FLYME_KEYBOARD_NOTIFICATION,
+        FLYME_KEYBOARD_SCENE_NOTIFICATION, FLYME_KEYBOARD_SESSION_NOTIFICATION,
+        FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION, FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION};
+    BOOL anyChanged = NO;
+    for (NSUInteger i = 0; i < 5; i++) {
+        if (tokens[i] < 0 && notify_register_check(names[i], &tokens[i]) != NOTIFY_STATUS_OK) {
+            tokens[i] = -1;
+            anyChanged = YES;
+            continue;
+        }
+        int changed = 0;
+        if (notify_check(tokens[i], &changed) != NOTIFY_STATUS_OK || changed)
+            anyChanged = YES;
+    }
+    return anyChanged;
+}
+
 static void FLMReloadKeyboardRoute(void) {
     uint64_t targetHash = 0;
     uint64_t sessionGeneration = 0;
     uint64_t sceneHash = 0;
     NSDictionary *sharedState = FLMReadKeyboardSharedState();
+    static uint64_t lastAppliedRevision = UINT64_MAX;
+    BOOL fallbackChanged = !sharedState && FLMKeyboardFallbackStateChanged();
+    if (lastAppliedRevision == FLMKeyboardSharedCacheRevision &&
+        (sharedState || (!fallbackChanged && !FLMKeyboardFallbackReadFailed))) return;
+    FLMKeyboardFallbackReadFailed = NO;
     BOOL sharedStateAvailable = sharedState != nil;
     BOOL sharedStateActive =
         [sharedState[@"active"] isKindOfClass:[NSNumber class]] &&
@@ -629,15 +685,17 @@ static void FLMReloadKeyboardRoute(void) {
         sessionGeneration =
             [sharedState[@"sessionGeneration"] unsignedLongLongValue];
         sceneHash = [sharedState[@"sceneHash"] unsignedLongLongValue];
-    } else if (FLMKeyboardRouteToken >= 0) {
-        notify_get_state(FLMKeyboardRouteToken, &targetHash);
-        if (FLMKeyboardSessionToken >= 0) {
-            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration);
-        }
-        if (FLMKeyboardSceneToken >= 0) {
-            notify_get_state(FLMKeyboardSceneToken, &sceneHash);
+    } else {
+        if (FLMKeyboardRouteToken < 0 || FLMKeyboardSessionToken < 0 ||
+            FLMKeyboardSceneToken < 0 ||
+            notify_get_state(FLMKeyboardRouteToken, &targetHash) != NOTIFY_STATUS_OK ||
+            notify_get_state(FLMKeyboardSessionToken, &sessionGeneration) != NOTIFY_STATUS_OK ||
+            notify_get_state(FLMKeyboardSceneToken, &sceneHash) != NOTIFY_STATUS_OK) {
+            FLMKeyboardFallbackReadFailed = YES;
+            return; // do not commit a partial tuple or consume the retry
         }
     }
+    lastAppliedRevision = FLMKeyboardSharedCacheRevision;
 
     BOOL previousTargetApplication = FLMKeyboardTargetApplication;
     uint64_t previousGeneration = FLMKeyboardSessionGeneration;
@@ -749,6 +807,7 @@ static void FLMReloadKeyboardCardGeometry(void) {
     if (FLMKeyboardCardGeometryToken < 0 ||
         notify_get_state(FLMKeyboardCardGeometryToken, &state) !=
             NOTIFY_STATUS_OK) {
+        FLMKeyboardFallbackReadFailed = YES;
         return;
     }
     // The legacy notify payload contains only card bottom/scale.  The
@@ -789,6 +848,7 @@ static void FLMReloadKeyboardAvoidance(void) {
         height = [sharedState[@"avoidanceHeight"] doubleValue];
     } else if (FLMKeyboardAvoidanceToken < 0 ||
         notify_get_state(FLMKeyboardAvoidanceToken, &state) != NOTIFY_STATUS_OK) {
+        FLMKeyboardFallbackReadFailed = YES;
         return;
     } else {
         visible = (state & (1ULL << 63)) != 0;
@@ -860,7 +920,7 @@ static void FLMLogContentViewportLayout(NSString *stage,
                                         CGRect currentBounds) {
     (void)contentView;
     CGRect windowBounds = window ? window.bounds : CGRectZero;
-    NSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
+    FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport %@ bundle=%@ session=%llu sceneLogicalBounds=%@ contentViewportBounds=%@ externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@ windowBounds=%@ contentBefore=%@ contentAfter=%@ route=%d cardGeometry=%d",
           stage ?: @"unknown", [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
           (unsigned long long)FLMKeyboardSessionGeneration,
           NSStringFromCGRect(sceneLogicalBounds),
@@ -1040,7 +1100,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!shouldApply) {
         if (FLMContentViewportAdapterActive ||
             FLMContentViewportOriginalLayouts.count > 0) {
-            NSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
+            FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-restore-request bundle=%@ session=%llu route=%d cardGeometry=%d",
                   [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
                   (unsigned long long)FLMKeyboardSessionGeneration,
                   FLMKeyboardRouteActive, FLMKeyboardCardGeometryActive);
@@ -1055,7 +1115,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     if (!FLMContentViewportAdapterActive) {
         FLMContentViewportAdapterActive = YES;
         FLMContentViewportAdapterGeneration = FLMKeyboardSessionGeneration;
-        NSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
+        FLMDiagnosticNSLog(@"[FlymeKeyboard] content-viewport layout-route-active bundle=%@ session=%llu sceneLogicalBounds={390.0000,844.0000} contentViewportBounds={%.13f,%.13f} externalScale=%.6f physicalCard={%.1f,%.1f} viewportSource=%@",
               [NSBundle mainBundle].bundleIdentifier ?: @"<none>",
               (unsigned long long)FLMKeyboardSessionGeneration,
               FLMContentLogicalViewportSize.width,
@@ -1250,46 +1310,44 @@ static void FLMInstallRemoteKeyboardGeometryIfAvailable(void) {
 }
 
 static void FLMRegisterKeyboardRouteObserversIfNeeded(void) {
-    if (FLMKeyboardRouteObserversInstalled || !FLMIsEligibleApplicationProcess()) {
-        return;
-    }
-    FLMKeyboardRouteObserversInstalled = YES;
-    notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION,
-                             &FLMKeyboardRouteToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION,
-                             &FLMKeyboardSceneToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION,
-                             &FLMKeyboardSessionToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION,
-                             &FLMKeyboardAvoidanceToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMReloadKeyboardAvoidance();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION,
-                             &FLMKeyboardCardGeometryToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMReloadKeyboardCardGeometry();
-                             });
-    notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION,
-                             &FLMKeyboardSharedStateToken,
-                             dispatch_get_main_queue(),
-                             ^(__unused int token) {
-                                 FLMHandleKeyboardRouteNotification();
-                             });
+    if (FLMKeyboardRouteObserversInstalled || !FLMIsEligibleApplicationProcess()) return;
+    if (FLMKeyboardRouteToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_NOTIFICATION, &FLMKeyboardRouteToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardRouteToken = -1;
+    if (FLMKeyboardSceneToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SCENE_NOTIFICATION, &FLMKeyboardSceneToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSceneToken = -1;
+    if (FLMKeyboardSessionToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SESSION_NOTIFICATION, &FLMKeyboardSessionToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSessionToken = -1;
+    if (FLMKeyboardAvoidanceToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_AVOIDANCE_NOTIFICATION, &FLMKeyboardAvoidanceToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMReloadKeyboardAvoidance();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardAvoidanceToken = -1;
+    if (FLMKeyboardCardGeometryToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_CARD_GEOMETRY_NOTIFICATION, &FLMKeyboardCardGeometryToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMReloadKeyboardCardGeometry();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardCardGeometryToken = -1;
+    if (FLMKeyboardSharedStateToken < 0 &&
+        notify_register_dispatch(FLYME_KEYBOARD_SHARED_STATE_NOTIFICATION, &FLMKeyboardSharedStateToken,
+            dispatch_get_main_queue(), ^(__unused int token) {
+                FLMHandleKeyboardRouteNotification();
+            }) != NOTIFY_STATUS_OK) FLMKeyboardSharedStateToken = -1;
+    FLMKeyboardRouteObserversInstalled =
+        FLMKeyboardRouteToken >= 0 &&
+        FLMKeyboardSceneToken >= 0 &&
+        FLMKeyboardSessionToken >= 0 &&
+        FLMKeyboardAvoidanceToken >= 0 &&
+        FLMKeyboardCardGeometryToken >= 0 &&
+        FLMKeyboardSharedStateToken >= 0;
 }
 
 static void FLMRegisterKeyboardDismissObserverIfNeeded(void) {
@@ -1391,7 +1449,10 @@ static void FLMAttemptKeyboardInitialization(void) {
     FLMRegisterKeyboardRouteObserversIfNeeded();
     FLMReloadKeyboardRoute();
     if (!FLMKeyboardTargetApplication) {
-        FLMScheduleKeyboardIdentityRetry();
+        // A settled non-target identity is not an initialization failure.
+        // Route observers will initialize it when it is actually selected.
+        if (!FLMKeyboardRouteObserversInstalled)
+            FLMScheduleKeyboardIdentityRetry();
         return;
     }
     FLMRegisterKeyboardNotificationsAndInitialize();

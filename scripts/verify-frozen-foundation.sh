@@ -100,7 +100,7 @@ for marker in \
     "maximumFramesPerSecond" \
     "ensureFloatingDockInputDisplayLink" \
     "beginFloatingHighRefreshLeaseForDuration" \
-    "minimumRate = maximumRate >= 120.0f ? 80.0f : maximumRate;" \
+    "CAFrameRateRangeMake(maximumRate, maximumRate, maximumRate);" \
     "CGRect handoffFrame" \
     "bringSubviewToFront:self.floatingHandle" \
     "floatingDockControlArmed" \
@@ -198,6 +198,9 @@ for marker in \
     "flmHasFirstTouchPoint" \
     "landscapeCornerGuardGesture" \
     "landscapeCornerGesture" \
+    "landscape-minimal" \
+    "self.floatingHandle.hidden = YES;" \
+    "self.floatingDockInputGesture.enabled = NO;" \
     "beginGeneratingDeviceOrientationNotifications" \
     "displayGeometryDidChange:" \
     "needsWindowIngress = landscape || !self.usesSystemGestureManager" \
@@ -324,4 +327,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "0.9.61 landscape experimental: frozen 0.9.57 portrait foundation plus landscape Scene/content/keyboard contracts, native SpringBoard UIWindow ownership, landscape window-only wheel ingress, and physical presentation coordinates verified"
+echo "Landscape Minimal 0.9.64: 0.9.63 portrait foundation, maximum-refresh active motion, symmetric Scene handoff, physical-coordinate landscape wheel ingress, fixed left portrait card, tap-outside close, and keyboard layer above the card verified"

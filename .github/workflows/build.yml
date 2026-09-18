@@ -1,4 +1,4 @@
-name: Build Landscape Experimental 0.9.61
+name: Build 0.9.64 landscape minimal
 
 on:
   workflow_dispatch:
@@ -30,6 +30,9 @@ jobs:
           chmod +x scripts/verify-frozen-foundation.sh
           scripts/verify-frozen-foundation.sh Tweak.xm
 
+      - name: Verify energy repair
+        run: python3 scripts/verify-energy-repair.py --cc clang
+
       - name: Install Theos
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -52,11 +55,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_landscape-experimental-0.9.61_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_landscape-minimal-0.9.64_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-landscape-experimental-0.9.61-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_landscape-experimental-0.9.61_iphoneos-arm64.deb
+          name: flyme-multitasking-landscape-minimal-0.9.64-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_landscape-minimal-0.9.64_iphoneos-arm64.deb
           if-no-files-found: error
