@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Edge Wheel 0.9.73 (per-side housing inset, full-quadrant arc, canvas re-applied on show, resolved keyboard route tuple)"
+#define FLMLogBuildString @"Display Space Unification 0.9.74 (biased-orientation point conversion, band-based keyboard envelope, bbox canvas sign check, card beside keyboard)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -639,20 +639,75 @@ static UIEdgeInsets FLMPhysicalLandscapeSafeInsets(
     return UIEdgeInsetsMake(0.0, sensorInset, bottomInset, 0.0);
 }
 
+// Convert a point in a window's own scene space into the display space the
+// user sees.
+//
+// This window's root view IS SpringBoard's portrait scene. A rotated
+// presentation canvas is mounted inside it by `FLMConfigureVisualCanvas`, and
+// the composition of the system's own scene-to-display rotation with the
+// canvas' rotation comes out as the identity on the canvas' local space: a
+// canvas-local point is already the physical point. That is invariant under
+// which landscape the device is held in and under which rotation sign the
+// canvas was corrected to, so it is measured on the canvas rather than
+// re-derived from the orientation, which only ever described the scene.
 static CGPoint FLMVisualPointFromRootPoint(CGPoint rootPoint,
                                            CGRect rootBounds,
                                            CGRect visualBounds,
                                            UIInterfaceOrientation orientation) {
+    (void)orientation;
     if (!FLMBoundsAreLandscape(visualBounds) ||
         CGRectGetWidth(rootBounds) > CGRectGetHeight(rootBounds) + 1.0) {
         return rootPoint;
     }
     CGFloat visualWidth = CGRectGetWidth(visualBounds);
     CGFloat visualHeight = CGRectGetHeight(visualBounds);
-    if (orientation == UIInterfaceOrientationLandscapeLeft) {
+    if (fabs(CGRectGetWidth(rootBounds) - visualHeight) > 2.0 ||
+        fabs(CGRectGetHeight(rootBounds) - visualWidth) > 2.0) {
+        // Not the portrait-scene/landscape-display pair the identity above is
+        // derived from. Fall back to the scene rotation so a caller still gets
+        // an answer instead of a silently wrong one.
+        if (orientation == UIInterfaceOrientationLandscapeLeft) {
+            return CGPointMake(rootPoint.y,
+                               visualHeight - rootPoint.x);
+        }
         return CGPointMake(visualWidth - rootPoint.y, rootPoint.x);
     }
-    return CGPointMake(rootPoint.y, visualHeight - rootPoint.x);
+    CGFloat dx = rootPoint.x - CGRectGetWidth(rootBounds) / 2.0;
+    CGFloat dy = rootPoint.y - CGRectGetHeight(rootBounds) / 2.0;
+    return CGPointMake(visualWidth / 2.0 + dy,
+                       visualHeight / 2.0 - dx);
+}
+
+// The same composition as a 44x44 rectangle, sampled at its four corners so
+// each one keeps the identity mapping above. Used to carry Scene-space frames
+// (an App's keyboard notification, for instance) onto the display.
+static CGRect FLMVisualRectFromRootRect(CGRect rootRect,
+                                        CGRect rootBounds,
+                                        CGRect visualBounds,
+                                        UIInterfaceOrientation orientation) {
+    CGRect direct = CGRectStandardize(rootRect);
+    if (!FLMBoundsAreLandscape(visualBounds) ||
+        CGRectGetWidth(rootBounds) > CGRectGetHeight(rootBounds) + 1.0) {
+        return direct;
+    }
+    CGPoint corners[4] = {
+        CGPointMake(CGRectGetMinX(direct), CGRectGetMinY(direct)),
+        CGPointMake(CGRectGetMaxX(direct), CGRectGetMinY(direct)),
+        CGPointMake(CGRectGetMinX(direct), CGRectGetMaxY(direct)),
+        CGPointMake(CGRectGetMaxX(direct), CGRectGetMaxY(direct)),
+    };
+    CGRect converted = CGRectNull;
+    for (NSUInteger index = 0; index < 4; index++) {
+        CGPoint visualPoint =
+            FLMVisualPointFromRootPoint(corners[index], rootBounds, visualBounds,
+                                        orientation);
+        CGRect cornerRect =
+            CGRectMake(visualPoint.x, visualPoint.y, 0.0, 0.0);
+        converted = CGRectIsNull(converted)
+                        ? cornerRect
+                        : CGRectUnion(converted, cornerRect);
+    }
+    return CGRectIsNull(converted) ? direct : converted;
 }
 
 static id<UICoordinateSpace> FLMCanvasScreenSpace(UIView *canvas) {
@@ -662,25 +717,33 @@ static id<UICoordinateSpace> FLMCanvasScreenSpace(UIView *canvas) {
 
 static BOOL FLMCanvasOriginLandedOnFarCorner(UIView *canvas,
                                              CGRect visualBounds) {
-    // A rotated canvas can be mounted with either sign and both put an 844x390
-    // bounding box on the display, so only an asymmetric point tells them
-    // apart. When the sign matches what the system already applies between the
-    // window scene and the display, the canvas' own origin lands on the visual
-    // origin; when it does not, it lands on the opposite corner.
     id<UICoordinateSpace> screenSpace = FLMCanvasScreenSpace(canvas);
     if (!screenSpace) {
         return NO;
     }
-    CGPoint measured = [canvas convertPoint:CGPointZero
-                         toCoordinateSpace:screenSpace];
-    CGPoint expected = visualBounds.origin;
-    CGPoint opposite = CGPointMake(CGRectGetMaxX(visualBounds),
-                                   CGRectGetMaxY(visualBounds));
-    CGFloat expectedDistance = hypot(measured.x - expected.x,
-                                     measured.y - expected.y);
-    CGFloat oppositeDistance = hypot(measured.x - opposite.x,
-                                     measured.y - opposite.y);
-    return oppositeDistance + 1.0 < expectedDistance;
+    // The bounding box alone decides it. A canvas whose quarter turn agrees
+    // with the turn the system already applies between the window scene and
+    // the display covers the visual bounds; one that disagrees is rotated the
+    // other way and covers the transposed box. The corner heuristic that used
+    // to sit here read "far from the visual origin" as "wrong sign", which is
+    // also true of a canvas that is merely stale and still portrait-shaped, so
+    // a wrong first layout was reported as correct and the card opened
+    // mirrored until the next geometry pass repaired it.
+    CGRect canvasInScreen = [canvas convertRect:canvas.bounds
+                              toCoordinateSpace:screenSpace];
+    if (CGRectIsNull(canvasInScreen) || CGRectIsEmpty(canvasInScreen)) {
+        return NO;
+    }
+    CGFloat expectedSpan =
+        MAX(CGRectGetWidth(visualBounds), CGRectGetHeight(visualBounds));
+    CGFloat measuredSpan =
+        MAX(CGRectGetWidth(canvasInScreen), CGRectGetHeight(canvasInScreen));
+    if (measuredSpan < expectedSpan - 2.0) {
+        // Not yet laid out at the visual size. Nothing to correct against.
+        return NO;
+    }
+    return CGRectGetWidth(canvasInScreen) + 2.0 <
+           CGRectGetHeight(canvasInScreen);
 }
 
 static void FLMLogCanvasVerification(UIView *canvas,
@@ -1893,6 +1956,10 @@ static void FLMBeginWheelRefreshLease(NSTimeInterval duration) {
 @property(nonatomic, assign) CGFloat lastPortraitKeyboardHeight;
 @property(nonatomic, assign) CGFloat floatingKeyboardMaximumVisibleHeight;
 @property(nonatomic, assign) BOOL floatingKeyboardInteractionSessionActive;
+// Physical-space band the App's portrait keyboard occupies on the display, and
+// the slightly wider band the touch envelope uses so a keyboard collapse touch
+// begun on an accessory row stays in the keyboard domain.
+@property(nonatomic, assign) CGRect floatingLandscapeKeyboardTouchBand;
 @property(nonatomic, assign) NSUInteger floatingKeyboardInteractionGeneration;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionCounter;
 @property(nonatomic, assign) NSUInteger floatingKeyboardSessionGeneration;
@@ -7565,23 +7632,64 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
     FLMKeyboardSharedSystemHeight = 0.0;
 }
 
+// The card is a portrait-proportion strip standing against the physical left
+// wall. A canvas-local point equals the physical point (see
+// `FLMVisualPointFromRootPoint`), so the frame below is written directly in
+// the space the user sees: x along the physical width, y along the physical
+// height.
 - (CGRect)landscapeFloatingFrame {
     UIView *rootView = [self floatingLayoutView];
     CGRect bounds = rootView.bounds;
-    UIEdgeInsets safeInsets = [self floatingLayoutSafeInsets];
+    CGFloat physicalCardWidth = [self effectiveCenteredCardWidth];
+    CGFloat physicalCardHeight = [self effectiveCenteredCardHeight];
+    if (physicalCardWidth <= 1.0 || physicalCardHeight <= 1.0) {
+        return CGRectZero;
+    }
+    CGFloat canvasWidth = CGRectGetWidth(bounds);
+    CGFloat canvasHeight = CGRectGetHeight(bounds);
+    if (canvasWidth <= 1.0 || canvasHeight <= 1.0) {
+        return CGRectZero;
+    }
     CGFloat availableHeight =
-        MAX(1.0, CGRectGetHeight(bounds) - safeInsets.top - safeInsets.bottom -
-                     FLMLandscapeCardVerticalMargin * 2.0);
+        MAX(1.0, canvasHeight - FLMLandscapeCardVerticalMargin * 2.0);
+    CGFloat frameHeight = MIN(physicalCardHeight, availableHeight);
     CGFloat portraitAspect =
-        [self effectiveCenteredCardWidth] /
-        MAX(1.0, [self effectiveCenteredCardHeight]);
-    CGFloat cardHeight = MIN([self effectiveCenteredCardHeight], availableHeight);
-    CGFloat cardWidth = cardHeight * portraitAspect;
-    CGFloat originX = safeInsets.left + FLMLandscapeCardSideMargin;
-    CGFloat usableHeight = CGRectGetHeight(bounds) - safeInsets.top - safeInsets.bottom;
-    CGFloat originY = safeInsets.top + MAX(FLMLandscapeCardVerticalMargin,
-                                            floor((usableHeight - cardHeight) * 0.5));
-    return CGRectMake(originX, originY, cardWidth, cardHeight);
+        physicalCardWidth / MAX(1.0, physicalCardHeight);
+    CGFloat frameWidth = frameHeight * portraitAspect;
+    CGFloat originX = [self landscapeKeyboardStripOriginForBandWidth:frameWidth];
+    CGFloat originY = MAX(FLMLandscapeCardVerticalMargin,
+                          floor((canvasHeight - frameHeight) * 0.5));
+    return CGRectMake(originX, originY, frameWidth, frameHeight);
+}
+
+// A visible keyboard band owns part of the physical width. The card then
+// stands in the remaining width, against the far edge of that band.
+- (CGFloat)landscapeKeyboardStripOriginForBandWidth:(CGFloat)bandWidth {
+    if (!self.floatingKeyboardVisible || bandWidth <= 1.0) {
+        return 0.0;
+    }
+    CGRect band = [self landscapeKeyboardInteractionFrame];
+    if (CGRectIsNull(band) || CGRectIsEmpty(band)) {
+        return 0.0;
+    }
+    CGFloat plane = CGRectGetHeight([self floatingLayoutView].bounds);
+    CGFloat occupied = CLAMP(CGRectGetWidth(band), 0.0, plane);
+    CGFloat padding = FLMLandscapeCardSideMargin;
+    return MAX(0.0, MIN(occupied + padding, plane - bandWidth));
+}
+
+- (CGFloat)floatingCenteredCardWidth {
+    if ([self isLandscapeFloatingSession]) {
+        return [self effectiveCenteredCardWidth];
+    }
+    return CGRectGetWidth([self centeredFloatingFrame]);
+}
+
+- (CGFloat)floatingCenteredCardHeight {
+    if ([self isLandscapeFloatingSession]) {
+        return [self effectiveCenteredCardHeight];
+    }
+    return CGRectGetHeight([self centeredFloatingFrame]);
 }
 
 - (CGRect)centeredFloatingFrame {
@@ -9357,7 +9465,7 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
         CGFloat reportedHeight = CGRectGetHeight(frame);
         CGFloat height = reportedHeight;
         if (landscape) {
-            frame = CGRectIntersection(frame, bounds);
+            frame = [self landscapeKeyboardInteractionFrame];
             if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) {
                 return;
             }
@@ -9381,6 +9489,11 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
         }
         self.floatingKeyboardVisible = YES;
         self.floatingKeyboardFrame = frame;
+        if (landscape) {
+            // The card stands beside the keyboard band on the same wall, so a
+            // new band moves the card before the touch envelope is measured.
+            [self layoutFloatingWindow];
+        }
         CGRect interactionFrame = [self floatingKeyboardInteractionFrame];
         self.floatingBackdropTap.additionalProtectedFrame = interactionFrame;
         ((FLMFloatingWindow *)self.floatingWindow).keyboardPassThroughFrame =
@@ -9422,8 +9535,15 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
     }
     BOOL wasKeyboardInteraction =
         self.floatingKeyboardVisible || self.floatingKeyboardInteractionSessionActive;
+    BOOL wasLandscape = [self isLandscapeFloatingSession];
     self.floatingKeyboardVisible = NO;
     self.floatingKeyboardFrame = CGRectNull;
+    self.floatingLandscapeKeyboardTouchBand = CGRectNull;
+    if (wasLandscape) {
+        // The band owned the side wall; releasing it returns the card to the
+        // physical edge the session started against.
+        [self layoutFloatingWindow];
+    }
     [self deactivateKeyboardForwardingWindow];
     FLMPublishKeyboardAvoidance(self.floatingKeyboardSessionGeneration,
                                 0.0,
@@ -9507,9 +9627,10 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
     }
     CGRect bounds = [self floatingLayoutView].bounds;
     if ([self isLandscapeFloatingSession]) {
-        return self.floatingKeyboardVisible
-            ? CGRectIntersection(bounds, self.floatingKeyboardFrame)
-            : CGRectNull;
+        if (!self.floatingKeyboardVisible) {
+            return CGRectNull;
+        }
+        return [self landscapeKeyboardInteractionFrame];
     }
     CGRect keyboardFrame = CGRectNull;
     if (self.floatingKeyboardVisible &&
@@ -9630,47 +9751,69 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
     return FLMVisualScreenBounds();
 }
 
-- (CGRect)landscapeKeyboardFrameFromScreenFrame:(CGRect)screenFrame
-                                         bounds:(CGRect)bounds {
-    CGRect direct = CGRectStandardize(screenFrame);
-    if (![self isLandscapeFloatingSession] || CGRectIsEmpty(bounds)) {
-        return direct;
-    }
-    CGSize appReference = [self floatingSystemSceneReferenceSize];
-    CGFloat appTolerance = MAX(3.0, appReference.width * 0.06);
-    BOOL matchesAppReference =
-        appReference.width > 1.0 && appReference.height > 1.0 &&
-        fabs(CGRectGetWidth(direct) - appReference.width) <= appTolerance;
-    if (!matchesAppReference) {
-        return direct;
-    }
-    CGRect appBounds = CGRectMake(0.0, 0.0, appReference.width,
-                                  appReference.height);
+- (UIInterfaceOrientation)floatingLandscapeCanvasOrientation {
     UIInterfaceOrientation orientation =
         self.floatingLandscapeInterfaceOrientation;
     if (!UIInterfaceOrientationIsLandscape(orientation)) {
-        orientation =
-            FLMLandscapeOrientationForSafeInsets(
-                self.floatingLandscapeSafeInsets);
+        orientation = FLMLandscapeOrientationForSafeInsets(
+            self.floatingLandscapeSafeInsets);
     }
-    CGPoint corners[4] = {
-        CGPointMake(CGRectGetMinX(direct), CGRectGetMinY(direct)),
-        CGPointMake(CGRectGetMaxX(direct), CGRectGetMinY(direct)),
-        CGPointMake(CGRectGetMinX(direct), CGRectGetMaxY(direct)),
-        CGPointMake(CGRectGetMaxX(direct), CGRectGetMaxY(direct)),
-    };
-    CGRect converted = CGRectNull;
-    for (NSUInteger index = 0; index < 4; index++) {
-        CGPoint visualPoint =
-            FLMVisualPointFromRootPoint(corners[index], appBounds, bounds,
-                                        orientation);
-        CGRect cornerRect =
-            CGRectMake(visualPoint.x, visualPoint.y, 0.0, 0.0);
-        converted = CGRectIsNull(converted)
-                        ? cornerRect
-                        : CGRectUnion(converted, cornerRect);
+    return orientation;
+}
+
+// The target App raises a portrait keyboard inside its own portrait Scene
+// contract. On the display that is a full-height band standing against the
+// physical wall the App's screen bottom maps to. Building it by carrying the
+// Scene-space frame through the same conversion every other Scene-space frame
+// uses keeps the band, the card layout and the touch envelope in one space.
+- (CGRect)landscapeVisualKeyboardBandForScreenFrame:(CGRect)screenFrame {
+    CGRect direct = CGRectStandardize(screenFrame);
+    if (![self isLandscapeFloatingSession] || CGRectIsEmpty(direct)) {
+        return CGRectNull;
     }
-    return CGRectIsNull(converted) ? direct : converted;
+    CGSize appReference = [self floatingSystemSceneReferenceSize];
+    if (appReference.width <= 1.0 || appReference.height <= 1.0) {
+        return CGRectNull;
+    }
+    CGFloat appTolerance = MAX(3.0, appReference.width * 0.06);
+    if (fabs(CGRectGetWidth(direct) - appReference.width) > appTolerance) {
+        return CGRectNull;
+    }
+    CGRect appBounds = CGRectMake(0.0, 0.0, appReference.width,
+                                  appReference.height);
+    CGRect visual = [self floatingSessionVisualBounds];
+    UIInterfaceOrientation orientation = [self floatingLandscapeCanvasOrientation];
+    CGRect converted = FLMVisualRectFromRootRect(direct, appBounds, visual,
+                                                 orientation);
+    CGFloat visualWidth = CGRectGetWidth(visual);
+    CGFloat visualHeight = CGRectGetHeight(visual);
+    if (CGRectGetWidth(converted) <= 1.0 ||
+        CGRectGetHeight(converted) < visualHeight - 2.0 ||
+        CGRectGetWidth(converted) >= visualWidth - 1.0) {
+        // A portrait keyboard is a full-height band on the display. Anything
+        // else is not the frame this route is built for.
+        return CGRectNull;
+    }
+    return converted;
+}
+
+- (CGRect)landscapeKeyboardInteractionFrame {
+    if (!self.floatingKeyboardVisible) {
+        return CGRectNull;
+    }
+    if (!CGRectIsNull(self.floatingKeyboardFrame) &&
+        !CGRectIsEmpty(self.floatingKeyboardFrame)) {
+        return self.floatingKeyboardFrame;
+    }
+    if (!CGRectIsNull(self.floatingLandscapeKeyboardTouchBand) &&
+        !CGRectIsEmpty(self.floatingLandscapeKeyboardTouchBand)) {
+        return self.floatingLandscapeKeyboardTouchBand;
+    }
+    CGRect bounds = [self floatingLayoutView].bounds;
+    CGFloat height = MIN(CGRectGetHeight(bounds),
+                         MAX(216.0, self.lastPortraitKeyboardHeight));
+    return CGRectMake(0.0, CGRectGetHeight(bounds) - height,
+                      CGRectGetWidth(bounds), height);
 }
 
 - (void)keyboardFrameWillChange:(NSNotification *)notification {
@@ -9679,11 +9822,23 @@ static void FLMLogKeyboardSceneDiscovery(id keyboardScene,
         return;
     }
     CGRect frame = frameValue.CGRectValue;
+    BOOL landscape = [self isLandscapeFloatingSession];
     CGRect bounds = [self floatingSessionVisualBounds];
-    CGRect converted =
-        [self landscapeKeyboardFrameFromScreenFrame:frame bounds:bounds];
-    BOOL visible = CGRectIntersectsRect(bounds, converted) &&
-                   CGRectGetMinY(converted) < CGRectGetHeight(bounds) - 1.0;
+    CGRect converted = CGRectNull;
+    BOOL visible = NO;
+    if (landscape) {
+        // The band is derived from the App's portrait Scene contract, so the
+        // judgment and the geometry share one space and one reference size.
+        // Re-reading the live display box flipped back to portrait mid-
+        // transaction and reported a keyboard below the screen as visible.
+        CGRect band = [self landscapeVisualKeyboardBandForScreenFrame:frame];
+        visible = !CGRectIsNull(band);
+        converted = visible ? band : CGRectStandardize(frame);
+    } else {
+        converted = CGRectStandardize(frame);
+        visible = CGRectIntersectsRect(bounds, converted) &&
+                  CGRectGetMinY(converted) < CGRectGetHeight(bounds) - 1.0;
+    }
     FLMDiagnosticLog(
         @"sb notification=%@ rawFrame=%@ convertedFrame=%@ bounds=%@ computedVisible=%d",
         notification.name, NSStringFromCGRect(frame),

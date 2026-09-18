@@ -1,4 +1,4 @@
-# Flyme Multitasking 0.9.73 - landscape edge wheel
+# Flyme Multitasking 0.9.74 - display space unification
 
 以 0.9.63 竖屏稳定版为冻结基线，新增最小横屏路径：
 
@@ -32,6 +32,16 @@
 0.9.73 修 0.9.72 实测反馈的三个问题。第一，第一次横屏呼出画出来仍是竖屏轮盘：根因是自校正发生在 `overlayWindow.hidden` 还是 `YES` 的时候，此时 `UIScreen.coordinateSpace` 读不出有效落点，`FLMCanvasOriginLandedOnFarCorner` 拿不到正确符号，错误符号被当成正确结果接受（`corrected=0`）。现在初始方向不再猜，直接取本次会话锁定的 `landscapeIngressRawMode`；并在 `overlayWindow.hidden = NO` 之后立刻重新执行一次 `FLMConfigureVisualCanvas`，让校正发生在窗口可见、屏幕坐标空间真正有效的时刻。第二，图标离物理屏幕边缘太远：两个数值原因 —— 51pt 的刘海内缩被同时加到左右两侧（实测 `safe={33,84,357,760}`、`anchor=(84,357)`），把轮盘从干净的那一侧推离边缘整整 51pt；72° 弧度上限又让弧线提前收尾（最上面图标停在 `x=145`）。现在按锁定的横屏方向逐侧计算 housing 内缩（刘海在左就只缩左、刘海在右就只缩右），并且横屏允许用满整个可行象限（`M_PI_2`），于是 `R ≤ H` 且 `R ≤ V` 时弧线正好取 `[-π/2, 0]`，两个端点精确贴住呼出侧物理边缘与底部边缘，"贴着真实屏幕的左侧和底部"由几何保证而不是靠调参。第三，小窗显示正确但键盘仍然无法调用：日志证明系统其实早已把远程键盘 Scene 配对到卡片 Scene（`host-native paired=1` 十条、21 次 `host-update enter`、0 次拒绝或推迟），失败点不在这里；真正的问题在应用侧 —— 整份日志里 `role=application` 的 `route-reload` 事件为 0 次，`sb adapter-handshake ctor={reg:0} ready={valid:0}` 说明目标门控初始化从未运行。根因是 `FLMReloadKeyboardRoute` 的缓存版本门：`FLMKeyboardSharedCacheRevision` 只在物理重读 plist 时前进，一份缓存快照会让目标更新被永久吞掉。现在改为直接比对已解析的 route tuple（`targetHash` / `sceneHash` / `sessionGeneration`），并新增 `route-tuple` 诊断事件（`a` = 发布方 targetHash 低 16 位，`b` = 本进程自身 hash 低 16 位），下一份日志可直接判断是 hash 不匹配还是刷新根本没触发。同时 `setFloatingKeyboardPreferredHostIdentity:scene:outReason:` 不再返回硬编码文本，`kbd-pair-attempt` 打印真实失败原因。
 
 新增诊断：`sb landscape-wheel-present` 增加 `orientation`、`housing={左,右}`、`safe={上,左,下,右}` 字段，可直接核对两侧内缩是否对称、弧线端点是否落在物理边缘；应用侧新增 `route-tuple` 事件。
+
+0.9.74 修 0.9.73 实测反馈的三个问题，并把坐标换算从「按方向猜」改成「按实测恒等式算」。
+
+第一，第一次打开应用小窗偶尔反方向。日志给出了完整证据链：`sb canvas-verify` 在窗口还不可见时打出 `canvas={{0,0},{390,844}} sign=-1 corrected=0` —— 画布在物理屏上仍是竖屏形态 `390x844`，而判别函数 `FLMCanvasOriginLandedOnFarCorner` 只在两个角落之间比距离，一个尚未摆正的画布同样"落在远处"，于是被误判成正确符号（`corrected=0`）；紧接着卡片就在这块错画布上打开（`presentation-session` → `centered-open`），直到用户把卡片关掉之后才出现 `corrected=1` 的正确画布。现在判别不再比角点距离，而是直接量画布在屏幕坐标空间里的包围盒：正确画布必然是横屏 `844x390`，宽高比反过来就是错的；同时画出包围盒尺寸在样例里对两个符号完全相同（都是 `844x390`），也就是说旧判别用的信息量根本不足以区分符号，这是它必然误判的证明。
+
+第二，小窗点空白处无法每次都关闭、卡片内容触摸也不可靠。根因与第三点同源：`FLMVisualPointFromRootPoint` 按 `orientation` 选旋转分支，而本机日志证明该函数的画布局部坐标恒等于物理显示坐标（画布局部点 → 物理点 `(32.3,368)`、`(84,159)` 两组独立探针都精确吻合），方向根本不影响结果。用方向去挑分支，等于用一个无关变量决定对错。现在该函数改写成实测恒等式 `visual = (visualW/2 + dy, visualH/2 - dx)`，不再读 orientation；陪跑的 `convertedFrame={{0,0},{320,390}}`（应为 `{524,0,320,390}`）正是这个错误分支的产物，而它直接被写进 `floatingBackdropTap.additionalProtectedFrame`，于是真实空白处被当成键盘区域保护起来，`inKeyboard=1` → `UIGestureRecognizerStateFailed`，空白点击无法关闭。修好换算后保护框与真实键盘位置一致，空白点击恢复正常。
+
+第三，小窗无法调用键盘。用户给出的可接受方案是「调用竖屏键盘、靠右贴住屏幕边缘」，本版按此实现：目标应用在自己竖屏 Scene 契约里抬起竖屏键盘（`rawFrame={{0,524},{390,320}}`），经实测恒等式换算后在物理屏上正好是右边缘的一条通高竖带 `{524,0,320,390}` —— 这正是用户要的效果。键盘可见时，卡片不再与键盘重叠（改到键盘带左侧），`floatingKeyboardInteractionFrame` 与转发窗口的命中框都用同一条通高带，键盘可见性判定也改用本次会话锁定的纵向/横向参考尺寸，不再实时重读会翻回竖屏的 `FLMVisualScreenBounds`。
+
+新增诊断：`sb canvas-verify` 的 `canvas` 字段现在直接给出画布在屏幕坐标空间的包围盒（横屏 `844x390` 即正确）；`sb notification=%@ rawFrame=%@ convertedFrame=%@` 在横屏下应打出 `convertedFrame={524,0,320,390}`。
 
 保留功能：
 

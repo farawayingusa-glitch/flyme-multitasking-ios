@@ -270,7 +270,12 @@ for marker in \
     "landscapeWheelVisualCenters" \
     "synchronizeLandscapeWheelItemCenters" \
     "sb landscape-wheel-space sceneOrientation=%ld" \
-    "landscapeKeyboardFrameFromScreenFrame" \
+    "landscapeVisualKeyboardBandForScreenFrame" \
+    "FLMVisualRectFromRootRect" \
+    "FLMVisualPointFromRootPoint" \
+    "landscapeKeyboardInteractionFrame" \
+    "floatingLandscapeKeyboardTouchBand" \
+    "FLMBoundsAreLandscape(visualBounds) &&" \
     "setFloatingKeyboardPreferredHostIdentity" \
     "route=mutable-settings" \
     "convertedFrame=%@" \
@@ -363,7 +368,7 @@ for marker in \
     "sb kbd-discover" \
     "sb kbd-pair-attempt" \
     "sb kbd-hide-cause" \
-    "Landscape Edge Wheel 0.9.73" \
+    "Display Space Unification 0.9.74" \
     "CGRect wheelWindowBounds = windowBounds;" \
     "self.floatingWindow.frame = wheelWindowBounds"; do
     require_source "$marker"
@@ -381,7 +386,7 @@ for marker in \
     "return CGRectMake(0.0, 0.0, height, width);" \
     "FLMLogUnrotatedLandscapeCanvas" \
     "sb canvas-anomaly root=%@ visual=%@ reason=root-not-portrait" \
-    "Landscape Edge Wheel 0.9.73"; do
+    "Display Space Unification 0.9.74"; do
     require_source "$marker"
 done
 
@@ -390,7 +395,29 @@ done
 # edge instead of stopping 51pt short of a clean edge. It also re-applies the
 # rotated canvas once the overlay window is actually visible, because the
 # first-summon self-correction reads UIScreen.coordinateSpace while hidden.
-for marker in     "housingInsetLeft"     "housingInsetRight"     "housingOnLeft"     "FLMDiagnosticEventRouteTuple: return \"route-tuple\";"     "Landscape Edge Wheel 0.9.73"; do
+for marker in     "housingInsetLeft"     "housingInsetRight"     "housingOnLeft"     "FLMDiagnosticEventRouteTuple: return \"route-tuple\";"     "Display Space Unification 0.9.74"; do
+    require_source "$marker"
+done
+
+# 0.9.74 replaces the orientation-guessed point conversion with the identity the
+# composition of the system scene rotation and the canvas rotation actually
+# produces, so Scene-space frames land on the display in the right place. The
+# keyboard is a band against the physical wall rather than a portrait strip,
+# the canvas sign is judged from its display bounding box instead of a corner
+# distance that also matched a stale portrait layout, and the card stands beside
+# a visible keyboard band.
+for marker in \
+    "FLMVisualPointFromRootPoint" \
+    "FLMVisualRectFromRootRect" \
+    "landscapeVisualKeyboardBandForScreenFrame" \
+    "landscapeKeyboardInteractionFrame" \
+    "floatingLandscapeKeyboardTouchBand" \
+    "landscapeKeyboardStripOriginForBandWidth" \
+    "floatingLandscapeCanvasOrientation" \
+    "CGRect canvasInScreen = [canvas convertRect:canvas.bounds" \
+    "return CGRectGetWidth(canvasInScreen) + 2.0 <" \
+    "visualWidth / 2.0 + dy" \
+    "visualHeight / 2.0 - dx"; do
     require_source "$marker"
 done
 
@@ -437,4 +464,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Edge Wheel 0.9.73: transposed window bounds, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"
+echo "Display Space Unification 0.9.74: transposed window bounds, self-correcting rotated canvas, notch-aware wheel solver, keyboard space verified"
