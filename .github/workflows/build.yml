@@ -1,4 +1,4 @@
-name: Build 0.9.65 landscape coordinate repair
+name: Build 0.9.66 physical corner repair
 
 on:
   workflow_dispatch:
@@ -33,6 +33,9 @@ jobs:
       - name: Verify energy repair
         run: python3 scripts/verify-energy-repair.py --cc clang
 
+      - name: Verify landscape coordinates
+        run: python3 scripts/verify-landscape-coordinate.py --cc clang
+
       - name: Install Theos
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -55,11 +58,11 @@ jobs:
           chmod +x scripts/verify-package.sh
           scripts/verify-package.sh "$package"
           mkdir -p artifacts
-          cp "$package" artifacts/flyme-multitasking_landscape-coordinate-repair-0.9.65_iphoneos-arm64.deb
+          cp "$package" artifacts/flyme-multitasking_physical-corner-repair-0.9.66_iphoneos-arm64.deb
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: flyme-multitasking-landscape-coordinate-repair-0.9.65-${{ github.run_number }}
-          path: artifacts/flyme-multitasking_landscape-coordinate-repair-0.9.65_iphoneos-arm64.deb
+          name: flyme-multitasking-physical-corner-repair-0.9.66-${{ github.run_number }}
+          path: artifacts/flyme-multitasking_physical-corner-repair-0.9.66_iphoneos-arm64.deb
           if-no-files-found: error

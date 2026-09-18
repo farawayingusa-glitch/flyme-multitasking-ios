@@ -36,17 +36,17 @@ for marker in \
     "CGFloat verticalRadius = horizontalRadius * (65.0 / 58.0);" \
     "FLMCopyPreference(@\"cornerTriggerSizeV2\")" \
     "self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;" \
-    "if (!self.hotspotsEnabled)" \
-    "self.hotspotWindow.hotspotsEnabled = canReceive &&" \
-    "self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;" \
+    "if (!self.hotspotsEnabled || FLMDeviceIsLocked())" \
+    "self.hotspotWindow.hotspotsEnabled = canReceive;" \
+    "self.hotspotWindow.hidden = !self.enabled;" \
     "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" \
     "refreshWheelPriorityWindow" \
     "wheel-priority-touch" \
     "hotspotWindow.hotspotsEnabled = NO" \
     "self.cornerGesture.minimumPressDuration = 0.12;" \
     "self.cornerGuardGesture.minimumPressDuration = 0.0;" \
-    "CGPoint rawPoint = [touch locationInView:nil];" \
-    "CGPoint rawPoint = [gesture locationInView:nil];" \
+    "UIWindow *window = touch.window;" \
+    "if (corner.flmHasFirstTouchPoint) return corner.flmLatestTouchPoint;" \
     "return totalMovement >= 14.0 &&" \
     "static const CGFloat FLMDefaultWheelRadius = 202.0;" \
     "static const CGFloat FLMDefaultWheelIconSize = 56.0;" \
@@ -211,15 +211,15 @@ for marker in \
     "self.floatingDockInputGesture.enabled = NO;" \
     "FLMKeyboardSharedContentStrip" \
     "return CGSizeMake(FLMVirtualViewportWidth, FLMVirtualViewportHeight);" \
-    "self.cornerGuardGesture.enabled = self.enabled && !landscape;" \
-    "portraitBounds = CGRectMake" \
-    "candidateLeft" \
-    "candidateRight" \
+    "self.cornerGuardGesture.enabled = self.enabled;" \
+    "screen.fixedCoordinateSpace.bounds" \
+    "FLMFixedPointFromVisualPoint" \
+    "FLMVisualPointFromWindowPoint" \
     "overlayRoot.safeAreaInsets" \
     "hotspotRoot.safeAreaInsets" \
     "beginGeneratingDeviceOrientationNotifications" \
     "displayGeometryDidChange:" \
-    "needsWindowIngress = landscape || !self.usesSystemGestureManager" \
+    "windowCorner && !landscapeIngress && self.usesSystemGestureManager" \
     "sb display-geometry-refresh" \
     "sb wheel-should-begin" \
     "landscape-window-opener"; do
@@ -247,7 +247,7 @@ for marker in \
     "overlayRoot=%@" \
     "FLMSpringBoardWindowBounds" \
     "self.overlayWindow.frame = windowBounds" \
-    "self.cornerGesture.enabled = self.enabled && !landscape" \
+    "self.cornerGesture.enabled = self.enabled;" \
     "sb wheel-pinned selectionRoute=%@" \
     "sb wheel-window-select"; do
     require_source "$marker"
@@ -334,7 +334,7 @@ if grep -Eiq 'FMScreen(Capture|Sense)|VisionKit|IOSurface' "$source_directory/Ma
 fi
 
 guard_line="$(grep -nF "addGestureRecognizer:self.cornerGuardGesture" "$source_file" | head -n1 | cut -d: -f1)"
-wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture];" "$source_file" | head -n1 | cut -d: -f1)"
+wheel_line="$(grep -nF "addGestureRecognizer:self.cornerGesture toDisplayWithIdentity:identity" "$source_file" | head -n1 | cut -d: -f1)"
 if [[ -z "$guard_line" || -z "$wheel_line" || "$guard_line" -ge "$wheel_line" ]]; then
     echo "first-frame guard registration order changed" >&2
     exit 1
@@ -345,4 +345,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Coordinate Repair 0.9.65: 0.9.64 minimal landscape plus first-session safe-area fallback and portrait-to-landscape touch normalization verified"
+echo "Physical Corner Repair 0.9.66: portrait foundation and explicit fixed-screen coordinate ingress verified"
