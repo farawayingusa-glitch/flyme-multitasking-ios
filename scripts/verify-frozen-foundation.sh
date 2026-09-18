@@ -204,8 +204,21 @@ done
 for marker in \
     "flmFirstTouchPoint" \
     "flmHasFirstTouchPoint" \
+    "flmFirstRawPoint" \
+    "flmLandscapeRawCoordinateMode" \
     "landscapeCornerGuardGesture" \
     "landscapeCornerGesture" \
+    "landscapeGlobalCornerGuardGesture" \
+    "landscapeGlobalCornerGesture" \
+    "resolveLandscapeCornerGesture" \
+    "FLMLandscapeRawCoordinateModeFixedLandscapeLeft" \
+    "FLMLandscapeRawCoordinateModeFixedLandscapeRight" \
+    "FLMLandscapeNotchAvoidanceInset" \
+    "presentLandscapeWheelFromRight" \
+    "landscapeDirectWheelTaps" \
+    "floatingCloseInputArmed" \
+    "armFloatingCloseInputForGeneration" \
+    "self.floatingCloseInputArmed && !self.floatingWindow.hidden" \
     "landscape-minimal" \
     "self.floatingHandle.hidden = YES;" \
     "self.floatingDockInputGesture.enabled = NO;" \
@@ -230,11 +243,11 @@ require_keyboard "FLMKeyboardContentStrip"
 
 
 
-# 0.9.61 keeps the SpringBoard presentation-coordinate split isolated and
-# requires UIWindow ownership to remain in SpringBoard's native bounds while the
-# physical 844x390 presentation lives only in rotated child canvases. Landscape
-# wheel ingress/selection must also stay in-window so system-manager and UIKit
-# coordinates cannot diverge again.
+# 0.9.69 keeps portrait on the 0.9.63 path and gives landscape its own physical
+# 844x390 wheel window. Raw system-manager coordinates are resolved at touch
+# time, the chosen mode is locked for the session, and both side edges reserve
+# notch space. The card-close recognizers stay disabled until the selection
+# stream is over.
 for marker in \
     "FLMPhysicalLandscapeSafeInsets" \
     "FLMConfigureVisualCanvas" \
@@ -246,8 +259,12 @@ for marker in \
     "physicalSafe={" \
     "overlayRoot=%@" \
     "FLMSpringBoardWindowBounds" \
-    "self.overlayWindow.frame = windowBounds" \
+    "self.overlayWindow.frame = wheelWindowBounds" \
     "self.cornerGesture.enabled = self.enabled;" \
+    "FLMLandscapeNotchAvoidanceInset" \
+    "presentLandscapeWheelFromRight" \
+    "floatingCloseInputArmed" \
+    "floatingCloseArmAt" \
     "sb wheel-pinned selectionRoute=%@" \
     "sb wheel-window-select"; do
     require_source "$marker"
@@ -345,4 +362,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Portrait Restore and Landscape Direction 0.9.68: frozen portrait recognizer route plus swapped landscape canvas and close guard verified"
+echo "Landscape Isolated Ingress 0.9.69: frozen portrait route, physical landscape coordinates, notch avoidance, and armed close input verified"
