@@ -7673,7 +7673,7 @@ static CGPoint FLMWheelRingPoint(FLMWheelPlan plan,
         return 0.0;
     }
     CGFloat plane = CGRectGetHeight([self floatingLayoutView].bounds);
-    CGFloat occupied = CLAMP(CGRectGetWidth(band), 0.0, plane);
+    CGFloat occupied = MIN(MAX(CGRectGetWidth(band), 0.0), plane);
     CGFloat padding = FLMLandscapeCardSideMargin;
     return MAX(0.0, MIN(occupied + padding, plane - bandWidth));
 }
