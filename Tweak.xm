@@ -712,8 +712,7 @@ static void FLMLogCanvasVerification(UIView *canvas,
         rotated ? 1 : 0, corrected ? 1 : 0);
 }
 
-static void FLMLogUnrotatedLandscapeCanvas(UIView *canvas,
-                                           CGRect rootBounds,
+static void FLMLogUnrotatedLandscapeCanvas(CGRect rootBounds,
                                            CGRect visualBounds) {
     static CGRect lastRoot = {{0.0, 0.0}, {0.0, 0.0}};
     static CGRect lastVisual = {{0.0, 0.0}, {0.0, 0.0}};
@@ -770,7 +769,7 @@ static void FLMConfigureVisualCanvas(UIView *canvas,
         // scene: the system rotation then passes straight through and every
         // landscape canvas renders as portrait. Log it once per geometry so the
         // next capture names the cause instead of showing the symptom.
-        FLMLogUnrotatedLandscapeCanvas(canvas, rootBounds, visualBounds);
+        FLMLogUnrotatedLandscapeCanvas(rootBounds, visualBounds);
     }
     canvas.transform = CGAffineTransformIdentity;
     canvas.frame = rootBounds;
