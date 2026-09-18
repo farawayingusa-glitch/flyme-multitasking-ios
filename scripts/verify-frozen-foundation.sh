@@ -13,6 +13,14 @@ require_source() {
     }
 }
 
+require_keyboard() {
+    local marker="$1"
+    grep -Fq -- "$marker" "$keyboard_source" || {
+        echo "missing Keyboard marker: $marker" >&2
+        exit 1
+    }
+}
+
 reject_source() {
     local marker="$1"
     if grep -Fq -- "$marker" "$source_file"; then
@@ -201,6 +209,14 @@ for marker in \
     "landscape-minimal" \
     "self.floatingHandle.hidden = YES;" \
     "self.floatingDockInputGesture.enabled = NO;" \
+    "FLMKeyboardSharedContentStrip" \
+    "return CGSizeMake(FLMVirtualViewportWidth, FLMVirtualViewportHeight);" \
+    "self.cornerGuardGesture.enabled = self.enabled && !landscape;" \
+    "portraitBounds = CGRectMake" \
+    "candidateLeft" \
+    "candidateRight" \
+    "overlayRoot.safeAreaInsets" \
+    "hotspotRoot.safeAreaInsets" \
     "beginGeneratingDeviceOrientationNotifications" \
     "displayGeometryDidChange:" \
     "needsWindowIngress = landscape || !self.usesSystemGestureManager" \
@@ -209,6 +225,8 @@ for marker in \
     "landscape-window-opener"; do
     require_source "$marker"
 done
+
+require_keyboard "FLMKeyboardContentStrip"
 
 
 
@@ -327,4 +345,4 @@ if [[ -z "$landscape_guard_line" || -z "$landscape_wheel_line" || "$landscape_gu
     echo "landscape fallback guard registration order changed" >&2
     exit 1
 fi
-echo "Landscape Minimal 0.9.64: 0.9.63 portrait foundation, maximum-refresh active motion, symmetric Scene handoff, physical-coordinate landscape wheel ingress, fixed left portrait card, tap-outside close, and keyboard layer above the card verified"
+echo "Landscape Coordinate Repair 0.9.65: 0.9.64 minimal landscape plus first-session safe-area fallback and portrait-to-landscape touch normalization verified"

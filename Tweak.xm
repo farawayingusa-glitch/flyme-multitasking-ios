@@ -36,7 +36,7 @@
 #define FLYME_LOCK_SCREEN_ITEM @"com.codex.flymemultitasking.lockscreen"
 // Bump this together with the package version in control / Info.plist so the
 // diagnostic log can tell one build from another.
-#define FLMLogBuildString @"Landscape Minimal 0.9.64 (portrait card + native keyboard overlay)"
+#define FLMLogBuildString @"Landscape Coordinate Repair 0.9.65 (safe-area and portrait touch normalization)"
 
 // Kept only to discard the identifier left by older installs. It is not a
 // supported wheel item and must never be rendered or activated.
@@ -644,9 +644,46 @@ static void FLMConfigureVisualCanvas(UIView *canvas,
 }
 
 static CGPoint FLMVisualPointFromRawPoint(CGPoint rawPoint) {
-    // _UISystemGestureManager already reports display-space points. Window
-    // gestures are converted from SpringBoard's root coordinate space by the
-    // controller when a landscape presentation canvas is active.
+    CGRect visualBounds = FLMVisualScreenBounds();
+    if (!FLMBoundsAreLandscape(visualBounds) ||
+        CGRectContainsPoint(visualBounds, rawPoint)) {
+        return rawPoint;
+    }
+
+    // Some SpringBoard keyboard/gesture transactions temporarily report a
+    // portrait-space point even though the physical display is landscape.
+    // Convert only points that cannot belong to the visible landscape bounds,
+    // then use the physical orientation to choose the matching rotation.
+    CGRect portraitBounds = CGRectMake(0.0,
+                                       0.0,
+                                       CGRectGetHeight(visualBounds),
+                                       CGRectGetWidth(visualBounds));
+    if (!CGRectContainsPoint(portraitBounds, rawPoint)) {
+        return rawPoint;
+    }
+
+    CGFloat portraitWidth = CGRectGetWidth(portraitBounds);
+    CGFloat portraitHeight = CGRectGetHeight(portraitBounds);
+    CGPoint candidateLeft =
+        CGPointMake(rawPoint.y, portraitWidth - rawPoint.x);
+    CGPoint candidateRight =
+        CGPointMake(portraitHeight - rawPoint.y, rawPoint.x);
+    BOOL leftInside = CGRectContainsPoint(visualBounds, candidateLeft);
+    BOOL rightInside = CGRectContainsPoint(visualBounds, candidateRight);
+    UIInterfaceOrientation orientation =
+        FLMLandscapeOrientationForSafeInsets(UIEdgeInsetsZero);
+    if (orientation == UIInterfaceOrientationLandscapeLeft && leftInside) {
+        return candidateLeft;
+    }
+    if (orientation == UIInterfaceOrientationLandscapeRight && rightInside) {
+        return candidateRight;
+    }
+    if (leftInside && !rightInside) {
+        return candidateLeft;
+    }
+    if (rightInside && !leftInside) {
+        return candidateRight;
+    }
     return rawPoint;
 }
 
@@ -1872,6 +1909,7 @@ static CGFloat FLMKeyboardSharedCardHeight = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportWidth = 0.0;
 static CGFloat FLMKeyboardSharedContentViewportHeight = 0.0;
 static BOOL FLMKeyboardSharedLandscapeScene = NO;
+static BOOL FLMKeyboardSharedContentStrip = NO;
 static NSInteger FLMKeyboardSharedInterfaceOrientation = UIInterfaceOrientationPortrait;
 static CGFloat FLMKeyboardSharedSystemWidth = 0.0;
 static CGFloat FLMKeyboardSharedSystemHeight = 0.0;
@@ -2101,6 +2139,7 @@ static void FLMScheduleKeyboardSharedStateWrite(void) {
         @"contentViewportWidth": @(FLMKeyboardSharedContentViewportWidth),
         @"contentViewportHeight": @(FLMKeyboardSharedContentViewportHeight),
         @"landscapeScene": @(FLMKeyboardSharedLandscapeScene),
+        @"contentStrip": @(FLMKeyboardSharedContentStrip),
         @"interfaceOrientation": @(FLMKeyboardSharedInterfaceOrientation),
         @"systemWidth": @(FLMKeyboardSharedSystemWidth),
         @"systemHeight": @(FLMKeyboardSharedSystemHeight),
@@ -3112,17 +3151,13 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     self.hotspotWindow.hidden = !self.enabled || !needsWindowIngress;
     self.hotspotWindow.windowLevel = UIWindowLevelAlert + 120.0;
 
-    if (self.usesSystemGestureManager) {
-        self.cornerGuardGesture.enabled = self.enabled && !landscape;
-        self.cornerGesture.enabled = self.enabled && !landscape;
-        self.landscapeCornerGuardGesture.enabled = self.enabled && landscape;
-        self.landscapeCornerGesture.enabled = self.enabled && landscape;
-    } else {
-        self.cornerGuardGesture.enabled = self.enabled;
-        self.cornerGesture.enabled = self.enabled;
-        self.landscapeCornerGuardGesture.enabled = NO;
-        self.landscapeCornerGesture.enabled = NO;
-    }
+    // Landscape must have exactly one coordinate owner: the visible
+    // SpringBoard hotspot window. Never leave the portrait recognizer pair
+    // active here, even when the private system gesture manager is absent.
+    self.cornerGuardGesture.enabled = self.enabled && !landscape;
+    self.cornerGesture.enabled = self.enabled && !landscape;
+    self.landscapeCornerGuardGesture.enabled = self.enabled && landscape;
+    self.landscapeCornerGesture.enabled = self.enabled && landscape;
 }
 
 - (void)updateWindowFrames {
@@ -6419,9 +6454,37 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
     CGSize systemSize = bounds.size;
     UIView *rootView = self.floatingWindow.rootViewController.view;
     [rootView layoutIfNeeded];
+    BOOL landscape = FLMBoundsAreLandscape(bounds);
     UIEdgeInsets rawSafeInsets =
         rootView ? rootView.safeAreaInsets : UIEdgeInsetsZero;
-    BOOL landscape = FLMBoundsAreLandscape(bounds);
+    if (landscape &&
+        rawSafeInsets.top + rawSafeInsets.left + rawSafeInsets.bottom +
+                rawSafeInsets.right <
+            0.5) {
+        UIView *overlayRoot = self.overlayWindow.rootViewController.view;
+        [overlayRoot layoutIfNeeded];
+        UIEdgeInsets overlaySafeInsets =
+            overlayRoot ? overlayRoot.safeAreaInsets : UIEdgeInsetsZero;
+        if (overlaySafeInsets.top + overlaySafeInsets.left +
+                overlaySafeInsets.bottom + overlaySafeInsets.right >
+            0.5) {
+            rawSafeInsets = overlaySafeInsets;
+        }
+    }
+    if (landscape &&
+        rawSafeInsets.top + rawSafeInsets.left + rawSafeInsets.bottom +
+                rawSafeInsets.right <
+            0.5) {
+        UIView *hotspotRoot = self.hotspotWindow.rootViewController.view;
+        [hotspotRoot layoutIfNeeded];
+        UIEdgeInsets hotspotSafeInsets =
+            hotspotRoot ? hotspotRoot.safeAreaInsets : UIEdgeInsetsZero;
+        if (hotspotSafeInsets.top + hotspotSafeInsets.left +
+                hotspotSafeInsets.bottom + hotspotSafeInsets.right >
+            0.5) {
+            rawSafeInsets = hotspotSafeInsets;
+        }
+    }
     UIInterfaceOrientation orientation =
         landscape ? FLMLandscapeOrientationForSafeInsets(rawSafeInsets)
                   : UIInterfaceOrientationPortrait;
@@ -8354,7 +8417,11 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
 
 - (CGSize)floatingSystemSceneReferenceSize {
     if ([self isLandscapeFloatingSession]) {
-        return self.floatingLandscapeSystemSize;
+        // The target App keeps its proven portrait Scene contract. The
+        // landscape coordinator is responsible for placing and scaling that
+        // portrait surface into the physical card; the App must not receive
+        // a second landscape-to-portrait rewrite.
+        return CGSizeMake(FLMVirtualViewportWidth, FLMVirtualViewportHeight);
     }
     CGRect displayBounds = FLMVisualScreenBounds();
     CGSize size = displayBounds.size;
@@ -8410,9 +8477,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                                               systemSceneReference.height)];
         if ([mutableSettings respondsToSelector:@selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:
-                [self isLandscapeFloatingSession]
-                    ? self.floatingLandscapeInterfaceOrientation
-                    : UIInterfaceOrientationPortrait];
+                UIInterfaceOrientationPortrait];
         }
         [scene updateSettings:mutableSettings withTransitionContext:nil];
         self.floatingHostReferenceSize =
@@ -8596,10 +8661,7 @@ static void FLMPreferencesChanged(CFNotificationCenterRef center,
                 [self effectiveCenteredCardWidth],
                 [self effectiveCenteredCardHeight]);
         }
-        NSInteger orientation =
-            [self isLandscapeFloatingSession]
-                ? self.floatingLandscapeInterfaceOrientation
-                : UIInterfaceOrientationPortrait;
+        NSInteger orientation = UIInterfaceOrientationPortrait;
         if ([mutableSettings respondsToSelector:
                              @selector(setInterfaceOrientation:)]) {
             [mutableSettings setInterfaceOrientation:orientation];

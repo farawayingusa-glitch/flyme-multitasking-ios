@@ -1,9 +1,9 @@
 Package: com.codex.flymemultitasking
-Name: Flyme Multitasking - 0.9.64 Landscape Minimal
-Description: Minimal landscape mode on the stable 0.9.63 portrait baseline. Landscape adds physical-coordinate corner wheels, a fixed left-side portrait-ratio card, tap-outside close, and a system keyboard layer above the card. Landscape does not add bars, docking, dragging, hiding, or fullscreen handoff.
+Name: Flyme Multitasking - 0.9.65 Landscape Coordinate Repair
+Description: Repairs the first landscape session safe-area fallback and normalizes SpringBoard keyboard-space touches back to the physical landscape display. Keeps the 0.9.64 minimal landscape scope: corner wheels, fixed left portrait-ratio card, tap-outside close, and system keyboard above the card.
 Maintainer: Codex build for local testing
 Author: Codex build for local testing
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader
 Architecture: iphoneos-arm64
-Version: 0.9.64
+Version: 0.9.65

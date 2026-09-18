@@ -91,6 +91,7 @@ static BOOL FLMContentViewportUsesSharedCardSize = NO;
 // UIWindowScene for system keyboard semantics, but its visible root content is
 // held on a 390x844 portrait logical canvas inside that Scene.
 static BOOL FLMKeyboardLandscapeScene = NO;
+static BOOL FLMKeyboardContentStrip = NO;
 static UIInterfaceOrientation FLMKeyboardInterfaceOrientation = UIInterfaceOrientationPortrait;
 static CGSize FLMKeyboardSystemReferenceSize = CGSizeZero;
 
@@ -168,6 +169,7 @@ static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
     FLMPhysicalCardSize = fallback;
     FLMContentViewportUsesSharedCardSize = NO;
     FLMKeyboardLandscapeScene = NO;
+    FLMKeyboardContentStrip = NO;
     FLMKeyboardInterfaceOrientation = UIInterfaceOrientationPortrait;
     FLMKeyboardSystemReferenceSize = CGSizeZero;
     if (![sharedState isKindOfClass:[NSDictionary class]]) {
@@ -175,6 +177,8 @@ static void FLMReloadContentViewportSelection(NSDictionary *sharedState) {
     }
     BOOL active = [sharedState[@"active"] boolValue];
     BOOL landscape = active && [sharedState[@"landscapeScene"] boolValue];
+    FLMKeyboardContentStrip =
+        active && [sharedState[@"contentStrip"] boolValue];
     CGFloat systemWidth = [sharedState[@"systemWidth"] doubleValue];
     CGFloat systemHeight = [sharedState[@"systemHeight"] doubleValue];
     NSInteger orientation = [sharedState[@"interfaceOrientation"] integerValue];
@@ -1095,7 +1099,7 @@ static void FLMUpdateContentViewportAdapter(void) {
     // was also capable of resurrecting a stale root after a rapid reopen.
     BOOL shouldApply = FLMKeyboardTargetApplication &&
                        FLMKeyboardRouteActive &&
-                       FLMKeyboardLandscapeScene &&
+                       FLMKeyboardContentStrip &&
                        FLMKeyboardSessionGeneration != 0;
     if (!shouldApply) {
         if (FLMContentViewportAdapterActive ||
